@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "expo": "~56.0.11",
+    "expo-asset": "~56.0.17",
+    "expo-audio": "~56.0.12",
     "expo-dev-client": "~56.0.20",
     "expo-keep-awake": "~56.0.3",
     "expo-sqlite": "~56.0.5",

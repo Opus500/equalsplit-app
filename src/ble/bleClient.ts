@@ -1,8 +1,14 @@
 // Thin wrapper over react-native-ble-plx for the EqualSplit start gate.
-// Step 1 scope: scan -> connect -> read Status -> stream raw Event bytes.
-// Parsing into typed events comes in build-order step 2.
+// scan -> connect -> read Status -> stream raw Event/Status bytes -> send commands.
 
-import { BleManager, Device, Subscription, State } from 'react-native-ble-plx';
+import { Platform } from 'react-native';
+import {
+  BleManager,
+  ConnectionPriority,
+  Device,
+  Subscription,
+  State,
+} from 'react-native-ble-plx';
 import { UUID, Op } from './constants';
 import { bytesToBase64, base64ToBytes } from './base64';
 
@@ -32,6 +38,16 @@ export function stopScan(): void {
 export async function connect(device: Device): Promise<Device> {
   const connected = await device.connect({ requestMTU: 64 });
   await connected.discoverAllServicesAndCharacteristics();
+  // Ask for the fastest connection interval (~11-15ms) so live timing feels tight.
+  // Android only: iOS connection parameters are dictated by the peripheral (the
+  // gate requests its preferred interval), so this is a no-op there.
+  if (Platform.OS === 'android') {
+    try {
+      await connected.requestConnectionPriority(ConnectionPriority.High);
+    } catch {
+      /* best-effort; not fatal if the stack rejects it */
+    }
+  }
   return connected;
 }
 
@@ -56,6 +72,20 @@ export function monitorEvents(
       return;
     }
     if (ch?.value) onEvent(base64ToBytes(ch.value));
+  });
+}
+
+export function monitorStatus(
+  device: Device,
+  onStatus: (bytes: Uint8Array) => void,
+  onError: (e: Error) => void,
+): Subscription {
+  return device.monitorCharacteristicForService(UUID.service, UUID.status, (error, ch) => {
+    if (error) {
+      onError(error);
+      return;
+    }
+    if (ch?.value) onStatus(base64ToBytes(ch.value));
   });
 }
 

@@ -32,6 +32,9 @@ const config: ExpoConfig = {
   plugins: [
     'expo-dev-client',
     'expo-sqlite',
+    // Playback only — no recording, so suppress the microphone permission.
+    ['expo-audio', { microphonePermission: false }],
+    'expo-asset',
     [
       'react-native-ble-plx',
       {
