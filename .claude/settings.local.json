@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(node --version)",
+      "PowerShell(npm --version)",
+      "PowerShell(npx --version)",
+      "PowerShell(npx create-expo-app@latest . --template blank-typescript --no-install)",
+      "PowerShell(npx create-expo-app@latest scaffold_tmp --template blank-typescript --no-install)"
+    ]
+  }
+}
