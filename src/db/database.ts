@@ -1,8 +1,16 @@
 // Local-first storage (expo-sqlite). Every finished run is written here so
 // results survive app restarts and offline use. A `synced` column is carried
 // now so an optional Supabase backup later is a no-migration change.
+//
+// Latency compensation: the gate's split1_ms/split2_ms/total_ms are always the
+// RAW authoritative values from the gate clock. For Mode 2 we also store the
+// reaction offset that was applied at save time (reaction_offset_ms) so the
+// adjusted reaction = split1_ms - reaction_offset_ms can be recomputed and the
+// offset re-tuned later without losing anything.
 
 import * as SQLite from 'expo-sqlite';
+
+export const DEFAULT_REACTION_OFFSET_MS = 150;
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
@@ -33,14 +41,62 @@ export async function initDb(): Promise<void> {
       status TEXT NOT NULL,
       raw_json TEXT,
       created_at INTEGER NOT NULL,
+      reaction_offset_ms INTEGER NOT NULL DEFAULT 0,
       synced INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT NOT NULL
+    );
   `);
+
+  // Migration for DBs created before reaction_offset_ms existed.
+  const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(runs)');
+  if (!cols.some((c) => c.name === 'reaction_offset_ms')) {
+    await db.execAsync('ALTER TABLE runs ADD COLUMN reaction_offset_ms INTEGER NOT NULL DEFAULT 0');
+  }
 }
 
 function newId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+// ---- settings (key/value) ----
+export async function getSetting(key: string): Promise<string | null> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ value: string }>('SELECT value FROM settings WHERE key = ?', [
+    key,
+  ]);
+  return row?.value ?? null;
+}
+
+export async function setSetting(key: string, value: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [key, value],
+  );
+}
+
+export async function getReactionOffsetMs(): Promise<number> {
+  const v = await getSetting('reaction_offset_ms');
+  const n = v == null ? DEFAULT_REACTION_OFFSET_MS : parseInt(v, 10);
+  return Number.isFinite(n) ? n : DEFAULT_REACTION_OFFSET_MS;
+}
+
+export async function setReactionOffsetMs(ms: number): Promise<void> {
+  await setSetting('reaction_offset_ms', String(Math.max(0, Math.round(ms))));
+}
+
+export async function getMeasuredAudioLatencyMs(): Promise<number | null> {
+  const v = await getSetting('measured_audio_latency_ms');
+  const n = v == null ? NaN : parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+export async function setMeasuredAudioLatencyMs(ms: number): Promise<void> {
+  await setSetting('measured_audio_latency_ms', String(Math.round(ms)));
 }
 
 // A session = one calendar day of runs (YYYY-MM-DD). Created lazily on first run.
@@ -66,6 +122,7 @@ export type RunInput = {
   totalMs: number;
   split1Ms: number;
   split2Ms: number;
+  reactionOffsetMs?: number;
   status?: string;
   rawJson?: string;
 };
@@ -81,8 +138,8 @@ export async function saveRun(r: RunInput): Promise<void> {
   const now = Date.now();
   await db.runAsync(
     `INSERT INTO runs
-       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, synced)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     [
       newId(),
       sessionId,
@@ -95,6 +152,7 @@ export async function saveRun(r: RunInput): Promise<void> {
       r.status ?? 'valid',
       r.rawJson ?? null,
       now,
+      r.reactionOffsetMs ?? 0,
     ],
   );
 }
@@ -104,7 +162,7 @@ export type SessionRow = {
   name: string;
   created_at: number;
   runCount: number;
-  bestMs: number | null;
+  bestMs: number | null; // best adjusted total (total_ms - reaction_offset_ms) of valid runs
 };
 
 export async function getSessions(): Promise<SessionRow[]> {
@@ -112,7 +170,7 @@ export async function getSessions(): Promise<SessionRow[]> {
   return db.getAllAsync<SessionRow>(`
     SELECT s.id, s.name, s.created_at,
            COUNT(r.id) AS runCount,
-           MIN(CASE WHEN r.status = 'valid' THEN r.total_ms END) AS bestMs
+           MIN(CASE WHEN r.status = 'valid' THEN r.total_ms - r.reaction_offset_ms END) AS bestMs
     FROM sessions s
     LEFT JOIN runs r ON r.session_id = s.id
     GROUP BY s.id
@@ -127,6 +185,7 @@ export type RunRow = {
   total_ms: number;
   split1_ms: number;
   split2_ms: number;
+  reaction_offset_ms: number;
   status: string;
   created_at: number;
 };
@@ -134,7 +193,7 @@ export type RunRow = {
 export async function getRuns(sessionId: string): Promise<RunRow[]> {
   const db = await getDb();
   return db.getAllAsync<RunRow>(
-    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, status, created_at FROM runs WHERE session_id = ? ORDER BY run_index ASC',
+    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, reaction_offset_ms, status, created_at FROM runs WHERE session_id = ? ORDER BY run_index ASC',
     [sessionId],
   );
 }

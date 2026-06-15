@@ -7,6 +7,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import { GateProvider } from './src/ble/GateProvider';
+import { SettingsProvider } from './src/settings/SettingsProvider';
 import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
@@ -22,8 +23,9 @@ export default function App() {
   }, []);
 
   return (
-    <GateProvider>
-      <View style={styles.root}>
+    <SettingsProvider>
+      <GateProvider>
+        <View style={styles.root}>
         <StatusBar style="light" />
         <View style={styles.screens}>
           <View style={[styles.fill, tab !== 'timer' && styles.hidden]}>
@@ -46,8 +48,9 @@ export default function App() {
           <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
           <TabButton label="Debug" active={tab === 'debug'} onPress={() => setTab('debug')} />
         </View>
-      </View>
-    </GateProvider>
+        </View>
+      </GateProvider>
+    </SettingsProvider>
   );
 }
 

@@ -14,6 +14,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { setAudioModeAsync, useAudioPlayer, type AudioPlayer } from 'expo-audio';
 
 import { useGate } from '../ble/GateProvider';
+import { useSettings } from '../settings/SettingsProvider';
 import { Evt, GateState, STATE_NAME } from '../ble/constants';
 import type { LastResult } from '../ble/events';
 import { saveRun } from '../db/database';
@@ -37,10 +38,12 @@ const toResult = (lr: LastResult): Result => ({
 export default function TimerScreen() {
   const gate = useGate();
   const { subscribe, gateStatus, status, readStatusNow, readLastResultNow } = gate;
+  const { reactionOffsetMs, setMeasuredAudioLatencyMs } = useSettings();
 
   const marks = useAudioPlayer(require('../../assets/sounds/marks.wav'));
   const set = useAudioPlayer(require('../../assets/sounds/set.wav'));
-  const go = useAudioPlayer(require('../../assets/sounds/go.wav'));
+  // Tight status updates so we can timestamp when the GO beep actually starts.
+  const go = useAudioPlayer(require('../../assets/sounds/go.wav'), { updateInterval: 50 });
 
   const [runState, setRunState] = useState<RunState>('idle');
   const [phaseLabel, setPhaseLabel] = useState('');
@@ -55,6 +58,11 @@ export default function TimerScreen() {
   const finishedRef = useRef(false);
   const activeRef = useRef(false);
   const goPreSeekedRef = useRef(false);
+  const goPlayedAtRef = useRef<number | null>(null); // when go.play() was called
+  const offsetRef = useRef(reactionOffsetMs); // latest offset, read at save time
+  useEffect(() => {
+    offsetRef.current = reactionOffsetMs;
+  }, [reactionOffsetMs]);
 
   // Audio: preload + warm up the output pipeline so the first real cue is low-latency.
   useEffect(() => {
@@ -82,6 +90,26 @@ export default function TimerScreen() {
       cancelled = true;
     };
   }, [marks, set, go]);
+
+  // Measure phone-side beep latency: the gap between calling go.play() (on GO
+  // event arrival) and the audio actually advancing. This is the AUDIO-pipeline
+  // component of the total beep latency; the BLE-delivery component is not
+  // directly measurable here without clock sync (t0_us from the GO event is the
+  // gate's micros() and can't be mapped to phone time), so the applied offset
+  // (Calibration screen) covers the total. Precision is bounded by updateInterval.
+  useEffect(() => {
+    const sub = go.addListener('playbackStatusUpdate', (st) => {
+      if (goPlayedAtRef.current != null && st.playing && st.currentTime > 0) {
+        const measured = Math.round(nowMs() - goPlayedAtRef.current);
+        goPlayedAtRef.current = null;
+        if (measured >= 0 && measured < 2000) {
+          setMeasuredAudioLatencyMs(measured);
+          console.log(`[audio] GO play→start latency ≈ ${measured}ms`);
+        }
+      }
+    });
+    return () => sub.remove();
+  }, [go, setMeasuredAudioLatencyMs]);
 
   const playCue = useCallback((p: AudioPlayer) => {
     try {
@@ -128,18 +156,27 @@ export default function TimerScreen() {
       setLiveMs(r.totalMs);
       setPhaseLabel('');
       setRunState('finished');
-      console.log(`[FINISH:${src}] mode=${r.mode} total=${r.totalMs} s1=${r.split1Ms} s2=${r.split2Ms}`);
-      setDbg(`finish(${src}) ${fmt(r.totalMs, 3)}s · saving…`);
+      // Latency math (Mode 2): the athlete reacts to the phone beep, which trails
+      // the gate's GO by ~offset ms, so the gate's raw reaction (split1) is
+      // inflated by that. adjusted_reaction = raw_split1 - offset; adjusted_total
+      // = raw_total - offset (split2, gate1→gate2, is unaffected). We store the
+      // RAW gate values plus the offset applied, so adjusted is derivable and the
+      // offset can be re-tuned later. Mode 1 has no reaction, so offset = 0.
+      const offset = r.mode === 2 ? offsetRef.current : 0;
+      console.log(`[FINISH:${src}] mode=${r.mode} total=${r.totalMs} s1=${r.split1Ms} s2=${r.split2Ms} offset=${offset}`);
+      setDbg(`finish(${src}) raw ${fmt(r.totalMs, 3)}s · offset ${offset}ms · saving…`);
       saveRun({
         mode: r.mode,
-        totalMs: r.totalMs,
-        split1Ms: r.split1Ms,
+        totalMs: r.totalMs, // RAW authoritative (gate clock)
+        split1Ms: r.split1Ms, // RAW authoritative
         split2Ms: r.split2Ms,
+        reactionOffsetMs: offset,
         status: r.flags & 0x01 ? 'valid' : 'invalid',
       })
         .then(() => {
           console.log('[saveRun] ok');
-          setDbg(`finish(${src}) ${fmt(r.totalMs, 3)}s · saved ✓`);
+          const shown = r.mode === 2 ? Math.max(0, r.totalMs - offset) : r.totalMs;
+          setDbg(`finish(${src}) ${fmt(shown, 3)}s · saved ✓`);
         })
         .catch((e) => {
           console.warn('[saveRun] FAILED', e);
@@ -207,9 +244,10 @@ export default function TimerScreen() {
           // Fire audio FIRST, before any React state work, to minimise latency.
           try {
             if (!goPreSeekedRef.current) go.seekTo(0);
+            goPlayedAtRef.current = nowMs(); // mark for latency measurement
             go.play();
           } catch {
-            /* ignore */
+            goPlayedAtRef.current = null;
           }
           goPreSeekedRef.current = false;
           setPhaseLabel('GO!');
@@ -282,7 +320,13 @@ export default function TimerScreen() {
   const connected = status === 'connected';
   const isM2Armed = gateState === GateState.M2Armed;
   const isIdleState = gateState === GateState.Idle || gateState === null;
-  const big = result ? fmt(result.totalMs, 3) : fmt(liveMs, runState === 'running' ? 2 : 3);
+  const offset = reactionOffsetMs;
+  const adjReactionMs = result && result.mode === 2 ? Math.max(0, result.split1Ms - offset) : 0;
+  const adjTotalMs =
+    result && result.mode === 2 ? Math.max(0, result.totalMs - offset) : (result?.totalMs ?? 0);
+  const big = result
+    ? fmt(result.mode === 2 ? adjTotalMs : result.totalMs, 3)
+    : fmt(liveMs, runState === 'running' ? 2 : 3);
 
   return (
     <View style={styles.container}>
@@ -295,9 +339,10 @@ export default function TimerScreen() {
 
         {result && result.mode === 2 ? (
           <View style={styles.splits}>
-            <Split label="Reaction → G1" ms={result.split1Ms} />
+            <Split label="Reaction → G1" ms={adjReactionMs} raw={result.split1Ms} />
             <Split label="G1 → G2" ms={result.split2Ms} />
-            <Split label="Total" ms={result.totalMs} strong />
+            <Split label="Total" ms={adjTotalMs} raw={result.totalMs} strong />
+            <Text style={styles.offsetNote}>adjusted · −{offset} ms beep-latency offset</Text>
           </View>
         ) : null}
 
@@ -380,11 +425,24 @@ function ConnChip() {
   );
 }
 
-function Split({ label, ms, strong }: { label: string; ms: number; strong?: boolean }) {
+function Split({
+  label,
+  ms,
+  raw,
+  strong,
+}: {
+  label: string;
+  ms: number;
+  raw?: number;
+  strong?: boolean;
+}) {
   return (
     <View style={styles.splitRow}>
       <Text style={[styles.splitLabel, strong && styles.splitStrong]}>{label}</Text>
-      <Text style={[styles.splitVal, strong && styles.splitStrong]}>{fmt(ms, 3)}s</Text>
+      <View style={styles.splitValCol}>
+        <Text style={[styles.splitVal, strong && styles.splitStrong]}>{fmt(ms, 3)}s</Text>
+        {raw != null ? <Text style={styles.splitRaw}>raw {fmt(raw, 3)}s</Text> : null}
+      </View>
     </View>
   );
 }
@@ -434,10 +492,13 @@ const styles = StyleSheet.create({
   timerDone: { color: '#34d399' },
   unit: { color: '#64748b', fontSize: 14, marginTop: -6 },
   splits: { marginTop: 20, width: '70%' },
-  splitRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 },
+  splitRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
   splitLabel: { color: '#94a3b8', fontSize: 15 },
+  splitValCol: { alignItems: 'flex-end' },
   splitVal: { color: '#e2e8f0', fontSize: 15, fontVariant: ['tabular-nums'] },
+  splitRaw: { color: '#475569', fontSize: 11, fontVariant: ['tabular-nums'] },
   splitStrong: { color: '#fff', fontWeight: '800' },
+  offsetNote: { color: '#64748b', fontSize: 11, marginTop: 8, textAlign: 'center' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 24, textAlign: 'center' },
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
   controls: { paddingBottom: 12 },
