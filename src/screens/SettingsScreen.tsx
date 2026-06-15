@@ -5,7 +5,8 @@ import { useEffect, useState } from 'react';
 import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import Constants from 'expo-constants';
 
-import { useSettings } from '../settings/SettingsProvider';
+import { useSettings, type LatencySample } from '../settings/SettingsProvider';
+import { useGate } from '../ble/GateProvider';
 import { DEFAULT_REACTION_OFFSET_MS } from '../db/database';
 import { PROTO_VERSION } from '../ble/constants';
 
@@ -16,8 +17,28 @@ const DONATE_URL = 'https://example.com/donate';
 
 const APP_VERSION = Constants.expoConfig?.version ?? '1.0.0';
 
+type Stats = { n: number; mean: number; sd: number; min: number; max: number };
+function stats(values: number[]): Stats | null {
+  if (values.length === 0) return null;
+  const n = values.length;
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+  return { n, mean, sd: Math.sqrt(variance), min: Math.min(...values), max: Math.max(...values) };
+}
+const pick = (s: LatencySample[], key: 'beepLatency' | 'bleOneway' | 'audioGap'): number[] =>
+  s.map((x) => x[key]).filter((v): v is number => v != null);
+
 export default function SettingsScreen() {
-  const { reactionOffsetMs, measuredAudioLatencyMs, setReactionOffsetMs } = useSettings();
+  const {
+    reactionOffsetMs,
+    measuredAudioLatencyMs,
+    setReactionOffsetMs,
+    correctionMode,
+    setCorrectionMode,
+    latencySamples,
+  } = useSettings();
+  const gate = useGate();
+  const connected = gate.status === 'connected';
   const [draft, setDraft] = useState(String(reactionOffsetMs));
 
   useEffect(() => {
@@ -89,6 +110,55 @@ export default function SettingsScreen() {
         </Pressable>
       </Section>
 
+      <Section title="Reaction correction">
+        <View style={styles.toggleRow}>
+          <Toggle
+            label="Synced (per-run)"
+            active={correctionMode === 'synced'}
+            onPress={() => setCorrectionMode('synced')}
+          />
+          <Toggle
+            label="Fixed offset"
+            active={correctionMode === 'fixed'}
+            onPress={() => setCorrectionMode('fixed')}
+          />
+        </View>
+        <Text style={styles.help}>
+          Synced computes each run&apos;s exact beep latency from clock sync (cancels run-to-run
+          jitter) and falls back to the fixed offset when no clock anchor is available.
+        </Text>
+        <View style={styles.measuredRow}>
+          <Text style={styles.measuredText}>
+            {gate.clockSync
+              ? `Synced · RTT ${Math.round(gate.clockSync.minRttMs)}/${Math.round(
+                  gate.clockSync.medianRttMs,
+                )}/${Math.round(gate.clockSync.maxRttMs)} ms (min/med/max, n=${gate.clockSync.samples})`
+              : connected
+                ? 'Syncing clock…'
+                : 'Connect to sync the clock.'}
+          </Text>
+          <Pressable onPress={() => gate.syncClock()} hitSlop={6} disabled={!connected}>
+            <Text style={[styles.link, !connected && styles.dim]}>Re-sync</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.note}>
+          RTT is the closest observable proxy for the iOS connection interval (iOS doesn&apos;t
+          expose the negotiated value). Lower and tighter RTT ⇒ better sync; residual sync error
+          ≈ RTT/2.
+        </Text>
+      </Section>
+
+      <Section title={`Measured latency (last ${latencySamples.length} runs)`}>
+        <StatBlock label="Beep latency" values={pick(latencySamples, 'beepLatency')} />
+        <StatBlock label="BLE one-way" values={pick(latencySamples, 'bleOneway')} />
+        <StatBlock label="Audio gap" values={pick(latencySamples, 'audioGap')} />
+        <Text style={styles.note}>
+          Stdev is the run-to-run jitter. Fixed leaves the full beep-latency stdev in your reaction
+          times; synced subtracts each run&apos;s measured latency, so the residual is ≈ sync error
+          (RTT/2) + audio-gap quantization (~16 ms). Lower stdev = more trustworthy.
+        </Text>
+      </Section>
+
       <Section title="Support EqualSplit">
         <Text style={styles.help}>
           EqualSplit is a low-cost, open sprint-timing system. If it's useful to you, a small
@@ -145,6 +215,31 @@ function Stepper({ label, onPress }: { label: string; onPress: () => void }) {
   );
 }
 
+function Toggle({ label, active, onPress }: { label: string; active: boolean; onPress: () => void }) {
+  return (
+    <Pressable onPress={onPress} style={[styles.toggle, active && styles.toggleActive]}>
+      <Text style={[styles.toggleText, active && styles.toggleTextActive]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function StatBlock({ label, values }: { label: string; values: number[] }) {
+  const s = stats(values);
+  return (
+    <View style={styles.statBlock}>
+      <Text style={styles.statBlockLabel}>{label}</Text>
+      {s ? (
+        <Text style={styles.statBlockVal}>
+          mean {s.mean.toFixed(0)} · sd {s.sd.toFixed(0)} · {s.min.toFixed(0)}–{s.max.toFixed(0)} ms
+          · n={s.n}
+        </Text>
+      ) : (
+        <Text style={styles.statBlockNone}>no data</Text>
+      )}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 12 },
@@ -180,6 +275,35 @@ const styles = StyleSheet.create({
   link: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
   note: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 8 },
   dim: { opacity: 0.5 },
+  toggleRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  toggle: {
+    flex: 1,
+    backgroundColor: '#0b0e13',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#243042',
+  },
+  toggleActive: { backgroundColor: '#1d4ed8', borderColor: '#3b82f6' },
+  toggleText: { color: '#94a3b8', fontWeight: '700' },
+  toggleTextActive: { color: '#fff' },
+  statBlock: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#1f2733',
+  },
+  statBlockLabel: { color: '#cbd5e1', fontSize: 13 },
+  statBlockVal: {
+    color: '#9fe6a0',
+    fontSize: 12,
+    fontFamily: undefined,
+    fontVariant: ['tabular-nums'],
+  },
+  statBlockNone: { color: '#475569', fontSize: 12 },
   donate: { backgroundColor: '#db2777', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   donateText: { color: '#fff', fontSize: 16, fontWeight: '800' },
   aboutRow: {

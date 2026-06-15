@@ -29,9 +29,21 @@ import {
 import { Op } from './constants';
 import { parseEvent, parseStatus, type GateEvent, type GateStatus, type LastResult } from './events';
 import { parseLastResult } from './events';
+import {
+  buildAnchor,
+  gateUsToPhoneMs,
+  type ClockAnchor,
+  type ClockSyncResult,
+  type PingSample,
+} from './clockSync';
+
+const perfNow = () =>
+  typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
+const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export type ConnStatus = 'idle' | 'scanning' | 'connecting' | 'connected' | 'reconnecting';
-type EventListener = (raw: Uint8Array, parsed: GateEvent | null) => void;
+// atMs = phone monotonic timestamp when the notification was delivered to JS.
+type EventListener = (raw: Uint8Array, parsed: GateEvent | null, atMs: number) => void;
 
 type GateContextValue = {
   adapterOn: boolean;
@@ -51,6 +63,9 @@ type GateContextValue = {
   goNow: () => Promise<void>;
   readStatusNow: () => Promise<GateStatus | null>;
   readLastResultNow: () => Promise<LastResult | null>;
+  clockSync: ClockSyncResult | null;
+  syncClock: (pings?: number) => Promise<ClockSyncResult | null>;
+  gateToPhoneMs: (gateUs: number) => number | null;
   subscribe: (cb: EventListener) => () => void;
 };
 
@@ -77,6 +92,7 @@ export function GateProvider({ children }: { children: ReactNode }) {
   const [device, setDevice] = useState<Device | null>(null);
   const [gateStatus, setGateStatus] = useState<GateStatus | null>(null);
   const [lastResult, setLastResult] = useState<LastResult | null>(null);
+  const [clockSync, setClockSync] = useState<ClockSyncResult | null>(null);
 
   const listeners = useRef<Set<EventListener>>(new Set());
   const subs = useRef<Subscription[]>([]);
@@ -86,6 +102,9 @@ export function GateProvider({ children }: { children: ReactNode }) {
   const intentionalRef = useRef(false); // user asked to disconnect — don't auto-reconnect
   const reconnectingRef = useRef(false);
   const attemptReconnectRef = useRef<() => void>(() => {});
+  const clockAnchorRef = useRef<ClockAnchor | null>(null);
+  // When set, the next Status notification resolves a pending PING (clock sync).
+  const statusPingRef = useRef<((gateUs: number, atMs: number) => void) | null>(null);
 
   useEffect(() => {
     const s = onBleStateChange((st) => setAdapterOn(st === 'PoweredOn'));
@@ -141,8 +160,9 @@ export function GateProvider({ children }: { children: ReactNode }) {
         monitorEvents(
           d,
           (raw) => {
+            const atMs = perfNow(); // capture arrival ASAP, closest to BLE delivery
             const parsed = parseEvent(raw);
-            listeners.current.forEach((l) => l(raw, parsed));
+            listeners.current.forEach((l) => l(raw, parsed, atMs));
           },
           () => {},
         ),
@@ -151,8 +171,16 @@ export function GateProvider({ children }: { children: ReactNode }) {
         monitorStatus(
           d,
           (raw) => {
+            const atMs = perfNow();
             const s = parseStatus(raw);
-            if (s) setGateStatus(s);
+            if (s) {
+              setGateStatus(s);
+              const resolve = statusPingRef.current;
+              if (resolve) {
+                statusPingRef.current = null;
+                resolve(s.gateMicros, atMs);
+              }
+            }
           },
           () => {},
         ),
@@ -287,6 +315,52 @@ export function GateProvider({ children }: { children: ReactNode }) {
     }
   }, [device]);
 
+  // NTP-style clock sync: PING repeatedly; each PING makes the gate refresh the
+  // Status characteristic (gate_micros) and notify. RTT-midpoint anchoring on the
+  // minimum-RTT sample gives the gate<->phone offset (contract §8 / clockSync.ts).
+  const syncClock = useCallback(async (pings = 12): Promise<ClockSyncResult | null> => {
+    const d = deviceRef.current;
+    if (!d) return null;
+    const samples: PingSample[] = [];
+    for (let i = 0; i < pings; i++) {
+      const tSend = perfNow();
+      const got = await new Promise<{ gateUs: number; atMs: number } | null>((resolve) => {
+        statusPingRef.current = (gateUs, atMs) => resolve({ gateUs, atMs });
+        sendCommand(d, Op.Ping).catch(() => {});
+        setTimeout(() => {
+          if (statusPingRef.current) {
+            statusPingRef.current = null;
+            resolve(null);
+          }
+        }, 600);
+      });
+      if (got) {
+        const rttMs = got.atMs - tSend;
+        samples.push({ rttMs, gateUs: got.gateUs, midPhoneMs: tSend + rttMs / 2 });
+      }
+      await delay(40);
+    }
+    const result = buildAnchor(samples);
+    if (result) {
+      clockAnchorRef.current = result.anchor;
+      setClockSync(result);
+    }
+    return result;
+  }, []);
+
+  const gateToPhoneMs = useCallback((gateUs: number): number | null => {
+    return clockAnchorRef.current ? gateUsToPhoneMs(gateUs, clockAnchorRef.current) : null;
+  }, []);
+
+  // Auto-sync once whenever we (re)connect (the gate is idle then).
+  useEffect(() => {
+    if (status === 'connected') {
+      const t = setTimeout(() => syncClock(), 1200);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [status, syncClock]);
+
   const send = useCallback(
     async (op: Op, a0 = 0, a1 = 0) => {
       if (device) await sendCommand(device, op, a0, a1);
@@ -318,6 +392,9 @@ export function GateProvider({ children }: { children: ReactNode }) {
     goNow,
     readStatusNow,
     readLastResultNow,
+    clockSync,
+    syncClock,
+    gateToPhoneMs,
     subscribe,
   };
 
