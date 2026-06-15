@@ -107,6 +107,8 @@ export function GateProvider({ children }: { children: ReactNode }) {
   const clockAnchorRef = useRef<ClockAnchor | null>(null);
   // When set, the next Status notification resolves a pending PING (clock sync).
   const statusPingRef = useRef<((gateUs: number, atMs: number) => void) | null>(null);
+  const syncInFlightRef = useRef(false); // a sync run is in progress — don't restart it
+  const autoSyncedDeviceRef = useRef<string | null>(null); // device id already auto-synced
 
   useEffect(() => {
     const s = onBleStateChange((st) => setAdapterOn(st === 'PoweredOn'));
@@ -326,26 +328,33 @@ export function GateProvider({ children }: { children: ReactNode }) {
   // Hard-capped at ~3s so it can never wedge the UI; falls back to fixed offset.
   const syncClock = useCallback(async (pings = 8): Promise<ClockSyncResult | null> => {
     const d = deviceRef.current;
-    console.log(`[syncClock] start (device=${d ? d.id : 'null'})`);
     if (!d) {
       console.warn('[syncClock] aborted: no device');
       return null;
     }
+    // Re-entrancy guard: a re-render / re-fired effect must NOT restart a run in
+    // progress, or it never completes a full sweep and never anchors.
+    if (syncInFlightRef.current) {
+      console.log('[syncClock] already in progress — ignoring re-trigger');
+      return null;
+    }
+    syncInFlightRef.current = true;
     setSyncing(true);
+    console.log(`[syncClock] start (device=${d.id})`);
     const samples: PingSample[] = [];
-    const deadline = perfNow() + 3000;
+    let result: ClockSyncResult | null = null;
     try {
+      const deadline = perfNow() + 3000;
       for (let i = 0; i < pings; i++) {
         if (perfNow() >= deadline) {
           console.log('[syncClock] 3s deadline reached — stopping');
           break;
         }
         const tSend = perfNow();
-        console.log(`[syncClock] ping ${i + 1}/${pings}: writing PING…`);
         const got = await new Promise<{ gateUs: number; atMs: number } | null>((resolve) => {
           statusPingRef.current = (gateUs, atMs) => resolve({ gateUs, atMs });
           sendCommand(d, Op.Ping)
-            .then(() => console.log(`[syncClock] ping ${i + 1}: write OK`))
+            .then(() => console.log(`[syncClock] ping ${i + 1}/${pings}: write OK`))
             .catch((e) => console.warn(`[syncClock] ping ${i + 1}: write FAILED`, String(e)));
           setTimeout(() => {
             if (statusPingRef.current) {
@@ -359,20 +368,22 @@ export function GateProvider({ children }: { children: ReactNode }) {
           console.log(`[syncClock] ping ${i + 1}: reply rtt=${rttMs.toFixed(1)}ms`);
           samples.push({ rttMs, gateUs: got.gateUs, midPhoneMs: tSend + rttMs / 2 });
         } else {
-          console.log(`[syncClock] ping ${i + 1}: TIMEOUT (no Status notification back)`);
+          console.log(`[syncClock] ping ${i + 1}: TIMEOUT (no reply)`);
         }
         await delay(30);
       }
+      result = buildAnchor(samples);
+      console.log(`[syncClock] done: ${samples.length} sample(s); anchor=${result ? 'set' : 'NONE → fixed offset'}`);
+      if (result) {
+        clockAnchorRef.current = result.anchor;
+        setClockSync(result);
+      }
     } catch (e) {
       console.warn('[syncClock] threw:', String(e));
+    } finally {
+      syncInFlightRef.current = false;
+      setSyncing(false);
     }
-    const result = buildAnchor(samples);
-    console.log(`[syncClock] done: ${samples.length} sample(s); anchor=${result ? 'set' : 'NONE → fixed offset'}`);
-    if (result) {
-      clockAnchorRef.current = result.anchor;
-      setClockSync(result);
-    }
-    setSyncing(false);
     return result;
   }, []);
 
@@ -380,14 +391,21 @@ export function GateProvider({ children }: { children: ReactNode }) {
     return clockAnchorRef.current ? gateUsToPhoneMs(gateUs, clockAnchorRef.current) : null;
   }, []);
 
-  // Auto-sync once whenever we (re)connect (the gate is idle then).
+  // Auto-sync EXACTLY ONCE per connection. Keyed on the device so it can't be
+  // re-fired by unrelated state updates during the sync; the autoSyncedDeviceRef
+  // guard makes it idempotent, and leaving 'connected' resets it so the next
+  // (re)connection syncs again. Manual Re-sync (gate.syncClock()) bypasses this.
   useEffect(() => {
-    if (status === 'connected') {
-      const t = setTimeout(() => syncClock(), 1200);
-      return () => clearTimeout(t);
+    if (status !== 'connected') {
+      autoSyncedDeviceRef.current = null;
+      return undefined;
     }
-    return undefined;
-  }, [status, syncClock]);
+    const d = deviceRef.current;
+    if (!d || autoSyncedDeviceRef.current === d.id) return undefined;
+    autoSyncedDeviceRef.current = d.id;
+    const t = setTimeout(() => syncClock(), 1200);
+    return () => clearTimeout(t);
+  }, [status, device, syncClock]);
 
   const send = useCallback(
     async (op: Op, a0 = 0, a1 = 0) => {
