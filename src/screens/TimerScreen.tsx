@@ -396,25 +396,30 @@ function hintFor(connected: boolean, gs: GateState | null, rs: RunState): string
 
 function ConnChip() {
   const gate = useGate();
+  const s = gate.status;
   const label =
-    gate.status === 'connected'
+    s === 'connected'
       ? `Gate connected${gate.gateStatus ? ` · ${STATE_NAME[gate.gateStatus.state] ?? ''}` : ''}${
           gate.gateStatus ? ` · runs ${gate.gateStatus.runCount}` : ''
         }${gate.gateStatus && !gate.gateStatus.finishLinkOk ? ' · finish ⚠' : ''}`
-      : gate.status === 'scanning'
+      : s === 'scanning'
         ? 'Scanning…'
-        : gate.status === 'connecting'
+        : s === 'connecting'
           ? 'Connecting…'
-          : 'Disconnected';
-  const busy = gate.status === 'scanning' || gate.status === 'connecting';
+          : s === 'reconnecting'
+            ? 'Reconnecting…'
+            : 'Disconnected';
+  const busy = s === 'scanning' || s === 'connecting' || s === 'reconnecting';
+  const dotStyle = s === 'connected' ? styles.dotOn : busy ? styles.dotBusy : styles.dotOff;
+  const showDisconnect = s === 'connected' || s === 'reconnecting';
   return (
     <View style={styles.chipRow}>
-      <View style={[styles.dot, gate.status === 'connected' ? styles.dotOn : styles.dotOff]} />
+      <View style={[styles.dot, dotStyle]} />
       <Text style={styles.chipText}>{label}</Text>
       <View style={{ flex: 1 }} />
-      {gate.status === 'connected' ? (
+      {showDisconnect ? (
         <Pressable onPress={gate.disconnect} hitSlop={8}>
-          <Text style={styles.chipAction}>Disconnect</Text>
+          <Text style={styles.chipAction}>{s === 'reconnecting' ? 'Cancel' : 'Disconnect'}</Text>
         </Pressable>
       ) : (
         <Pressable onPress={gate.quickConnect} disabled={busy || !gate.adapterOn} hitSlop={8}>
@@ -484,6 +489,7 @@ const styles = StyleSheet.create({
   dot: { width: 10, height: 10, borderRadius: 5 },
   dotOn: { backgroundColor: '#22c55e' },
   dotOff: { backgroundColor: '#64748b' },
+  dotBusy: { backgroundColor: '#f59e0b' },
   chipText: { color: '#cbd5e1', fontSize: 13 },
   chipAction: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },

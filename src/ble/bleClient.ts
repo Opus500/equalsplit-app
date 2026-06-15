@@ -36,7 +36,8 @@ export function stopScan(): void {
 }
 
 export async function connect(device: Device): Promise<Device> {
-  const connected = await device.connect({ requestMTU: 64 });
+  // timeout so a failed (re)connect attempt rejects instead of hanging forever.
+  const connected = await device.connect({ requestMTU: 64, timeout: 10000 });
   await connected.discoverAllServicesAndCharacteristics();
   // Ask for the fastest connection interval (~11-15ms) so live timing feels tight.
   // Android only: iOS connection parameters are dictated by the peripheral (the

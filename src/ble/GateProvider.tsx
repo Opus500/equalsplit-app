@@ -30,7 +30,7 @@ import { Op } from './constants';
 import { parseEvent, parseStatus, type GateEvent, type GateStatus, type LastResult } from './events';
 import { parseLastResult } from './events';
 
-export type ConnStatus = 'idle' | 'scanning' | 'connecting' | 'connected';
+export type ConnStatus = 'idle' | 'scanning' | 'connecting' | 'connected' | 'reconnecting';
 type EventListener = (raw: Uint8Array, parsed: GateEvent | null) => void;
 
 type GateContextValue = {
@@ -82,6 +82,10 @@ export function GateProvider({ children }: { children: ReactNode }) {
   const subs = useRef<Subscription[]>([]);
   const disconnectSub = useRef<Subscription | null>(null);
   const scanTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deviceRef = useRef<Device | null>(null);
+  const intentionalRef = useRef(false); // user asked to disconnect — don't auto-reconnect
+  const reconnectingRef = useRef(false);
+  const attemptReconnectRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const s = onBleStateChange((st) => setAdapterOn(st === 'PoweredOn'));
@@ -104,53 +108,106 @@ export function GateProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => () => cleanupConnection(), [cleanupConnection]);
 
+  // Wire up a freshly-connected device: monitors, reads, and a disconnect handler
+  // that auto-reconnects unless the user asked to disconnect. Reused on both the
+  // initial connect and every reconnect so state always resyncs.
+  const attachDevice = useCallback(
+    (d: Device) => {
+      cleanupConnection();
+      deviceRef.current = d;
+      setDevice(d);
+      setStatus('connected');
+
+      disconnectSub.current = manager.onDeviceDisconnected(d.id, () => {
+        cleanupConnection();
+        setDevice(null);
+        setGateStatus(null);
+        if (intentionalRef.current) {
+          setStatus('idle');
+          return;
+        }
+        attemptReconnectRef.current();
+      });
+
+      // Resync on (re)connect: re-read Status + LastResult (reliable reads).
+      readStatus(d)
+        .then((st) => st && setGateStatus(parseStatus(st)))
+        .catch(() => {});
+      readLastResult(d)
+        .then((lr) => lr && setLastResult(parseLastResult(lr)))
+        .catch(() => {});
+
+      subs.current.push(
+        monitorEvents(
+          d,
+          (raw) => {
+            const parsed = parseEvent(raw);
+            listeners.current.forEach((l) => l(raw, parsed));
+          },
+          () => {},
+        ),
+      );
+      subs.current.push(
+        monitorStatus(
+          d,
+          (raw) => {
+            const s = parseStatus(raw);
+            if (s) setGateStatus(s);
+          },
+          () => {},
+        ),
+      );
+    },
+    [cleanupConnection],
+  );
+
+  // Retry reconnecting to the last device with backoff until it succeeds or the
+  // user cancels (disconnect). Each attempt fails fast via the connect timeout.
+  const attemptReconnect = useCallback(async () => {
+    const d = deviceRef.current;
+    if (!d || intentionalRef.current || reconnectingRef.current) {
+      if (!d) setStatus('idle');
+      return;
+    }
+    reconnectingRef.current = true;
+    setStatus('reconnecting');
+    for (let i = 0; i < 10; i++) {
+      if (intentionalRef.current) break;
+      try {
+        const rd = await connect(d);
+        reconnectingRef.current = false;
+        attachDevice(rd);
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, Math.min(1000 + i * 500, 4000)));
+      }
+    }
+    reconnectingRef.current = false;
+    if (!intentionalRef.current) deviceRef.current = null;
+    setStatus('idle');
+  }, [attachDevice]);
+
+  useEffect(() => {
+    attemptReconnectRef.current = () => {
+      attemptReconnect();
+    };
+  }, [attemptReconnect]);
+
   const connectTo = useCallback(
     async (target: Device) => {
       stopScan();
       if (scanTimer.current) clearTimeout(scanTimer.current);
+      intentionalRef.current = false;
+      reconnectingRef.current = false;
       setStatus('connecting');
       try {
         const d = await connect(target);
-        setDevice(d);
-        setStatus('connected');
-
-        disconnectSub.current = manager.onDeviceDisconnected(d.id, () => {
-          cleanupConnection();
-          setDevice(null);
-          setGateStatus(null);
-          setStatus('idle');
-        });
-
-        const st = await readStatus(d);
-        if (st) setGateStatus(parseStatus(st));
-        const lr = await readLastResult(d);
-        if (lr) setLastResult(parseLastResult(lr));
-
-        subs.current.push(
-          monitorEvents(
-            d,
-            (raw) => {
-              const parsed = parseEvent(raw);
-              listeners.current.forEach((l) => l(raw, parsed));
-            },
-            () => {},
-          ),
-        );
-        subs.current.push(
-          monitorStatus(
-            d,
-            (raw) => {
-              const s = parseStatus(raw);
-              if (s) setGateStatus(s);
-            },
-            () => {},
-          ),
-        );
+        attachDevice(d);
       } catch {
         setStatus('idle');
       }
     },
-    [cleanupConnection],
+    [attachDevice],
   );
 
   const scan = useCallback(async () => {
@@ -189,14 +246,20 @@ export function GateProvider({ children }: { children: ReactNode }) {
   }, [connectTo]);
 
   const disconnect = useCallback(async () => {
-    if (device) {
+    intentionalRef.current = true; // stop any auto-reconnect loop
+    reconnectingRef.current = false;
+    const d = deviceRef.current;
+    deviceRef.current = null;
+    if (d) {
       try {
-        await device.cancelConnection();
+        await d.cancelConnection();
       } catch {
         /* already gone */
       }
     }
-  }, [device]);
+    setDevice(null);
+    setStatus('idle');
+  }, []);
 
   // Reliable on-demand reads (GATT reads don't get dropped the way notifications
   // can), used by the Timer screen to reconcile/recover from missed events.
