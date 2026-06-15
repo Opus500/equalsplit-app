@@ -41,6 +41,12 @@ const perfNow = () =>
   typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Module-level (NOT React state/refs) so a provider remount or re-render can't
+// reset them mid-sync. syncInFlight serializes runs; syncCallId tags each call.
+let syncInFlight = false;
+let syncCallId = 0;
+let lastAutoSyncedDeviceId: string | null = null;
+
 export type ConnStatus = 'idle' | 'scanning' | 'connecting' | 'connected' | 'reconnecting';
 // atMs = phone monotonic timestamp when the notification was delivered to JS.
 type EventListener = (raw: Uint8Array, parsed: GateEvent | null, atMs: number) => void;
@@ -65,7 +71,7 @@ type GateContextValue = {
   readLastResultNow: () => Promise<LastResult | null>;
   clockSync: ClockSyncResult | null;
   syncing: boolean;
-  syncClock: (pings?: number) => Promise<ClockSyncResult | null>;
+  syncClock: (reason?: string) => Promise<ClockSyncResult | null>;
   gateToPhoneMs: (gateUs: number) => number | null;
   subscribe: (cb: EventListener) => () => void;
 };
@@ -107,13 +113,21 @@ export function GateProvider({ children }: { children: ReactNode }) {
   const clockAnchorRef = useRef<ClockAnchor | null>(null);
   // When set, the next Status notification resolves a pending PING (clock sync).
   const statusPingRef = useRef<((gateUs: number, atMs: number) => void) | null>(null);
-  const syncInFlightRef = useRef(false); // a sync run is in progress — don't restart it
-  const autoSyncedDeviceRef = useRef<string | null>(null); // device id already auto-synced
 
   useEffect(() => {
     const s = onBleStateChange((st) => setAdapterOn(st === 'PoweredOn'));
     return () => s.remove();
   }, []);
+
+  // Diagnostics: a remount or a flapping connection would defeat per-instance
+  // guards. MOUNT/UNMOUNT spam or status thrash during a clock sync = the source.
+  useEffect(() => {
+    console.log('[GateProvider] MOUNT');
+    return () => console.log('[GateProvider] UNMOUNT');
+  }, []);
+  useEffect(() => {
+    console.log(`[GateProvider] status -> ${status}`);
+  }, [status]);
 
   const subscribe = useCallback((cb: EventListener) => {
     listeners.current.add(cb);
@@ -326,36 +340,38 @@ export function GateProvider({ children }: { children: ReactNode }) {
   // path as the working ARM command; if pings reach the gate but no sample lands,
   // it's the notification reply being lost — the logs below show exactly that.
   // Hard-capped at ~3s so it can never wedge the UI; falls back to fixed offset.
-  const syncClock = useCallback(async (pings = 8): Promise<ClockSyncResult | null> => {
+  const syncClock = useCallback(async (reason = 'manual'): Promise<ClockSyncResult | null> => {
+    const pings = 8;
+    const id = ++syncCallId;
     const d = deviceRef.current;
     if (!d) {
-      console.warn('[syncClock] aborted: no device');
+      console.warn(`[syncClock #${id}] aborted: no device (reason=${reason})`);
       return null;
     }
-    // Re-entrancy guard: a re-render / re-fired effect must NOT restart a run in
-    // progress, or it never completes a full sweep and never anchors.
-    if (syncInFlightRef.current) {
-      console.log('[syncClock] already in progress — ignoring re-trigger');
+    // Module-level re-entrancy guard: survives any remount/re-render, so a
+    // re-fired trigger can NEVER restart a run already in progress.
+    if (syncInFlight) {
+      console.log(`[syncClock #${id}] IGNORED — a sync is already in progress (reason=${reason})`);
       return null;
     }
-    syncInFlightRef.current = true;
+    syncInFlight = true;
     setSyncing(true);
-    console.log(`[syncClock] start (device=${d.id})`);
+    console.log(`[syncClock #${id}] START reason=${reason} device=${d.id}`);
     const samples: PingSample[] = [];
     let result: ClockSyncResult | null = null;
     try {
       const deadline = perfNow() + 3000;
       for (let i = 0; i < pings; i++) {
         if (perfNow() >= deadline) {
-          console.log('[syncClock] 3s deadline reached — stopping');
+          console.log(`[syncClock #${id}] 3s deadline reached — stopping`);
           break;
         }
         const tSend = perfNow();
         const got = await new Promise<{ gateUs: number; atMs: number } | null>((resolve) => {
           statusPingRef.current = (gateUs, atMs) => resolve({ gateUs, atMs });
           sendCommand(d, Op.Ping)
-            .then(() => console.log(`[syncClock] ping ${i + 1}/${pings}: write OK`))
-            .catch((e) => console.warn(`[syncClock] ping ${i + 1}: write FAILED`, String(e)));
+            .then(() => console.log(`[syncClock #${id}] ping ${i + 1}/${pings}: write OK`))
+            .catch((e) => console.warn(`[syncClock #${id}] ping ${i + 1}: write FAILED`, String(e)));
           setTimeout(() => {
             if (statusPingRef.current) {
               statusPingRef.current = null;
@@ -365,23 +381,23 @@ export function GateProvider({ children }: { children: ReactNode }) {
         });
         if (got) {
           const rttMs = got.atMs - tSend;
-          console.log(`[syncClock] ping ${i + 1}: reply rtt=${rttMs.toFixed(1)}ms`);
+          console.log(`[syncClock #${id}] ping ${i + 1}: reply rtt=${rttMs.toFixed(1)}ms`);
           samples.push({ rttMs, gateUs: got.gateUs, midPhoneMs: tSend + rttMs / 2 });
         } else {
-          console.log(`[syncClock] ping ${i + 1}: TIMEOUT (no reply)`);
+          console.log(`[syncClock #${id}] ping ${i + 1}: TIMEOUT (no reply)`);
         }
         await delay(30);
       }
       result = buildAnchor(samples);
-      console.log(`[syncClock] done: ${samples.length} sample(s); anchor=${result ? 'set' : 'NONE → fixed offset'}`);
+      console.log(`[syncClock #${id}] DONE: ${samples.length} sample(s); anchor=${result ? 'SET' : 'NONE → fixed offset'}`);
       if (result) {
         clockAnchorRef.current = result.anchor;
         setClockSync(result);
       }
     } catch (e) {
-      console.warn('[syncClock] threw:', String(e));
+      console.warn(`[syncClock #${id}] threw:`, String(e));
     } finally {
-      syncInFlightRef.current = false;
+      syncInFlight = false;
       setSyncing(false);
     }
     return result;
@@ -391,19 +407,20 @@ export function GateProvider({ children }: { children: ReactNode }) {
     return clockAnchorRef.current ? gateUsToPhoneMs(gateUs, clockAnchorRef.current) : null;
   }, []);
 
-  // Auto-sync EXACTLY ONCE per connection. Keyed on the device so it can't be
-  // re-fired by unrelated state updates during the sync; the autoSyncedDeviceRef
-  // guard makes it idempotent, and leaving 'connected' resets it so the next
-  // (re)connection syncs again. Manual Re-sync (gate.syncClock()) bypasses this.
+  // Auto-sync EXACTLY ONCE per connection. The dedupe key is module-level
+  // (lastAutoSyncedDeviceId), so even a provider remount can't cause a re-fire
+  // for the same device. Leaving 'connected' resets it so a real reconnect syncs.
+  // Manual Re-sync (gate.syncClock('manual')) bypasses this and the in-flight guard.
   useEffect(() => {
     if (status !== 'connected') {
-      autoSyncedDeviceRef.current = null;
+      lastAutoSyncedDeviceId = null;
       return undefined;
     }
     const d = deviceRef.current;
-    if (!d || autoSyncedDeviceRef.current === d.id) return undefined;
-    autoSyncedDeviceRef.current = d.id;
-    const t = setTimeout(() => syncClock(), 1200);
+    if (!d || lastAutoSyncedDeviceId === d.id) return undefined;
+    lastAutoSyncedDeviceId = d.id;
+    console.log(`[GateProvider] scheduling auto clock-sync for ${d.id}`);
+    const t = setTimeout(() => syncClock('auto'), 1200);
     return () => clearTimeout(t);
   }, [status, device, syncClock]);
 
