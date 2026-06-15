@@ -197,3 +197,22 @@ export async function getRuns(sessionId: string): Promise<RunRow[]> {
     [sessionId],
   );
 }
+
+// Delete a run; if its session is left empty, remove the session too.
+export async function deleteRun(id: string): Promise<void> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ session_id: string }>(
+    'SELECT session_id FROM runs WHERE id = ?',
+    [id],
+  );
+  await db.runAsync('DELETE FROM runs WHERE id = ?', [id]);
+  if (row) {
+    const c = await db.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM runs WHERE session_id = ?',
+      [row.session_id],
+    );
+    if ((c?.c ?? 0) === 0) {
+      await db.runAsync('DELETE FROM sessions WHERE id = ?', [row.session_id]);
+    }
+  }
+}

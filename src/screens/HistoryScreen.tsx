@@ -1,12 +1,16 @@
 // Session history. A session = one calendar day of runs. Tap a session to see
-// its runs. Reloads whenever the tab becomes active so new runs show up.
+// its runs, with a summary (best / average / count) and per-run delete. Times
+// shown are adjusted (raw total minus the stored reaction offset); Mode 1 has
+// offset 0 so adjusted == raw. Reloads whenever the tab becomes active.
 
 import { useCallback, useEffect, useState } from 'react';
-import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { getRuns, getSessions, type RunRow, type SessionRow } from '../db/database';
+import { deleteRun, getRuns, getSessions, type RunRow, type SessionRow } from '../db/database';
 
-const fmt = (ms: number) => (ms / 1000).toFixed(3);
+const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
+const adjTotal = (r: RunRow) => Math.max(0, r.total_ms - r.reaction_offset_ms);
+const adjReaction = (r: RunRow) => Math.max(0, r.split1_ms - r.reaction_offset_ms);
 
 export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
@@ -26,7 +30,36 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
     setRuns(await getRuns(s.id));
   }, []);
 
+  const confirmDelete = useCallback(
+    (run: RunRow) => {
+      Alert.alert('Delete run', `Delete run #${run.run_index} (${fmt(adjTotal(run))}s)?`, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            await deleteRun(run.id);
+            if (!selected) return;
+            const remaining = await getRuns(selected.id);
+            if (remaining.length === 0) {
+              setSelected(null);
+              await loadSessions();
+            } else {
+              setRuns(remaining);
+            }
+          },
+        },
+      ]);
+    },
+    [selected, loadSessions],
+  );
+
   if (selected) {
+    const valid = runs.filter((r) => r.status === 'valid');
+    const totals = valid.map(adjTotal);
+    const best = totals.length ? Math.min(...totals) : null;
+    const avg = totals.length ? totals.reduce((a, b) => a + b, 0) / totals.length : null;
+
     return (
       <View style={styles.container}>
         <View style={styles.headerRow}>
@@ -35,6 +68,13 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           </Pressable>
           <Text style={styles.title}>{selected.name}</Text>
         </View>
+
+        <View style={styles.summary}>
+          <Stat label="Runs" value={`${runs.length}`} />
+          <Stat label="Best" value={best != null ? `${fmt(best)}s` : '—'} />
+          <Stat label="Avg" value={avg != null ? `${fmt(avg)}s` : '—'} />
+        </View>
+
         <FlatList
           data={runs}
           keyExtractor={(r) => r.id}
@@ -46,10 +86,13 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
               <View style={{ flex: 1 }} />
               {item.mode === 2 ? (
                 <Text style={styles.runSplits}>
-                  {fmt(item.split1_ms)} / {fmt(item.split2_ms)}
+                  {fmt(adjReaction(item))} / {fmt(item.split2_ms)}
                 </Text>
               ) : null}
-              <Text style={styles.runTotal}>{fmt(item.total_ms)}s</Text>
+              <Text style={styles.runTotal}>{fmt(adjTotal(item))}s</Text>
+              <Pressable onPress={() => confirmDelete(item)} hitSlop={10} style={styles.del}>
+                <Text style={styles.delText}>✕</Text>
+              </Pressable>
             </View>
           )}
         />
@@ -73,13 +116,20 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
               </Text>
             </View>
             <View style={{ flex: 1 }} />
-            {item.bestMs != null ? (
-              <Text style={styles.sessBest}>best {fmt(item.bestMs)}s</Text>
-            ) : null}
+            {item.bestMs != null ? <Text style={styles.sessBest}>best {fmt(item.bestMs)}s</Text> : null}
             <Text style={styles.chev}>›</Text>
           </Pressable>
         )}
       />
+    </View>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.stat}>
+      <Text style={styles.statVal}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
     </View>
   );
 }
@@ -90,6 +140,16 @@ const styles = StyleSheet.create({
   back: { color: '#60a5fa', fontSize: 16, fontWeight: '600' },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
   empty: { color: '#64748b', marginTop: 24, textAlign: 'center' },
+  summary: {
+    flexDirection: 'row',
+    backgroundColor: '#161b22',
+    borderRadius: 12,
+    paddingVertical: 12,
+    marginBottom: 12,
+  },
+  stat: { flex: 1, alignItems: 'center' },
+  statVal: { color: '#fff', fontSize: 18, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  statLabel: { color: '#64748b', fontSize: 12, marginTop: 2 },
   sessRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -114,4 +174,6 @@ const styles = StyleSheet.create({
   runMode: { color: '#94a3b8', fontWeight: '700' },
   runSplits: { color: '#64748b', fontSize: 13, marginRight: 10, fontVariant: ['tabular-nums'] },
   runTotal: { color: '#fff', fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  del: { paddingHorizontal: 6, paddingVertical: 2 },
+  delText: { color: '#b4541f', fontSize: 16, fontWeight: '800' },
 });
