@@ -133,9 +133,11 @@ export default function SettingsScreen() {
               ? `Synced · RTT ${Math.round(gate.clockSync.minRttMs)}/${Math.round(
                   gate.clockSync.medianRttMs,
                 )}/${Math.round(gate.clockSync.maxRttMs)} ms (min/med/max, n=${gate.clockSync.samples})`
-              : connected
+              : gate.syncing
                 ? 'Syncing clock…'
-                : 'Connect to sync the clock.'}
+                : connected
+                  ? 'Clock sync unavailable — using fixed offset.'
+                  : 'Connect to sync the clock.'}
           </Text>
           <Pressable onPress={() => gate.syncClock()} hitSlop={6} disabled={!connected}>
             <Text style={[styles.link, !connected && styles.dim]}>Re-sync</Text>

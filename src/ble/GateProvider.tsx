@@ -64,6 +64,7 @@ type GateContextValue = {
   readStatusNow: () => Promise<GateStatus | null>;
   readLastResultNow: () => Promise<LastResult | null>;
   clockSync: ClockSyncResult | null;
+  syncing: boolean;
   syncClock: (pings?: number) => Promise<ClockSyncResult | null>;
   gateToPhoneMs: (gateUs: number) => number | null;
   subscribe: (cb: EventListener) => () => void;
@@ -93,6 +94,7 @@ export function GateProvider({ children }: { children: ReactNode }) {
   const [gateStatus, setGateStatus] = useState<GateStatus | null>(null);
   const [lastResult, setLastResult] = useState<LastResult | null>(null);
   const [clockSync, setClockSync] = useState<ClockSyncResult | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   const listeners = useRef<Set<EventListener>>(new Set());
   const subs = useRef<Subscription[]>([]);
@@ -316,35 +318,61 @@ export function GateProvider({ children }: { children: ReactNode }) {
   }, [device]);
 
   // NTP-style clock sync: PING repeatedly; each PING makes the gate refresh the
-  // Status characteristic (gate_micros) and notify. RTT-midpoint anchoring on the
-  // minimum-RTT sample gives the gate<->phone offset (contract §8 / clockSync.ts).
-  const syncClock = useCallback(async (pings = 12): Promise<ClockSyncResult | null> => {
+  // Status characteristic (gate_micros) and notify; the reply resolves the ping.
+  // NOTE: this depends on gate->phone NOTIFICATIONS, which drop on this setup
+  // (same root cause as the FINISH-recovery work). The write (PING) uses the SAME
+  // path as the working ARM command; if pings reach the gate but no sample lands,
+  // it's the notification reply being lost — the logs below show exactly that.
+  // Hard-capped at ~3s so it can never wedge the UI; falls back to fixed offset.
+  const syncClock = useCallback(async (pings = 8): Promise<ClockSyncResult | null> => {
     const d = deviceRef.current;
-    if (!d) return null;
+    console.log(`[syncClock] start (device=${d ? d.id : 'null'})`);
+    if (!d) {
+      console.warn('[syncClock] aborted: no device');
+      return null;
+    }
+    setSyncing(true);
     const samples: PingSample[] = [];
-    for (let i = 0; i < pings; i++) {
-      const tSend = perfNow();
-      const got = await new Promise<{ gateUs: number; atMs: number } | null>((resolve) => {
-        statusPingRef.current = (gateUs, atMs) => resolve({ gateUs, atMs });
-        sendCommand(d, Op.Ping).catch(() => {});
-        setTimeout(() => {
-          if (statusPingRef.current) {
-            statusPingRef.current = null;
-            resolve(null);
-          }
-        }, 600);
-      });
-      if (got) {
-        const rttMs = got.atMs - tSend;
-        samples.push({ rttMs, gateUs: got.gateUs, midPhoneMs: tSend + rttMs / 2 });
+    const deadline = perfNow() + 3000;
+    try {
+      for (let i = 0; i < pings; i++) {
+        if (perfNow() >= deadline) {
+          console.log('[syncClock] 3s deadline reached — stopping');
+          break;
+        }
+        const tSend = perfNow();
+        console.log(`[syncClock] ping ${i + 1}/${pings}: writing PING…`);
+        const got = await new Promise<{ gateUs: number; atMs: number } | null>((resolve) => {
+          statusPingRef.current = (gateUs, atMs) => resolve({ gateUs, atMs });
+          sendCommand(d, Op.Ping)
+            .then(() => console.log(`[syncClock] ping ${i + 1}: write OK`))
+            .catch((e) => console.warn(`[syncClock] ping ${i + 1}: write FAILED`, String(e)));
+          setTimeout(() => {
+            if (statusPingRef.current) {
+              statusPingRef.current = null;
+              resolve(null);
+            }
+          }, 350);
+        });
+        if (got) {
+          const rttMs = got.atMs - tSend;
+          console.log(`[syncClock] ping ${i + 1}: reply rtt=${rttMs.toFixed(1)}ms`);
+          samples.push({ rttMs, gateUs: got.gateUs, midPhoneMs: tSend + rttMs / 2 });
+        } else {
+          console.log(`[syncClock] ping ${i + 1}: TIMEOUT (no Status notification back)`);
+        }
+        await delay(30);
       }
-      await delay(40);
+    } catch (e) {
+      console.warn('[syncClock] threw:', String(e));
     }
     const result = buildAnchor(samples);
+    console.log(`[syncClock] done: ${samples.length} sample(s); anchor=${result ? 'set' : 'NONE → fixed offset'}`);
     if (result) {
       clockAnchorRef.current = result.anchor;
       setClockSync(result);
     }
+    setSyncing(false);
     return result;
   }, []);
 
@@ -393,6 +421,7 @@ export function GateProvider({ children }: { children: ReactNode }) {
     readStatusNow,
     readLastResultNow,
     clockSync,
+    syncing,
     syncClock,
     gateToPhoneMs,
     subscribe,
