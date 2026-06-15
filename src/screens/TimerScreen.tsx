@@ -23,6 +23,16 @@ const KEEP_AWAKE_TAG = 'equalsplit-run';
 const nowMs = () =>
   typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
 
+// Acoustic output latency: the gap between the player's playback position
+// advancing (what playbackStatusUpdate.currentTime reports) and sound actually
+// leaving the speaker. iOS exposes this as AVAudioSession.outputLatency, but
+// expo-audio does not surface it — so we ASSUME a constant and carry its
+// uncertainty as the main UNMEASURABLE residual. ~20ms is a typical built-in-
+// speaker output latency for a non-low-latency AVAudioPlayer path.
+const ACOUSTIC_OUTPUT_MS = 20; // best-estimate, added to the correction
+const ACOUSTIC_UNCERTAINTY_MS = 15; // ± residual on the above (cannot be measured here)
+const AUDIO_MEAS_NOISE_MS = 5; // residual audio-start noise after currentTime back-calc
+
 type RunState = 'idle' | 'countdown' | 'running' | 'finished';
 type Result = { mode: number; totalMs: number; split1Ms: number; split2Ms: number; flags: number };
 
@@ -43,8 +53,9 @@ export default function TimerScreen() {
 
   const marks = useAudioPlayer(require('../../assets/sounds/marks.wav'));
   const set = useAudioPlayer(require('../../assets/sounds/set.wav'));
-  // Tight status updates so we can timestamp when the GO beep actually starts.
-  const go = useAudioPlayer(require('../../assets/sounds/go.wav'), { updateInterval: 16 });
+  // Small update interval so we learn of playback start quickly; precision comes
+  // from back-calculating start = callbackTime - currentTime, not the interval.
+  const go = useAudioPlayer(require('../../assets/sounds/go.wav'), { updateInterval: 10 });
 
   const [runState, setRunState] = useState<RunState>('idle');
   const [phaseLabel, setPhaseLabel] = useState('');
@@ -55,9 +66,11 @@ export default function TimerScreen() {
   const [dbg, setDbg] = useState('');
   // Correction actually applied to the shown result (per run).
   const [corr, setCorr] = useState<{
-    offset: number;
+    correction: number; // ms subtracted from raw split1 (and total)
     source: 'synced' | 'fixed';
-    beepLatency: number | null;
+    beepEngine: number | null; // gate GO -> engine audio start (measured), pre-acoustic
+    early: boolean; // raw split1 < correction (clamped, suspect)
+    confMs: number; // ±X confidence on the corrected reaction (synced only)
   } | null>(null);
 
   const t0Ref = useRef(0);
@@ -78,12 +91,16 @@ export default function TimerScreen() {
   const runBeepLatencyRef = useRef<number | null>(null); // measured beep latency this run
   const offsetRef = useRef(reactionOffsetMs); // latest fixed offset, fallback at save time
   const correctionModeRef = useRef(correctionMode);
+  const clockSyncRef = useRef(gate.clockSync); // latest sync (for ±X at finish)
   useEffect(() => {
     offsetRef.current = reactionOffsetMs;
   }, [reactionOffsetMs]);
   useEffect(() => {
     correctionModeRef.current = correctionMode;
   }, [correctionMode]);
+  useEffect(() => {
+    clockSyncRef.current = gate.clockSync;
+  }, [gate.clockSync]);
 
   // Audio: preload + warm up the output pipeline so the first real cue is low-latency.
   useEffect(() => {
@@ -112,32 +129,35 @@ export default function TimerScreen() {
     };
   }, [marks, set, go]);
 
-  // On the first playback progress after a GO, timestamp actual audio start and
-  // compute the per-run latency breakdown (all ms):
-  //   bleOneway   = tRecv - tGoPhone       (gate GO -> phone receives GO event)
-  //   proc        = tPlay - tRecv          (event receipt -> go.play() call)
-  //   audioGap    = tAudioStart - tPlay    (play() call -> audio actually advances)
-  //   beepLatency = tAudioStart - tGoPhone = bleOneway + proc + audioGap
-  // tGoPhone maps the gate's GO (t0_us) into phone time via clock sync; without an
-  // anchor only audioGap is known. audioGap precision is bounded by updateInterval.
+  // On the first playback progress after a GO, compute the per-run latency
+  // breakdown (all ms). Engine-start is back-calculated as callbackTime -
+  // currentTime, so it's independent of the status update interval:
+  //   tAudioStart = tCallback - currentTime*1000   (player playback head start)
+  //   bleOneway   = tRecv - tGoPhone               (gate GO -> phone receives GO)
+  //   proc        = tPlay - tRecv                  (receipt -> go.play())
+  //   audioGap    = tAudioStart - tPlay            (play() -> playback advances)
+  //   beepEngine  = tAudioStart - tGoPhone         (gate GO -> engine audio start)
+  // The CORRECTION subtracts beepEngine + ACOUSTIC_OUTPUT_MS (engine-start ->
+  // sound at the speaker), i.e. the gate GO -> actual acoustic output.
   useEffect(() => {
     const sub = go.addListener('playbackStatusUpdate', (st) => {
       const m = runMeasureRef.current;
       if (!m || m.tAudioStart != null || !st.playing || st.currentTime <= 0) return;
-      m.tAudioStart = nowMs();
-      const audioGap = m.tAudioStart - m.tPlay;
+      const tAudioStart = nowMs() - st.currentTime * 1000;
+      m.tAudioStart = tAudioStart;
+      const audioGap = tAudioStart - m.tPlay;
       const proc = m.tPlay - m.tRecv;
       let bleOneway: number | null = null;
-      let beepLatency: number | null = null;
+      let beepEngine: number | null = null;
       if (m.tGoPhone != null) {
         bleOneway = m.tRecv - m.tGoPhone;
-        beepLatency = m.tAudioStart - m.tGoPhone;
-        runBeepLatencyRef.current = beepLatency;
+        beepEngine = tAudioStart - m.tGoPhone;
+        runBeepLatencyRef.current = beepEngine + ACOUSTIC_OUTPUT_MS; // = full correction
       }
       if (audioGap >= 0 && audioGap < 2000) setMeasuredAudioLatencyMs(Math.round(audioGap));
-      addLatencySample({ bleOneway, proc, audioGap, beepLatency, at: Date.now() });
+      addLatencySample({ bleOneway, proc, audioGap, beepLatency: beepEngine, at: Date.now() });
       console.log(
-        `[lat] bleOneway=${bleOneway?.toFixed(1) ?? 'n/a'} proc=${proc.toFixed(1)} audioGap=${audioGap.toFixed(1)} beep=${beepLatency?.toFixed(1) ?? 'n/a'}`,
+        `[lat] bleOneway=${bleOneway?.toFixed(1) ?? 'n/a'} proc=${proc.toFixed(1)} audioGap=${audioGap.toFixed(1)} beepEngine=${beepEngine?.toFixed(1) ?? 'n/a'} +acoustic=${ACOUSTIC_OUTPUT_MS}`,
       );
     });
     return () => sub.remove();
@@ -190,42 +210,70 @@ export default function TimerScreen() {
       setLiveMs(r.totalMs);
       setPhaseLabel('');
       setRunState('finished');
-      // Latency math (Mode 2): the athlete reacts to the phone beep, which trails
-      // the gate's GO by the beep latency, so the gate's raw reaction (split1) is
-      // inflated by it. adjusted_reaction = raw_split1 - offset; adjusted_total =
-      // raw_total - offset (split2, gate1→gate2, is unaffected). 'synced' uses the
-      // precise per-run beep latency measured via clock sync; 'fixed' falls back to
-      // the manual offset. RAW gate values + the applied offset are stored, so the
-      // adjusted value is derivable and re-tunable. Mode 1 has no reaction (0).
-      let offset = 0;
+      // Per-run latency subtraction (Mode 2). The athlete reacts to the phone beep,
+      // which trails the gate GO by the beep latency, so raw split1 (GO->Gate1) is
+      // inflated by it. correction = (actual acoustic output - gate GO) =
+      // beepEngine (measured via clock sync) + ACOUSTIC_OUTPUT_MS (assumed). The
+      // corrected reaction = split1 - correction (clamped at 0; flagged if raw <
+      // correction). RAW gate values are always stored; the components go into
+      // raw_json so everything is re-derivable. 'fixed' = manual offset fallback.
+      let correction = 0;
       let source: 'synced' | 'fixed' = 'fixed';
-      let beepLatency: number | null = null;
+      let beepEngine: number | null = null;
       if (r.mode === 2) {
-        beepLatency = runBeepLatencyRef.current;
-        if (correctionModeRef.current === 'synced' && beepLatency != null) {
-          offset = Math.max(0, Math.round(beepLatency));
+        const c = runBeepLatencyRef.current; // = beepEngine + ACOUSTIC_OUTPUT_MS
+        if (correctionModeRef.current === 'synced' && c != null) {
+          correction = Math.max(0, Math.round(c));
+          beepEngine = Math.round(c - ACOUSTIC_OUTPUT_MS);
           source = 'synced';
         } else {
-          offset = offsetRef.current;
+          correction = offsetRef.current;
           source = 'fixed';
         }
       }
-      setCorr({ offset, source, beepLatency });
+      const early = r.mode === 2 && r.split1Ms < correction;
+      // ±X (≈1σ): RSS of clock-sync bound (minRtt/2, conservative — reducible with
+      // a tighter BLE interval), the UNMEASURABLE acoustic-output uncertainty (the
+      // term the gate buzzer removes), and residual audio-start noise.
+      const cs = clockSyncRef.current;
+      const eClk = cs ? cs.minRttMs / 2 : 0;
+      const confMs =
+        source === 'synced'
+          ? Math.round(
+              Math.sqrt(
+                eClk * eClk +
+                  ACOUSTIC_UNCERTAINTY_MS * ACOUSTIC_UNCERTAINTY_MS +
+                  AUDIO_MEAS_NOISE_MS * AUDIO_MEAS_NOISE_MS,
+              ),
+            )
+          : 0;
+      setCorr({ correction, source, beepEngine, early, confMs });
       console.log(
-        `[FINISH:${src}] mode=${r.mode} total=${r.totalMs} s1=${r.split1Ms} s2=${r.split2Ms} offset=${offset}(${source})`,
+        `[FINISH:${src}] mode=${r.mode} s1=${r.split1Ms} correction=${correction}(${source}) beepEngine=${beepEngine ?? 'n/a'} conf=±${confMs} early=${early}`,
       );
-      setDbg(`finish(${src}) raw ${fmt(r.totalMs, 3)}s · −${offset}ms(${source}) · saving…`);
+      setDbg(`finish(${src}) raw ${fmt(r.totalMs, 3)}s · −${correction}ms(${source}) · saving…`);
+      const rawJson = JSON.stringify({
+        source,
+        correction,
+        beepEngine,
+        acousticMs: ACOUSTIC_OUTPUT_MS,
+        confMs,
+        early,
+        minRttMs: cs?.minRttMs ?? null,
+        offsetSpreadMs: cs?.offsetSpreadMs ?? null,
+      });
       saveRun({
         mode: r.mode,
         totalMs: r.totalMs, // RAW authoritative (gate clock)
         split1Ms: r.split1Ms, // RAW authoritative
         split2Ms: r.split2Ms,
-        reactionOffsetMs: offset,
-        status: r.flags & 0x01 ? 'valid' : 'invalid',
+        reactionOffsetMs: correction,
+        rawJson,
+        status: early ? 'suspect' : r.flags & 0x01 ? 'valid' : 'invalid',
       })
         .then(() => {
           console.log('[saveRun] ok');
-          const shown = r.mode === 2 ? Math.max(0, r.totalMs - offset) : r.totalMs;
+          const shown = r.mode === 2 ? Math.max(0, r.totalMs - correction) : r.totalMs;
           setDbg(`finish(${src}) ${fmt(shown, 3)}s · saved ✓`);
         })
         .catch((e) => {
@@ -401,11 +449,13 @@ export default function TimerScreen() {
   const connected = status === 'connected';
   const isM2Armed = gateState === GateState.M2Armed;
   const isIdleState = gateState === GateState.Idle || gateState === null;
-  const shownOffset = corr ? corr.offset : reactionOffsetMs;
+  const shownCorrection = corr ? corr.correction : reactionOffsetMs;
   const adjReactionMs =
-    result && result.mode === 2 ? Math.max(0, result.split1Ms - shownOffset) : 0;
+    result && result.mode === 2 ? Math.max(0, result.split1Ms - shownCorrection) : 0;
   const adjTotalMs =
-    result && result.mode === 2 ? Math.max(0, result.totalMs - shownOffset) : (result?.totalMs ?? 0);
+    result && result.mode === 2
+      ? Math.max(0, result.totalMs - shownCorrection)
+      : (result?.totalMs ?? 0);
   const big = result
     ? fmt(result.mode === 2 ? adjTotalMs : result.totalMs, 3)
     : fmt(liveMs, runState === 'running' ? 2 : 3);
@@ -421,16 +471,22 @@ export default function TimerScreen() {
 
         {result && result.mode === 2 ? (
           <View style={styles.splits}>
-            <Split label="Reaction → G1" ms={adjReactionMs} raw={result.split1Ms} />
+            <Split
+              label="Reaction → G1"
+              ms={adjReactionMs}
+              raw={result.split1Ms}
+              conf={corr?.source === 'synced' ? corr.confMs : undefined}
+            />
             <Split label="G1 → G2" ms={result.split2Ms} />
             <Split label="Total" ms={adjTotalMs} raw={result.totalMs} strong />
             <Text style={styles.offsetNote}>
               {corr?.source === 'synced'
-                ? `clock-synced · −${shownOffset} ms (measured beep latency${
-                    corr.beepLatency != null ? ` ${Math.round(corr.beepLatency)} ms` : ''
-                  })`
-                : `fixed offset · −${shownOffset} ms`}
+                ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic) · ±${corr.confMs} ms`
+                : `fixed offset · −${shownCorrection} ms (uncalibrated)`}
             </Text>
+            {corr?.early ? (
+              <Text style={styles.earlyNote}>⚠ raw reaction &lt; correction — clamped, treat as suspect</Text>
+            ) : null}
           </View>
         ) : null}
 
@@ -522,18 +578,22 @@ function Split({
   label,
   ms,
   raw,
+  conf,
   strong,
 }: {
   label: string;
   ms: number;
   raw?: number;
+  conf?: number;
   strong?: boolean;
 }) {
   return (
     <View style={styles.splitRow}>
       <Text style={[styles.splitLabel, strong && styles.splitStrong]}>{label}</Text>
       <View style={styles.splitValCol}>
-        <Text style={[styles.splitVal, strong && styles.splitStrong]}>{fmt(ms, 3)}s</Text>
+        <Text style={[styles.splitVal, strong && styles.splitStrong]}>
+          {fmt(ms, 3)}s{conf != null ? ` ±${conf}ms` : ''}
+        </Text>
         {raw != null ? <Text style={styles.splitRaw}>raw {fmt(raw, 3)}s</Text> : null}
       </View>
     </View>
@@ -593,6 +653,7 @@ const styles = StyleSheet.create({
   splitRaw: { color: '#475569', fontSize: 11, fontVariant: ['tabular-nums'] },
   splitStrong: { color: '#fff', fontWeight: '800' },
   offsetNote: { color: '#64748b', fontSize: 11, marginTop: 8, textAlign: 'center' },
+  earlyNote: { color: '#fb923c', fontSize: 11, marginTop: 4, textAlign: 'center' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 24, textAlign: 'center' },
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
   controls: { paddingBottom: 12 },

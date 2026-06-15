@@ -132,7 +132,9 @@ export default function SettingsScreen() {
             {gate.clockSync
               ? `Synced · RTT ${Math.round(gate.clockSync.minRttMs)}/${Math.round(
                   gate.clockSync.medianRttMs,
-                )}/${Math.round(gate.clockSync.maxRttMs)} ms (min/med/max, n=${gate.clockSync.samples})`
+                )}/${Math.round(gate.clockSync.maxRttMs)} ms (min/med/max) · offset jitter ±${Math.round(
+                  gate.clockSync.offsetSpreadMs,
+                )} ms · clock-sync bound ±${Math.round(gate.clockSync.minRttMs / 2)} ms`
               : gate.syncing
                 ? 'Syncing clock…'
                 : connected

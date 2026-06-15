@@ -66,10 +66,59 @@ NTP-style offset estimate between the gate's `micros()` clock and the phone's
 
 ## Final approach
 
-Default = **synced per-run correction**: subtract the measured `beepLatency` for
-each run, computed from clock sync + the audio-start timestamp. Fixed-offset mode
-is kept as a fallback / comparison. Raw gate values are always stored, with the
-applied offset per run, so anything can be recomputed.
+Default = **synced per-run correction**. For each Mode 2 run:
+
+```
+tAudioStart = tCallback - currentTime*1000     # engine playback start (interval-independent)
+beepEngine  = tAudioStart - tGoPhone           # gate GO -> engine audio start (needs clock sync)
+correction  = beepEngine + ACOUSTIC_OUTPUT_MS  # gate GO -> sound at the speaker
+correctedReaction = max(0, raw_split1 - correction)   # flagged "suspect" if raw < correction
+```
+
+`ACOUSTIC_OUTPUT_MS` (20 ms) is the assumed gap between the player's playback
+position advancing and sound leaving the speaker — iOS exposes this as
+`AVAudioSession.outputLatency`, but **expo-audio does not surface it**, so it is the
+main *unmeasurable* term (see below). Audio start is back-calculated from
+`currentTime` so it's independent of the (10 ms) status interval; the audio
+pipeline is primed (silent play at go-imminent) and `go.play()` runs with no
+`await` on the GO event. Raw gate values are always stored; the full per-run
+breakdown (`beepEngine`, `acousticMs`, `confMs`, `minRttMs`, `offsetSpreadMs`) is
+saved in `runs.raw_json` so everything is re-derivable. Fixed-offset mode remains
+as a fallback/comparison.
+
+## Residual accuracy (±X)
+
+After per-run subtraction, the *measured* components (BLE one-way, audio gap) are
+removed — what remains is the **measurement error**, shown on the result as `±X ms`:
+
+```
+±X = sqrt( eClk^2 + eAcoustic^2 + eAudio^2 )
+  eClk      = minRTT/2     clock-sync bound (conservative; the offset maps gate GO
+                           into phone time, so its error biases every correction).
+                           Set by the iOS connection interval — REDUCIBLE.
+  eAcoustic = 15 ms        ± on the assumed 20 ms acoustic output latency.
+                           UNMEASURABLE here (expo-audio hides outputLatency).
+  eAudio    = 5 ms         residual audio-start noise after the currentTime back-calc.
+```
+
+Worked estimate on this hardware (beep 313 ms sd 61, BLE one-way 88 ms sd 43, audio
+gap 225 ms sd 30, min RTT ≈ 40 ms): `eClk ≈ 20`, so **±X ≈ √(20² + 15² + 5²) ≈ ±25 ms**.
+
+Honest reading of the terms:
+- **Clock-sync (`eClk`, ≈ ±20 ms) currently dominates**, because we removed
+  `updateConnParams` (it broke connecting), so iOS uses its default ~30 ms interval.
+  A *deferred*, Apple-compliant connection-param request (15 ms) would roughly halve
+  this to ≈ ±10 ms. This term is **reducible**.
+- **Acoustic output (`eAcoustic`, ±15 ms) is the irreducible unmeasurable.** It is the
+  gap between "playback position advanced" and "sound at the speaker," which no API
+  surfaced here lets us measure per run. This is the term that **justifies the gate
+  buzzer**: a buzzer fired at `startTimeUs` puts the stimulus *and* the clock on the
+  gate, eliminating clock-sync, BLE, and acoustic latency from the reaction path
+  entirely (residual then ≈ sensor debounce, ~±2 ms).
+
+So: synced per-run correction takes the raw ~±61 ms beep jitter down to **≈ ±25 ms**,
+and tightening the BLE interval would reach **≈ ±18 ms** — but the acoustic floor
+(~±15 ms) cannot be crossed on a phone-cued start. The buzzer is the real fix.
 
 ## How to measure (do this on device)
 
@@ -99,10 +148,22 @@ Interpretation:
 
 ## Limitations (honest)
 
-- Audio-start time is bounded by `updateInterval` (~16 ms); not the true hardware
-  output instant (expo-audio doesn't expose it).
-- Clock-sync error is ~RTT/2 of the min sample; dominated by the iOS connection
-  interval, which the app can't read or force.
+- The audio-start timestamp tracks the player's playback **position**, not acoustic
+  output; the engine→speaker gap (`AVAudioSession.outputLatency`) is not exposed by
+  expo-audio, so it is assumed (20 ± 15 ms) — the dominant unmeasurable term.
+- Clock-sync error (~minRTT/2) is set by the iOS connection interval, which the app
+  can't read or force; it currently dominates ±X and is reducible by tightening the
+  interval (deferred `updateConnParams`, Apple-compliant 15 ms).
 - The only way to fully remove phone-beep latency from reaction timing is a
-  **buzzer on the gate** firing at `startTimeUs` (gate-cued start). The clock-synced
-  correction is the best achievable while the cue stays on the phone.
+  **buzzer on the gate** firing at `startTimeUs` (gate-cued start): residual ≈ sensor
+  debounce (~±2 ms). The clock-synced per-run correction (≈ ±25 ms here) is the best
+  achievable while the cue stays on the phone.
+
+## Other accuracy levers (tried / available)
+- **`currentTime` back-calc** for audio start (done) — removes update-interval
+  quantization.
+- **Empirical clock-sync jitter** (`offsetSpreadMs`, done) — shows whether the sync
+  samples agree; if small, the systematic asymmetry (≤ minRTT/2) is the bound.
+- **Tighter BLE interval** (deferred `updateConnParams` 15 ms) — halves `eClk`.
+- **Gate buzzer at `startTimeUs`** — removes clock-sync + BLE + acoustic entirely.
+  The real fix.

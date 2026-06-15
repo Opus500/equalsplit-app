@@ -16,6 +16,10 @@ export type ClockSyncResult = {
   minRttMs: number;
   medianRttMs: number;
   maxRttMs: number;
+  // Empirical clock-sync jitter: stdev of the per-sample implied offset across the
+  // better-RTT half. A small value means the samples agree on the offset; it does
+  // NOT capture a constant path asymmetry (that bias is bounded by minRttMs/2).
+  offsetSpreadMs: number;
   samples: number;
 };
 
@@ -39,11 +43,22 @@ export function buildAnchor(samples: PingSample[]): ClockSyncResult | null {
   if (samples.length === 0) return null;
   const byRtt = [...samples].sort((a, b) => a.rttMs - b.rttMs);
   const best = byRtt[0];
+  // Implied offset (gate - phone) per sample = gateUs/1000 - midPhoneMs. The
+  // stdev across the better half is the observed sync jitter. Subtract the mean
+  // first for float precision (absolute offsets are large).
+  const half = byRtt.slice(0, Math.max(1, Math.ceil(byRtt.length / 2)));
+  const offsets = half.map((s) => s.gateUs / 1000 - s.midPhoneMs);
+  const mean = offsets.reduce((a, b) => a + b, 0) / offsets.length;
+  const offsetSpreadMs =
+    offsets.length > 1
+      ? Math.sqrt(offsets.reduce((a, b) => a + (b - mean) ** 2, 0) / offsets.length)
+      : 0;
   return {
     anchor: { g0Us: best.gateUs, p0Ms: best.midPhoneMs },
     minRttMs: best.rttMs,
     medianRttMs: byRtt[Math.floor(byRtt.length / 2)].rttMs,
     maxRttMs: byRtt[byRtt.length - 1].rttMs,
+    offsetSpreadMs,
     samples: byRtt.length,
   };
 }
