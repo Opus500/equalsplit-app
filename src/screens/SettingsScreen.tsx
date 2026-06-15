@@ -2,12 +2,19 @@
 // see its effect). About + Donate are added in a later task.
 
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import Constants from 'expo-constants';
 
 import { useSettings } from '../settings/SettingsProvider';
 import { DEFAULT_REACTION_OFFSET_MS } from '../db/database';
+import { PROTO_VERSION } from '../ble/constants';
 
 const SAMPLE_RAW_MS = 350; // illustrative raw reaction for the live preview
+
+// TODO: replace with the real donation link before release.
+const DONATE_URL = 'https://example.com/donate';
+
+const APP_VERSION = Constants.expoConfig?.version ?? '1.0.0';
 
 export default function SettingsScreen() {
   const { reactionOffsetMs, measuredAudioLatencyMs, setReactionOffsetMs } = useSettings();
@@ -81,7 +88,39 @@ export default function SettingsScreen() {
           <Text style={[styles.link, { marginTop: 12 }]}>Reset to default ({DEFAULT_REACTION_OFFSET_MS} ms)</Text>
         </Pressable>
       </Section>
+
+      <Section title="Support EqualSplit">
+        <Text style={styles.help}>
+          EqualSplit is a low-cost, open sprint-timing system. If it's useful to you, a small
+          donation helps keep it going.
+        </Text>
+        <Pressable
+          onPress={() => Linking.openURL(DONATE_URL).catch(() => {})}
+          style={({ pressed }) => [styles.donate, pressed && styles.dim]}
+        >
+          <Text style={styles.donateText}>♥  Donate</Text>
+        </Pressable>
+      </Section>
+
+      <Section title="About">
+        <Row label="App version" value={APP_VERSION} />
+        <Row label="BLE protocol" value={`v${PROTO_VERSION}`} />
+        <Text style={styles.aboutBlurb}>
+          EqualSplit pairs your phone with the start gate over Bluetooth; the gate keeps the
+          authoritative time and relays the finish gate's result over ESP-NOW. Times are stored
+          locally on your device.
+        </Text>
+      </Section>
     </ScrollView>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.aboutRow}>
+      <Text style={styles.aboutLabel}>{label}</Text>
+      <Text style={styles.aboutValue}>{value}</Text>
+    </View>
   );
 }
 
@@ -141,4 +180,17 @@ const styles = StyleSheet.create({
   link: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
   note: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 8 },
   dim: { opacity: 0.5 },
+  donate: { backgroundColor: '#db2777', borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
+  donateText: { color: '#fff', fontSize: 16, fontWeight: '800' },
+  aboutRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#1f2733',
+  },
+  aboutLabel: { color: '#94a3b8', fontSize: 14 },
+  aboutValue: { color: '#e2e8f0', fontSize: 14, fontWeight: '600' },
+  aboutBlurb: { color: '#64748b', fontSize: 12, lineHeight: 18, marginTop: 12 },
 });
+
