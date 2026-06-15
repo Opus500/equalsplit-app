@@ -1,33 +1,56 @@
-// Diagnostics. The original connect-and-log screen, now riding on the shared
-// GateProvider connection. Kept for hardware bring-up and protocol debugging.
+// Diagnostics. Rides on the shared GateProvider connection. Shows a per-type
+// event tally, the live gate Status, and — crucially — "gate runs" (from the
+// reliable Status read) next to "FINISH events seen". If runs climbs but FINISH
+// does not, the FINISH *notification* is being dropped (delivery, not parsing).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useGate } from '../ble/GateProvider';
+import { EVT_NAME, STATE_NAME } from '../ble/constants';
 import { describeEvent, toHex } from '../ble/decode';
 
-type LogLine = { id: string; text: string };
+type LogLine = { id: string; text: string; kind: 'evt' | 'status' };
 let logSeq = 0;
 
 export default function DebugScreen() {
   const gate = useGate();
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [counts, setCounts] = useState<Record<string, number>>({});
+  const lastStatusRef = useRef('');
 
+  const addLog = (text: string, kind: 'evt' | 'status') => {
+    const stamp = new Date().toLocaleTimeString();
+    setLogs((prev) => [{ id: `${++logSeq}`, text: `${stamp}  ${text}`, kind }, ...prev].slice(0, 250));
+  };
+
+  // Event notifications.
   useEffect(() => {
     const off = gate.subscribe((raw) => {
-      const stamp = new Date().toLocaleTimeString();
-      setLogs((prev) =>
-        [{ id: `${++logSeq}`, text: `${stamp}  <- ${describeEvent(raw)}  [${toHex(raw)}]` }, ...prev].slice(
-          0,
-          200,
-        ),
-      );
+      const name = EVT_NAME[raw[0]] ?? `0x${raw[0]?.toString(16)}`;
+      setCounts((c) => ({ ...c, [name]: (c[name] ?? 0) + 1 }));
+      addLog(`<- ${describeEvent(raw)}   [${toHex(raw)}]`, 'evt');
     });
     return off;
   }, [gate]);
 
+  // Status updates (from notifications or the Timer screen's poll).
+  useEffect(() => {
+    const s = gate.gateStatus;
+    if (!s) return;
+    const key = `${s.state}/${s.mode}/${s.runCount}/${s.finishLinkOk}`;
+    if (key === lastStatusRef.current) return; // ignore gateMicros-only churn
+    lastStatusRef.current = key;
+    addLog(
+      `STATUS state=${STATE_NAME[s.state] ?? s.state} mode=${s.mode} runs=${s.runCount} finishLink=${s.finishLinkOk ? 'OK' : 'DOWN'}`,
+      'status',
+    );
+  }, [gate.gateStatus]);
+
   const connected = gate.status === 'connected';
+  const finishSeen = counts.FINISH ?? 0;
+  const gateRuns = gate.gateStatus?.runCount ?? 0;
+  const dropWarn = gateRuns > finishSeen;
 
   return (
     <View style={styles.container}>
@@ -35,6 +58,28 @@ export default function DebugScreen() {
       <Text style={styles.subtitle}>
         adapter {gate.adapterOn ? 'on' : 'off'} · {gate.status}
         {gate.gateStatus ? ` · proto ${gate.gateStatus.protoVer}` : ''}
+      </Text>
+
+      <View style={styles.cards}>
+        <View style={styles.card}>
+          <Text style={styles.cardNum}>{gateRuns}</Text>
+          <Text style={styles.cardLabel}>gate runs (Status)</Text>
+        </View>
+        <View style={[styles.card, dropWarn && styles.cardWarn]}>
+          <Text style={styles.cardNum}>{finishSeen}</Text>
+          <Text style={styles.cardLabel}>FINISH events seen</Text>
+        </View>
+      </View>
+      {dropWarn ? (
+        <Text style={styles.warn}>
+          ⚠ gate finished more runs than FINISH events arrived — FINISH notifications are dropping.
+        </Text>
+      ) : null}
+
+      <Text style={styles.tally}>
+        {['STATE', 'COUNTDOWN', 'GO', 'START', 'SPLIT', 'FINISH', 'NOTICE']
+          .map((n) => `${n}:${counts[n] ?? 0}`)
+          .join('  ')}
       </Text>
 
       {!connected ? (
@@ -67,12 +112,14 @@ export default function DebugScreen() {
         </>
       )}
 
-      <Text style={styles.logHeader}>Event log</Text>
+      <Text style={styles.logHeader}>Event / status log (newest first)</Text>
       <FlatList
         style={styles.log}
         data={logs}
         keyExtractor={(l) => l.id}
-        renderItem={({ item }) => <Text style={styles.logLine}>{item.text}</Text>}
+        renderItem={({ item }) => (
+          <Text style={[styles.logLine, item.kind === 'status' && styles.logStatus]}>{item.text}</Text>
+        )}
       />
     </View>
   );
@@ -111,13 +158,25 @@ function Btn({
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800' },
-  subtitle: { color: '#8b98a9', marginTop: 4, marginBottom: 12 },
+  subtitle: { color: '#8b98a9', marginTop: 4, marginBottom: 10 },
+  cards: { flexDirection: 'row', gap: 10, marginBottom: 6 },
+  card: { flex: 1, backgroundColor: '#161b22', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
+  cardWarn: { backgroundColor: '#3b1d1d', borderWidth: 1, borderColor: '#b4541f' },
+  cardNum: { color: '#fff', fontSize: 28, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  cardLabel: { color: '#8b98a9', fontSize: 12, marginTop: 2 },
+  warn: { color: '#fb923c', fontSize: 12, marginBottom: 6 },
+  tally: {
+    color: '#9fe6a0',
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    fontSize: 11,
+    marginBottom: 10,
+  },
   row: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   btn: { flex: 1, backgroundColor: '#2563eb', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   btnWarn: { backgroundColor: '#b4541f' },
   btnText: { color: '#fff', fontWeight: '600' },
   dim: { opacity: 0.4 },
-  logHeader: { color: '#8b98a9', marginTop: 8, marginBottom: 4, fontWeight: '600' },
+  logHeader: { color: '#8b98a9', marginTop: 4, marginBottom: 4, fontWeight: '600' },
   log: { flex: 1, backgroundColor: '#06080c', borderRadius: 8, padding: 8 },
   logLine: {
     color: '#9fe6a0',
@@ -125,4 +184,5 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginBottom: 2,
   },
+  logStatus: { color: '#7dd3fc' },
 });

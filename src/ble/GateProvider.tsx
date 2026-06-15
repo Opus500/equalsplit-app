@@ -49,6 +49,8 @@ type GateContextValue = {
   startSequence: (minUnits?: number, maxUnits?: number) => Promise<void>;
   reset: () => Promise<void>;
   goNow: () => Promise<void>;
+  readStatusNow: () => Promise<GateStatus | null>;
+  readLastResultNow: () => Promise<LastResult | null>;
   subscribe: (cb: EventListener) => () => void;
 };
 
@@ -196,6 +198,32 @@ export function GateProvider({ children }: { children: ReactNode }) {
     }
   }, [device]);
 
+  // Reliable on-demand reads (GATT reads don't get dropped the way notifications
+  // can), used by the Timer screen to reconcile/recover from missed events.
+  const readStatusNow = useCallback(async (): Promise<GateStatus | null> => {
+    if (!device) return null;
+    try {
+      const raw = await readStatus(device);
+      const s = raw ? parseStatus(raw) : null;
+      if (s) setGateStatus(s);
+      return s;
+    } catch {
+      return null;
+    }
+  }, [device]);
+
+  const readLastResultNow = useCallback(async (): Promise<LastResult | null> => {
+    if (!device) return null;
+    try {
+      const raw = await readLastResult(device);
+      const lr = raw ? parseLastResult(raw) : null;
+      if (lr) setLastResult(lr);
+      return lr;
+    } catch {
+      return null;
+    }
+  }, [device]);
+
   const send = useCallback(
     async (op: Op, a0 = 0, a1 = 0) => {
       if (device) await sendCommand(device, op, a0, a1);
@@ -225,6 +253,8 @@ export function GateProvider({ children }: { children: ReactNode }) {
     startSequence,
     reset,
     goNow,
+    readStatusNow,
+    readLastResultNow,
     subscribe,
   };
 

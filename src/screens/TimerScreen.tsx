@@ -1,14 +1,21 @@
 // Main v1 screen. Arms modes, runs a local live timer for the live feel on
 // START/GO, snaps to the gate's authoritative time on FINISH, plays the
 // start-sequence audio cues, and persists each finished run to SQLite.
+//
+// Robustness: BLE notifications can be dropped/late, so we also reconcile the
+// local run state against the gate's authoritative state (from STATE events,
+// Status notifications, AND a Status poll while a run is in progress). A finish
+// is recovered from the readable LastResult characteristic if the FINISH
+// notification never arrives, so the result always displays and saves.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { setAudioModeAsync, useAudioPlayer, type AudioPlayer } from 'expo-audio';
 
 import { useGate } from '../ble/GateProvider';
 import { Evt, GateState, STATE_NAME } from '../ble/constants';
+import type { LastResult } from '../ble/events';
 import { saveRun } from '../db/database';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run';
@@ -19,10 +26,17 @@ type RunState = 'idle' | 'countdown' | 'running' | 'finished';
 type Result = { mode: number; totalMs: number; split1Ms: number; split2Ms: number; flags: number };
 
 const fmt = (ms: number, dec: number) => (Math.max(0, ms) / 1000).toFixed(dec);
+const toResult = (lr: LastResult): Result => ({
+  mode: lr.mode,
+  totalMs: lr.totalMs,
+  split1Ms: lr.split1Ms,
+  split2Ms: lr.split2Ms,
+  flags: lr.flags,
+});
 
 export default function TimerScreen() {
   const gate = useGate();
-  const { subscribe, gateStatus } = gate;
+  const { subscribe, gateStatus, status, readStatusNow, readLastResultNow } = gate;
 
   const marks = useAudioPlayer(require('../../assets/sounds/marks.wav'));
   const set = useAudioPlayer(require('../../assets/sounds/set.wav'));
@@ -34,26 +48,47 @@ export default function TimerScreen() {
   const [liveSplit1Ms, setLiveSplit1Ms] = useState<number | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [gateState, setGateState] = useState<GateState | null>(null);
+  const [dbg, setDbg] = useState('');
 
   const t0Ref = useRef(0);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const savedRef = useRef(false);
+  const finishedRef = useRef(false);
+  const activeRef = useRef(false);
+  const goPreSeekedRef = useRef(false);
 
-  // Preload audio + allow playback while the phone is on silent (iOS).
+  // Audio: preload + warm up the output pipeline so the first real cue is low-latency.
   useEffect(() => {
-    setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    if (gateStatus) setGateState(gateStatus.state);
-  }, [gateStatus]);
+    let cancelled = false;
+    (async () => {
+      try {
+        await setAudioModeAsync({ playsInSilentMode: true });
+        for (const p of [marks, set, go]) {
+          p.volume = 0;
+          p.play();
+        }
+        setTimeout(() => {
+          if (cancelled) return;
+          for (const p of [marks, set, go]) {
+            p.pause();
+            p.seekTo(0);
+            p.volume = 1;
+          }
+        }, 200);
+      } catch {
+        /* players still loading; the real plays below will work once ready */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [marks, set, go]);
 
   const playCue = useCallback((p: AudioPlayer) => {
     try {
       p.seekTo(0);
       p.play();
     } catch {
-      /* player not ready yet; ignore */
+      /* not ready */
     }
   }, []);
 
@@ -64,28 +99,91 @@ export default function TimerScreen() {
 
   const startRun = useCallback(() => {
     t0Ref.current = nowMs();
-    savedRef.current = false;
+    finishedRef.current = false;
+    activeRef.current = true;
     setResult(null);
     setLiveSplit1Ms(null);
     setLiveMs(0);
     setRunState('running');
   }, []);
 
-  // Event handling. Only refs + stable setters are touched, so the listener
-  // never goes stale and we don't re-subscribe on every render.
+  const resetLocal = useCallback(() => {
+    finishedRef.current = false;
+    activeRef.current = false;
+    stopTick();
+    setRunState('idle');
+    setResult(null);
+    setLiveSplit1Ms(null);
+    setLiveMs(0);
+    setPhaseLabel('');
+  }, [stopTick]);
+
+  const applyFinish = useCallback(
+    (r: Result, src: string) => {
+      if (finishedRef.current) return; // dedupe: event + recovery may both fire
+      finishedRef.current = true;
+      activeRef.current = false;
+      stopTick();
+      setResult(r);
+      setLiveMs(r.totalMs);
+      setPhaseLabel('');
+      setRunState('finished');
+      console.log(`[FINISH:${src}] mode=${r.mode} total=${r.totalMs} s1=${r.split1Ms} s2=${r.split2Ms}`);
+      setDbg(`finish(${src}) ${fmt(r.totalMs, 3)}s · saving…`);
+      saveRun({
+        mode: r.mode,
+        totalMs: r.totalMs,
+        split1Ms: r.split1Ms,
+        split2Ms: r.split2Ms,
+        status: r.flags & 0x01 ? 'valid' : 'invalid',
+      })
+        .then(() => {
+          console.log('[saveRun] ok');
+          setDbg(`finish(${src}) ${fmt(r.totalMs, 3)}s · saved ✓`);
+        })
+        .catch((e) => {
+          console.warn('[saveRun] FAILED', e);
+          setDbg(`finish(${src}) · SAVE FAILED: ${String(e)}`);
+        });
+    },
+    [stopTick],
+  );
+
+  // Reconcile local state against an authoritative gate state value. Drives
+  // recovery from dropped notifications (called from STATE events, Status
+  // notifications, and the poll).
+  const reconcileState = useCallback(
+    (s: GateState) => {
+      setGateState(s);
+      if (s === GateState.Idle) {
+        resetLocal();
+        return;
+      }
+      if (s === GateState.Result) {
+        if (activeRef.current && !finishedRef.current) {
+          readLastResultNow().then((lr) => {
+            if (lr) applyFinish(toResult(lr), 'recovered');
+          });
+        }
+        return;
+      }
+      const running =
+        s === GateState.M1Running || s === GateState.M2ToGate1 || s === GateState.M2ToGate2;
+      if (running && !activeRef.current && !finishedRef.current) {
+        console.log('[reconcile] missed START/GO — starting live timer from gate state');
+        startRun();
+      }
+    },
+    [resetLocal, readLastResultNow, applyFinish, startRun],
+  );
+
+  // BLE event stream — the instant path.
   useEffect(() => {
     const off = subscribe((_raw, ev) => {
       if (!ev) return;
       switch (ev.type) {
         case Evt.State:
-          setGateState(ev.state);
-          if (ev.state === GateState.Idle) {
-            setRunState('idle');
-            setPhaseLabel('');
-            setResult(null);
-            setLiveSplit1Ms(null);
-            setLiveMs(0);
-          }
+          reconcileState(ev.state);
           break;
         case Evt.Countdown:
           setRunState('countdown');
@@ -97,11 +195,24 @@ export default function TimerScreen() {
             playCue(set);
           } else {
             setPhaseLabel('Ready…');
+            try {
+              go.seekTo(0); // pre-position the GO beep so play() at GO is instant
+              goPreSeekedRef.current = true;
+            } catch {
+              /* ignore */
+            }
           }
           break;
         case Evt.Go:
+          // Fire audio FIRST, before any React state work, to minimise latency.
+          try {
+            if (!goPreSeekedRef.current) go.seekTo(0);
+            go.play();
+          } catch {
+            /* ignore */
+          }
+          goPreSeekedRef.current = false;
           setPhaseLabel('GO!');
-          playCue(go);
           startRun();
           break;
         case Evt.Start:
@@ -111,37 +222,44 @@ export default function TimerScreen() {
         case Evt.Split:
           if (ev.index === 1) setLiveSplit1Ms(ev.splitMs);
           break;
-        case Evt.Finish: {
-          stopTick();
-          const r: Result = {
-            mode: ev.mode,
-            totalMs: ev.totalMs,
-            split1Ms: ev.split1Ms,
-            split2Ms: ev.split2Ms,
-            flags: ev.flags,
-          };
-          setResult(r);
-          setLiveMs(ev.totalMs);
-          setPhaseLabel('');
-          setRunState('finished');
-          if (!savedRef.current) {
-            savedRef.current = true;
-            saveRun({
-              mode: r.mode,
-              totalMs: r.totalMs,
-              split1Ms: r.split1Ms,
-              split2Ms: r.split2Ms,
-              status: r.flags & 0x01 ? 'valid' : 'invalid',
-            }).catch(() => {});
-          }
+        case Evt.Finish:
+          applyFinish(
+            {
+              mode: ev.mode,
+              totalMs: ev.totalMs,
+              split1Ms: ev.split1Ms,
+              split2Ms: ev.split2Ms,
+              flags: ev.flags,
+            },
+            'event',
+          );
           break;
-        }
         default:
           break;
       }
     });
     return off;
-  }, [subscribe, playCue, startRun, stopTick, marks, set, go]);
+  }, [subscribe, reconcileState, applyFinish, startRun, playCue, marks, set, go]);
+
+  // Reconcile whenever Status updates (notification or poll).
+  useEffect(() => {
+    if (gateStatus) reconcileState(gateStatus.state);
+  }, [gateStatus, reconcileState]);
+
+  // Safety-net poll: while the gate is mid-run, refresh Status so a dropped
+  // notification can't strand the UI. Reads are reliable; notifications may drop.
+  const shouldPoll =
+    status === 'connected' &&
+    gateState != null &&
+    gateState !== GateState.Idle &&
+    gateState !== GateState.Result;
+  useEffect(() => {
+    if (!shouldPoll) return;
+    const id = setInterval(() => {
+      readStatusNow();
+    }, 600);
+    return () => clearInterval(id);
+  }, [shouldPoll, readStatusNow]);
 
   // Live ticking while running.
   useEffect(() => {
@@ -161,7 +279,7 @@ export default function TimerScreen() {
     }
   }, [runState]);
 
-  const connected = gate.status === 'connected';
+  const connected = status === 'connected';
   const isM2Armed = gateState === GateState.M2Armed;
   const isIdleState = gateState === GateState.Idle || gateState === null;
   const big = result ? fmt(result.totalMs, 3) : fmt(liveMs, runState === 'running' ? 2 : 3);
@@ -190,6 +308,7 @@ export default function TimerScreen() {
         ) : null}
 
         <Text style={styles.hint}>{hintFor(connected, gateState, runState)}</Text>
+        {dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
       </View>
 
       <View style={styles.controls}>
@@ -204,12 +323,7 @@ export default function TimerScreen() {
             disabled={!connected || !isM2Armed}
             kind="go"
           />
-          <Btn
-            label="Reset"
-            onPress={gate.reset}
-            disabled={!connected || isIdleState}
-            kind="warn"
-          />
+          <Btn label="Reset" onPress={gate.reset} disabled={!connected || isIdleState} kind="warn" />
         </Row>
       </View>
     </View>
@@ -240,8 +354,8 @@ function ConnChip() {
   const label =
     gate.status === 'connected'
       ? `Gate connected${gate.gateStatus ? ` · ${STATE_NAME[gate.gateStatus.state] ?? ''}` : ''}${
-          gate.gateStatus && !gate.gateStatus.finishLinkOk ? ' · finish ⚠' : ''
-        }`
+          gate.gateStatus ? ` · runs ${gate.gateStatus.runCount}` : ''
+        }${gate.gateStatus && !gate.gateStatus.finishLinkOk ? ' · finish ⚠' : ''}`
       : gate.status === 'scanning'
         ? 'Scanning…'
         : gate.status === 'connecting'
@@ -325,6 +439,7 @@ const styles = StyleSheet.create({
   splitVal: { color: '#e2e8f0', fontSize: 15, fontVariant: ['tabular-nums'] },
   splitStrong: { color: '#fff', fontWeight: '800' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 24, textAlign: 'center' },
+  dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
   controls: { paddingBottom: 12 },
   row: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   btn: { flex: 1, backgroundColor: '#2563eb', paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
