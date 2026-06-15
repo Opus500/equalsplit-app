@@ -11,9 +11,10 @@ import { SettingsProvider } from './src/settings/SettingsProvider';
 import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
+import SettingsScreen from './src/screens/SettingsScreen';
 import DebugScreen from './src/screens/DebugScreen';
 
-type Tab = 'timer' | 'history' | 'debug';
+type Tab = 'timer' | 'history' | 'settings' | 'debug';
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('timer');
@@ -36,6 +37,11 @@ export default function App() {
               <HistoryScreen isActive={tab === 'history'} />
             </View>
           )}
+          {tab === 'settings' && (
+            <View style={styles.fill}>
+              <SettingsScreen />
+            </View>
+          )}
           {tab === 'debug' && (
             <View style={styles.fill}>
               <DebugScreen />
@@ -46,6 +52,7 @@ export default function App() {
         <View style={styles.tabBar}>
           <TabButton label="Timer" active={tab === 'timer'} onPress={() => setTab('timer')} />
           <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
+          <TabButton label="Settings" active={tab === 'settings'} onPress={() => setTab('settings')} />
           <TabButton label="Debug" active={tab === 'debug'} onPress={() => setTab('debug')} />
         </View>
         </View>
