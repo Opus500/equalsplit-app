@@ -26,7 +26,7 @@ import {
   sendCommand,
   stopScan,
 } from './bleClient';
-import { Op } from './constants';
+import { Op, Evt, GateState } from './constants';
 import { parseEvent, parseStatus, type GateEvent, type GateStatus, type LastResult } from './events';
 import { parseLastResult } from './events';
 import {
@@ -46,6 +46,9 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let syncInFlight = false;
 let syncCallId = 0;
 let lastAutoSyncedDeviceId: string | null = null;
+// True while the gate is mid-run; clock-sync pings stand down so their replies
+// don't contend with run-result notifications (and vice versa).
+let gateBusy = false;
 
 export type ConnStatus = 'idle' | 'scanning' | 'connecting' | 'connected' | 'reconnecting';
 // atMs = phone monotonic timestamp when the notification was delivered to JS.
@@ -151,6 +154,7 @@ export function GateProvider({ children }: { children: ReactNode }) {
   const attachDevice = useCallback(
     (d: Device) => {
       cleanupConnection();
+      gateBusy = false; // fresh connection: assume idle until an event says otherwise
       deviceRef.current = d;
       setDevice(d);
       setStatus('connected');
@@ -180,6 +184,15 @@ export function GateProvider({ children }: { children: ReactNode }) {
           (raw) => {
             const atMs = perfNow(); // capture arrival ASAP, closest to BLE delivery
             const parsed = parseEvent(raw);
+            if (parsed) {
+              if (parsed.type === Evt.State) {
+                gateBusy = parsed.state !== GateState.Idle && parsed.state !== GateState.Result;
+              } else if (parsed.type === Evt.Go || parsed.type === Evt.Start || parsed.type === Evt.Countdown) {
+                gateBusy = true;
+              } else if (parsed.type === Evt.Finish) {
+                gateBusy = false;
+              }
+            }
             listeners.current.forEach((l) => l(raw, parsed, atMs));
           },
           () => {},
@@ -354,6 +367,10 @@ export function GateProvider({ children }: { children: ReactNode }) {
       console.log(`[syncClock #${id}] IGNORED — a sync is already in progress (reason=${reason})`);
       return null;
     }
+    if (gateBusy) {
+      console.log(`[syncClock #${id}] deferred — gate is busy with a run (reason=${reason})`);
+      return null;
+    }
     syncInFlight = true;
     setSyncing(true);
     console.log(`[syncClock #${id}] START reason=${reason} device=${d.id}`);
@@ -366,18 +383,29 @@ export function GateProvider({ children }: { children: ReactNode }) {
           console.log(`[syncClock #${id}] 3s deadline reached — stopping`);
           break;
         }
+        if (gateBusy) {
+          console.log(`[syncClock #${id}] aborting mid-sweep — a run started; anchoring on ${samples.length} sample(s)`);
+          break;
+        }
         const tSend = perfNow();
         const got = await new Promise<{ gateUs: number; atMs: number } | null>((resolve) => {
-          statusPingRef.current = (gateUs, atMs) => resolve({ gateUs, atMs });
+          // ALWAYS settles (reply OR 400ms timeout). settled+clearTimeout ensure a
+          // single ping resolves exactly once and its timer never lingers to null a
+          // LATER ping's slot — that lingering timer was the hang.
+          let settled = false;
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const finishPing = (val: { gateUs: number; atMs: number } | null) => {
+            if (settled) return;
+            settled = true;
+            statusPingRef.current = null;
+            if (timer) clearTimeout(timer);
+            resolve(val);
+          };
+          statusPingRef.current = (gateUs, atMs) => finishPing({ gateUs, atMs });
+          timer = setTimeout(() => finishPing(null), 400);
           sendCommand(d, Op.Ping)
             .then(() => console.log(`[syncClock #${id}] ping ${i + 1}/${pings}: write OK`))
             .catch((e) => console.warn(`[syncClock #${id}] ping ${i + 1}: write FAILED`, String(e)));
-          setTimeout(() => {
-            if (statusPingRef.current) {
-              statusPingRef.current = null;
-              resolve(null);
-            }
-          }, 350);
         });
         if (got) {
           const rttMs = got.atMs - tSend;
