@@ -1,8 +1,9 @@
 // Session history. A session = one calendar day of runs. Tap a session to see
-// its runs, with a summary (best / average / count), an athlete filter, per-run
-// delete, and tap-a-run to edit its athlete/drill tags. Totals are the raw gate
-// measurement (the reaction correction is unreliable; see LATENCY.md). Reloads
-// whenever the tab becomes active.
+// its runs, with a run count (+ an average only when the visible runs are a
+// comparable set — one drill type and one mode), an athlete filter, per-run
+// delete, and tap-a-run to edit its athlete/drill tags. No session "best": a
+// session can mix incomparable modes/drills. Totals are the raw gate measurement
+// (the reaction correction is unreliable; see LATENCY.md).
 
 import { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -114,9 +115,16 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
     const shown = athleteFilter
       ? runs.filter((r) => (r.athlete_name ?? '').trim() === athleteFilter)
       : runs;
-    const totals = shown.filter((r) => r.status === 'valid').map(totalOf);
-    const best = totals.length ? Math.min(...totals) : null;
-    const avg = totals.length ? totals.reduce((a, b) => a + b, 0) / totals.length : null;
+    // Average only when the visible valid runs are actually comparable: one drill
+    // type AND one mode. Otherwise an average mixes incomparable runs, so omit it.
+    const validShown = shown.filter((r) => r.status === 'valid');
+    const drillSet = new Set(validShown.map((r) => (r.drill_type ?? '').trim()));
+    const modeSet = new Set(validShown.map((r) => r.mode));
+    const comparable = validShown.length > 0 && drillSet.size === 1 && modeSet.size === 1;
+    const avg = comparable
+      ? validShown.reduce((a, r) => a + totalOf(r), 0) / validShown.length
+      : null;
+    const avgLabel = `Avg${[...drillSet][0] ? ` · ${[...drillSet][0]}` : ` · M${[...modeSet][0]}`}`;
 
     return (
       <View style={styles.container}>
@@ -143,8 +151,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
 
         <View style={styles.summary}>
           <Stat label="Runs" value={`${shown.length}`} />
-          <Stat label="Best" value={best != null ? `${fmt(best)}s` : '—'} />
-          <Stat label="Avg" value={avg != null ? `${fmt(avg)}s` : '—'} />
+          {avg != null ? <Stat label={avgLabel} value={`${fmt(avg)}s`} /> : null}
         </View>
 
         <FlatList
@@ -229,7 +236,6 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
               </Text>
             </View>
             <View style={{ flex: 1 }} />
-            {item.bestMs != null ? <Text style={styles.sessBest}>best {fmt(item.bestMs)}s</Text> : null}
             <Text style={styles.chev}>›</Text>
           </Pressable>
         )}
@@ -307,7 +313,6 @@ const styles = StyleSheet.create({
   },
   sessName: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
   sessSub: { color: '#64748b', fontSize: 13, marginTop: 2 },
-  sessBest: { color: '#34d399', fontSize: 13, fontWeight: '700', marginRight: 8 },
   chev: { color: '#475569', fontSize: 22 },
   runRow: {
     flexDirection: 'row',
