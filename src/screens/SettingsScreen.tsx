@@ -2,7 +2,16 @@
 // see its effect). About + Donate are added in a later task.
 
 import { useEffect, useState } from 'react';
-import { Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import Constants from 'expo-constants';
 
 import { useSettings, type LatencySample } from '../settings/SettingsProvider';
@@ -36,6 +45,8 @@ export default function SettingsScreen() {
     correctionMode,
     setCorrectionMode,
     latencySamples,
+    devMode,
+    setDevMode,
   } = useSettings();
   const gate = useGate();
   const connected = gate.status === 'connected';
@@ -58,6 +69,24 @@ export default function SettingsScreen() {
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 32 }}>
       <Text style={styles.title}>Settings</Text>
 
+      <Section title="Developer mode">
+        <View style={styles.devRow}>
+          <Text style={styles.devLabel}>Show advanced / diagnostic info</Text>
+          <Switch
+            value={devMode}
+            onValueChange={setDevMode}
+            trackColor={{ false: '#243042', true: '#1d4ed8' }}
+            thumbColor="#e2e8f0"
+          />
+        </View>
+        <Text style={styles.note}>
+          Off shows clean results only. On reveals the ±X accuracy, clock-sync detail, raw Mode 2
+          split values, and the Debug tab. Times are always measured and saved either way.
+        </Text>
+      </Section>
+
+      {devMode ? (
+      <>
       <Section title="Reaction latency calibration">
         <Text style={styles.help}>
           The GO beep plays on the phone, slightly after the gate's real GO, so Mode 2 reaction
@@ -162,6 +191,8 @@ export default function SettingsScreen() {
           (RTT/2) + audio-gap quantization (~16 ms). Lower stdev = more trustworthy.
         </Text>
       </Section>
+      </>
+      ) : null}
 
       <Section title="Support EqualSplit">
         <Text style={styles.help}>
@@ -249,6 +280,8 @@ const styles = StyleSheet.create({
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 12 },
   section: { backgroundColor: '#161b22', borderRadius: 14, padding: 16, marginBottom: 14 },
   sectionTitle: { color: '#e2e8f0', fontSize: 16, fontWeight: '700', marginBottom: 8 },
+  devRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  devLabel: { color: '#cbd5e1', fontSize: 14, flex: 1 },
   help: { color: '#94a3b8', fontSize: 13, lineHeight: 18, marginBottom: 12 },
   offsetRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   input: {

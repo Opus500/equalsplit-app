@@ -7,7 +7,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import { GateProvider } from './src/ble/GateProvider';
-import { SettingsProvider } from './src/settings/SettingsProvider';
+import { SettingsProvider, useSettings } from './src/settings/SettingsProvider';
 import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
@@ -17,8 +17,6 @@ import DebugScreen from './src/screens/DebugScreen';
 type Tab = 'timer' | 'history' | 'settings' | 'debug';
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('timer');
-
   useEffect(() => {
     initDb().catch(() => {});
   }, []);
@@ -26,38 +24,55 @@ export default function App() {
   return (
     <SettingsProvider>
       <GateProvider>
-        <View style={styles.root}>
-        <StatusBar style="light" />
-        <View style={styles.screens}>
-          <View style={[styles.fill, tab !== 'timer' && styles.hidden]}>
-            <TimerScreen />
-          </View>
-          {tab === 'history' && (
-            <View style={styles.fill}>
-              <HistoryScreen isActive={tab === 'history'} />
-            </View>
-          )}
-          {tab === 'settings' && (
-            <View style={styles.fill}>
-              <SettingsScreen />
-            </View>
-          )}
-          {tab === 'debug' && (
-            <View style={styles.fill}>
-              <DebugScreen />
-            </View>
-          )}
-        </View>
-
-        <View style={styles.tabBar}>
-          <TabButton label="Timer" active={tab === 'timer'} onPress={() => setTab('timer')} />
-          <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
-          <TabButton label="Settings" active={tab === 'settings'} onPress={() => setTab('settings')} />
-          <TabButton label="Debug" active={tab === 'debug'} onPress={() => setTab('debug')} />
-        </View>
-        </View>
+        <AppShell />
       </GateProvider>
     </SettingsProvider>
+  );
+}
+
+// Inside the providers so it can read devMode (gates the Debug tab). Default OFF.
+function AppShell() {
+  const { devMode } = useSettings();
+  const [tab, setTab] = useState<Tab>('timer');
+
+  // If dev mode is turned off while on the Debug tab, fall back to Timer.
+  useEffect(() => {
+    if (!devMode && tab === 'debug') setTab('timer');
+  }, [devMode, tab]);
+
+  return (
+    <View style={styles.root}>
+      <StatusBar style="light" />
+      <View style={styles.screens}>
+        <View style={[styles.fill, tab !== 'timer' && styles.hidden]}>
+          <TimerScreen />
+        </View>
+        {tab === 'history' && (
+          <View style={styles.fill}>
+            <HistoryScreen isActive={tab === 'history'} />
+          </View>
+        )}
+        {tab === 'settings' && (
+          <View style={styles.fill}>
+            <SettingsScreen />
+          </View>
+        )}
+        {tab === 'debug' && devMode && (
+          <View style={styles.fill}>
+            <DebugScreen />
+          </View>
+        )}
+      </View>
+
+      <View style={styles.tabBar}>
+        <TabButton label="Timer" active={tab === 'timer'} onPress={() => setTab('timer')} />
+        <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
+        <TabButton label="Settings" active={tab === 'settings'} onPress={() => setTab('settings')} />
+        {devMode && (
+          <TabButton label="Debug" active={tab === 'debug'} onPress={() => setTab('debug')} />
+        )}
+      </View>
+    </View>
   );
 }
 

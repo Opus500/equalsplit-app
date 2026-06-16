@@ -42,10 +42,15 @@ type SettingsValue = {
   measuredAudioLatencyMs: number | null;
   correctionMode: CorrectionMode;
   latencySamples: LatencySample[];
+  // Developer/Advanced mode. OFF (default) hides all diagnostic/technical UI
+  // (±X accuracy, clock-sync detail, raw split values, the Debug tab); the
+  // underlying data is still measured and stored — this only gates display.
+  devMode: boolean;
   setReactionOffsetMs: (ms: number) => void;
   setMeasuredAudioLatencyMs: (ms: number) => void;
   setCorrectionMode: (m: CorrectionMode) => void;
   addLatencySample: (s: LatencySample) => void;
+  setDevMode: (on: boolean) => void;
 };
 
 const SettingsContext = createContext<SettingsValue | null>(null);
@@ -56,6 +61,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [measuredAudioLatencyMs, setMeasured] = useState<number | null>(null);
   const [correctionMode, setMode] = useState<CorrectionMode>('synced');
   const [latencySamples, setLatencySamples] = useState<LatencySample[]>([]);
+  const [devMode, setDev] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -64,6 +70,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         setMeasured(await getMeasuredAudioLatencyMs());
         const m = await getSetting('correction_mode');
         if (m === 'fixed' || m === 'synced') setMode(m);
+        setDev((await getSetting('dev_mode')) === '1');
       } catch {
         /* keep defaults */
       } finally {
@@ -93,6 +100,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     setLatencySamples((prev) => [...prev, s].slice(-MAX_SAMPLES));
   }, []);
 
+  const setDevMode = useCallback((on: boolean) => {
+    setDev(on);
+    setSetting('dev_mode', on ? '1' : '0').catch(() => {});
+  }, []);
+
   return (
     <SettingsContext.Provider
       value={{
@@ -101,10 +113,12 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         measuredAudioLatencyMs,
         correctionMode,
         latencySamples,
+        devMode,
         setReactionOffsetMs,
         setMeasuredAudioLatencyMs,
         setCorrectionMode,
         addLatencySample,
+        setDevMode,
       }}
     >
       {children}

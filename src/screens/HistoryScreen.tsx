@@ -7,6 +7,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { deleteRun, getRuns, getSessions, type RunRow, type SessionRow } from '../db/database';
+import { useSettings } from '../settings/SettingsProvider';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
 const adjTotal = (r: RunRow) => Math.max(0, r.total_ms - r.reaction_offset_ms);
@@ -24,6 +25,7 @@ const parseMeta = (r: RunRow): RawMeta => {
 };
 
 export default function HistoryScreen({ isActive }: { isActive: boolean }) {
+  const { devMode } = useSettings();
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [selected, setSelected] = useState<SessionRow | null>(null);
   const [runs, setRuns] = useState<RunRow[]>([]);
@@ -102,13 +104,15 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                     <Text style={styles.runSplits}>
                       {fmt(adjReaction(item))} / {fmt(item.split2_ms)}
                     </Text>
-                    {meta.confMs ? (
-                      <Text style={styles.runConf}>reaction ±{meta.confMs} ms · synced</Text>
-                    ) : (
-                      <Text style={styles.runConfDim}>
-                        {meta.source === 'fixed' ? 'fixed offset' : 'no ±X'}
-                      </Text>
-                    )}
+                    {devMode ? (
+                      meta.confMs ? (
+                        <Text style={styles.runConf}>reaction ±{meta.confMs} ms · synced</Text>
+                      ) : (
+                        <Text style={styles.runConfDim}>
+                          {meta.source === 'fixed' ? 'fixed offset' : 'no ±X'}
+                        </Text>
+                      )
+                    ) : null}
                   </View>
                 ) : null}
                 <Text style={styles.runTotal}>{fmt(adjTotal(item))}s</Text>

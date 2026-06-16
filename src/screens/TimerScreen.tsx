@@ -48,7 +48,7 @@ const toResult = (lr: LastResult): Result => ({
 export default function TimerScreen() {
   const gate = useGate();
   const { subscribe, gateStatus, status, readStatusNow, readLastResultNow, gateToPhoneMs } = gate;
-  const { reactionOffsetMs, setMeasuredAudioLatencyMs, correctionMode, addLatencySample } =
+  const { reactionOffsetMs, setMeasuredAudioLatencyMs, correctionMode, addLatencySample, devMode } =
     useSettings();
 
   const marks = useAudioPlayer(require('../../assets/sounds/marks.wav'));
@@ -491,21 +491,23 @@ export default function TimerScreen() {
             <Split
               label="Reaction → G1"
               ms={adjReactionMs}
-              raw={result.split1Ms}
-              conf={corr && corr.confMs > 0 ? corr.confMs : undefined}
+              raw={devMode ? result.split1Ms : undefined}
+              conf={devMode && corr && corr.confMs > 0 ? corr.confMs : undefined}
             />
             <Split label="G1 → G2" ms={result.split2Ms} />
-            <Split label="Total" ms={adjTotalMs} raw={result.totalMs} strong />
-            {corr && corr.confMs > 0 ? (
+            <Split label="Total" ms={adjTotalMs} raw={devMode ? result.totalMs : undefined} strong />
+            {devMode && corr && corr.confMs > 0 ? (
               <Text style={styles.accuracyNote}>reaction accuracy ±{corr.confMs} ms (clock-synced)</Text>
             ) : null}
-            <Text style={styles.offsetNote}>
-              {corr?.source === 'synced'
-                ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic)`
-                : `fixed offset · −${shownCorrection} ms · not clock-synced this run (no ±X)`}
-            </Text>
+            {devMode ? (
+              <Text style={styles.offsetNote}>
+                {corr?.source === 'synced'
+                  ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic)`
+                  : `fixed offset · −${shownCorrection} ms · not clock-synced this run (no ±X)`}
+              </Text>
+            ) : null}
             {corr?.early ? (
-              <Text style={styles.earlyNote}>⚠ raw reaction &lt; correction — clamped, treat as suspect</Text>
+              <Text style={styles.earlyNote}>⚠ result may be unreliable (very early reaction)</Text>
             ) : null}
           </View>
         ) : null}
