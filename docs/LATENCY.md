@@ -12,6 +12,55 @@ and how to **measure** it on device.
 > computes them (Settings → "Measured latency", and `console.log` lines). The
 > tables below have blanks to fill in from your device — nothing here is invented.
 
+## VERDICT (measured 2026-06-15): phone-cued reaction correction is NOT salvageable
+
+Real per-run data settled this. Five synced Mode 2 runs, raw → corrected (correction):
+
+| raw (s) | corrected (s) | correction (ms) |
+|--:|--:|--:|
+| 0.512 | 0.145 | 367 |
+| 0.464 | 0.153 | 311 |
+| 0.475 | 0.222 | 253 |
+| 0.634 | 0.144 | 490 |
+| 0.618 | 0.134 | 484 |
+
+- The applied correction swung **253–490 ms (sd ≈ 94 ms)** run to run.
+- Clock sync was stable: **offset jitter 1–5 ms**. So the swing is **not** clock drift —
+  it is real, measured BLE-delivery + audio-pipeline jitter (`bleOneway` + `audioGap`).
+- 4 of 5 corrected values fell to **0.134–0.153 s**, below the human reaction floor
+  (~0.15 s) and below the athlete's true reaction (≥0.20 s) ⇒ **systematic over-correction
+  (~60–90 ms) on top of large residual noise.**
+
+**Why it can't be fixed on the phone.** The correction measures *gate GO → engine
+audio-start (phone clock)*. What's actually needed is *gate GO → sound at the athlete's
+ear*. The gap between them — the speaker output path and its buffering jitter — is **not
+observable from JS** (expo-audio does not expose `AVAudioSession.outputLatency`), and the
+data shows that gap is large and variable enough to drive corrected results below the
+human floor. Clock sync cannot touch it: the stimulus physically travels phone → air → ear
+with an unknown, jittery delay. (This supersedes the ±25 ms estimate later in this doc,
+which assumed a stable ~20 ± 15 ms acoustic term — in practice the per-run beep latency is
+too jittery for the correction to be trustworthy.)
+
+**What IS accurate (unaffected).** Only the **GO → Gate 1 reaction** is contaminated by the
+phone cue. **Mode 1 total** and **Mode 2 Gate 1 → Gate 2** are pure gate-clock intervals
+(no phone in the timing path) and remain accurate.
+
+**Required fix — gate buzzer (gate-cued start).** Fire a buzzer on the gate at
+`startTimeUs`; then `reaction = gate1_trigger − startTimeUs`, both in the **same** gate
+`micros()` clock — no BLE, no phone audio, no acoustic unknown in the reaction path.
+Residual ≈ sensor debounce + buzzer rise time, **≈ ±2–5 ms**. This is the only way to get
+trustworthy reaction times.
+
+**App behaviour as of this verdict.**
+- Clean mode (default) shows **Gate 1 → Gate 2 (exact)** and a **raw total**; the reaction is
+  shown **raw with a "+ beep latency (uncorrected)"** caveat — never the corrected number.
+- The reaction correction is a **dev-mode-only** overlay; a corrected reaction below
+  `REACTION_FLOOR_MS` (150 ms) is flagged **"unreliable / over-corrected"** and stored
+  `status='suspect'` (excluded from session best/avg).
+- The correction is never subtracted from totals or the session best (raw totals only).
+- Raw gate values + the full per-run breakdown are still stored (`runs.raw_json` and the
+  `[breakdown]` log) so nothing is lost and the verdict is re-checkable.
+
 ## The methods
 
 ### 1. Clock sync via PING / `t0_us` (the main win)

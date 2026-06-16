@@ -10,7 +10,9 @@ import { deleteRun, getRuns, getSessions, type RunRow, type SessionRow } from '.
 import { useSettings } from '../settings/SettingsProvider';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
-const adjTotal = (r: RunRow) => Math.max(0, r.total_ms - r.reaction_offset_ms);
+// Total is the raw gate measurement; the (unreliable) reaction correction is
+// applied only to the reaction in dev mode, never to the total. See LATENCY.md.
+const totalOf = (r: RunRow) => r.total_ms;
 const adjReaction = (r: RunRow) => Math.max(0, r.split1_ms - r.reaction_offset_ms);
 
 // Per-run correction breakdown stored at save time (see TimerScreen applyFinish).
@@ -50,7 +52,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
 
   const confirmDelete = useCallback(
     (run: RunRow) => {
-      Alert.alert('Delete run', `Delete run #${run.run_index} (${fmt(adjTotal(run))}s)?`, [
+      Alert.alert('Delete run', `Delete run #${run.run_index} (${fmt(totalOf(run))}s)?`, [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -74,7 +76,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
 
   if (selected) {
     const valid = runs.filter((r) => r.status === 'valid');
-    const totals = valid.map(adjTotal);
+    const totals = valid.map(totalOf);
     const best = totals.length ? Math.min(...totals) : null;
     const avg = totals.length ? totals.reduce((a, b) => a + b, 0) / totals.length : null;
 
@@ -106,8 +108,15 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                 <View style={{ flex: 1 }} />
                 {item.mode === 2 ? (
                   <View style={styles.runM2}>
-                    <Text style={[styles.runSplits, meta.implausible && styles.runUnreliable]}>
-                      {meta.implausible ? 'unreliable' : fmt(adjReaction(item))} / {fmt(item.split2_ms)}
+                    <Text
+                      style={[styles.runSplits, devMode && meta.implausible && styles.runUnreliable]}
+                    >
+                      {devMode
+                        ? meta.implausible
+                          ? 'unreliable'
+                          : fmt(adjReaction(item))
+                        : fmt(item.split1_ms)}{' '}
+                      / {fmt(item.split2_ms)}
                     </Text>
                     {devMode ? (
                       meta.confMs ? (
@@ -117,10 +126,12 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                           {meta.source === 'fixed' ? 'fixed offset' : 'no ±X'}
                         </Text>
                       )
-                    ) : null}
+                    ) : (
+                      <Text style={styles.runConfDim}>react raw · G1→G2 exact</Text>
+                    )}
                   </View>
                 ) : null}
-                <Text style={styles.runTotal}>{fmt(adjTotal(item))}s</Text>
+                <Text style={styles.runTotal}>{fmt(totalOf(item))}s</Text>
                 <Pressable onPress={() => confirmDelete(item)} hitSlop={10} style={styles.del}>
                   <Text style={styles.delText}>✕</Text>
                 </Pressable>

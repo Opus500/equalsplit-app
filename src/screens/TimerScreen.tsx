@@ -498,12 +498,13 @@ export default function TimerScreen() {
   const shownCorrection = corr ? corr.correction : reactionOffsetMs;
   const adjReactionMs =
     result && result.mode === 2 ? Math.max(0, result.split1Ms - shownCorrection) : 0;
-  const adjTotalMs =
-    result && result.mode === 2
-      ? Math.max(0, result.totalMs - shownCorrection)
-      : (result?.totalMs ?? 0);
+  // The total is ALWAYS the raw gate measurement. The reaction correction is
+  // unreliable (docs/LATENCY.md) so it never reduces the total — it's applied
+  // only to the reaction, and only in dev mode. Mode 2 total = GO->G2 (still
+  // includes the GO-beep latency, but that's a real gate-clock interval, not a
+  // fudged number). Mode 1 total is unaffected.
   const big = result
-    ? fmt(result.mode === 2 ? adjTotalMs : result.totalMs, 3)
+    ? fmt(result.totalMs, 3)
     : fmt(liveMs, runState === 'running' ? 2 : 3);
 
   return (
@@ -512,38 +513,42 @@ export default function TimerScreen() {
 
       <View style={styles.stage}>
         {phaseLabel ? <Text style={styles.phase}>{phaseLabel}</Text> : null}
-        <Text
-          style={[
-            styles.timer,
-            runState === 'finished' && styles.timerDone,
-            runState === 'finished' && corr?.implausible && styles.timerWarn,
-          ]}
-        >
-          {big}
-        </Text>
+        <Text style={[styles.timer, runState === 'finished' && styles.timerDone]}>{big}</Text>
         <Text style={styles.unit}>seconds</Text>
 
-        {result && result.mode === 2 ? (
+        {result && result.mode === 2 && !devMode ? (
+          // Clean mode: G1→G2 (exact) + total; reaction shown RAW with a caveat,
+          // never the corrected number (it can go sub-floor). See docs/LATENCY.md.
+          <View style={styles.splits}>
+            <Split label="Reaction → G1" ms={result.split1Ms} caveat="+ beep latency (uncorrected)" muted />
+            <Split label="G1 → G2" ms={result.split2Ms} />
+            <Split label="Total" ms={result.totalMs} strong />
+            <Text style={styles.offsetNote}>
+              Reaction and total include the GO-beep delay, which can&apos;t be corrected reliably on
+              the phone. The Gate 1 → Gate 2 split is exact.
+            </Text>
+          </View>
+        ) : null}
+
+        {result && result.mode === 2 && devMode ? (
           <View style={styles.splits}>
             <Split
               label="Reaction → G1"
               ms={adjReactionMs}
-              raw={devMode ? result.split1Ms : undefined}
-              conf={devMode && corr && corr.confMs > 0 ? corr.confMs : undefined}
+              raw={result.split1Ms}
+              conf={corr && corr.confMs > 0 ? corr.confMs : undefined}
               unreliable={!!corr?.implausible}
             />
             <Split label="G1 → G2" ms={result.split2Ms} />
-            <Split label="Total" ms={adjTotalMs} raw={devMode ? result.totalMs : undefined} strong />
-            {devMode && corr && corr.confMs > 0 && !corr.implausible ? (
+            <Split label="Total (GO → G2, raw)" ms={result.totalMs} strong />
+            {corr && corr.confMs > 0 && !corr.implausible ? (
               <Text style={styles.accuracyNote}>reaction accuracy ±{corr.confMs} ms (clock-synced)</Text>
             ) : null}
-            {devMode ? (
-              <Text style={styles.offsetNote}>
-                {corr?.source === 'synced'
-                  ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic)`
-                  : `fixed offset · −${shownCorrection} ms · not clock-synced this run (no ±X)`}
-              </Text>
-            ) : null}
+            <Text style={styles.offsetNote}>
+              {corr?.source === 'synced'
+                ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic)`
+                : `fixed offset · −${shownCorrection} ms · not clock-synced this run (no ±X)`}
+            </Text>
             {corr?.implausible ? (
               <Text style={styles.earlyNote}>
                 ⚠ reaction over-corrected (below ~{REACTION_FLOOR_MS} ms human floor) — unreliable.
@@ -644,6 +649,8 @@ function Split({
   conf,
   strong,
   unreliable,
+  caveat,
+  muted,
 }: {
   label: string;
   ms: number;
@@ -651,6 +658,8 @@ function Split({
   conf?: number;
   strong?: boolean;
   unreliable?: boolean;
+  caveat?: string; // small note under the value (e.g. clean-mode "+ beep latency")
+  muted?: boolean; // de-emphasise the value (not an authoritative metric)
 }) {
   return (
     <View style={styles.splitRow}>
@@ -662,11 +671,13 @@ function Split({
             styles.splitVal,
             strong && styles.splitStrong,
             unreliable && styles.splitUnreliable,
+            muted && styles.splitMuted,
           ]}
         >
           {unreliable ? 'unreliable' : `${fmt(ms, 3)}s${conf != null ? ` ±${conf}ms` : ''}`}
         </Text>
         {raw != null ? <Text style={styles.splitRaw}>raw {fmt(raw, 3)}s</Text> : null}
+        {caveat ? <Text style={styles.splitRaw}>{caveat}</Text> : null}
       </View>
     </View>
   );
@@ -716,7 +727,6 @@ const styles = StyleSheet.create({
   phase: { color: '#fbbf24', fontSize: 22, fontWeight: '700', marginBottom: 8 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },
   timerDone: { color: '#34d399' },
-  timerWarn: { color: '#fb923c' },
   unit: { color: '#64748b', fontSize: 14, marginTop: -6 },
   splits: { marginTop: 20, width: '70%' },
   splitRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
@@ -724,6 +734,7 @@ const styles = StyleSheet.create({
   splitValCol: { alignItems: 'flex-end' },
   splitVal: { color: '#e2e8f0', fontSize: 15, fontVariant: ['tabular-nums'] },
   splitUnreliable: { color: '#fb923c', fontWeight: '700' },
+  splitMuted: { color: '#94a3b8' },
   splitRaw: { color: '#475569', fontSize: 11, fontVariant: ['tabular-nums'] },
   splitStrong: { color: '#fff', fontWeight: '800' },
   accuracyNote: { color: '#38bdf8', fontSize: 13, fontWeight: '700', marginTop: 10, textAlign: 'center' },

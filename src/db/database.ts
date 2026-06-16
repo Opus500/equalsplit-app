@@ -173,7 +173,8 @@ export type SessionRow = {
   name: string;
   created_at: number;
   runCount: number;
-  bestMs: number | null; // best adjusted total (total_ms - reaction_offset_ms) of valid runs
+  bestMs: number | null; // best raw total of valid runs (the reaction correction is
+  // unreliable, so it is never subtracted from totals — see docs/LATENCY.md)
 };
 
 export async function getSessions(): Promise<SessionRow[]> {
@@ -181,7 +182,7 @@ export async function getSessions(): Promise<SessionRow[]> {
   return db.getAllAsync<SessionRow>(`
     SELECT s.id, s.name, s.created_at,
            COUNT(r.id) AS runCount,
-           MIN(CASE WHEN r.status = 'valid' THEN r.total_ms - r.reaction_offset_ms END) AS bestMs
+           MIN(CASE WHEN r.status = 'valid' THEN r.total_ms END) AS bestMs
     FROM sessions s
     LEFT JOIN runs r ON r.session_id = s.id
     GROUP BY s.id
