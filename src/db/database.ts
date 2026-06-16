@@ -99,10 +99,21 @@ export async function setMeasuredAudioLatencyMs(ms: number): Promise<void> {
   await setSetting('measured_audio_latency_ms', String(Math.round(ms)));
 }
 
+// Local calendar day as YYYY-MM-DD, in the device's timezone (NOT UTC). Using
+// toISOString() here filed evening runs under the next day because ISO is UTC —
+// e.g. 8pm Pacific on the 15th is the 16th in UTC. getFullYear/Month/Date are
+// all local, so a run lands under the day it actually happened.
+function localDayString(d = new Date()): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 // A session = one calendar day of runs (YYYY-MM-DD). Created lazily on first run.
 async function getOrCreateTodaySession(): Promise<string> {
   const db = await getDb();
-  const name = new Date().toISOString().slice(0, 10);
+  const name = localDayString();
   const existing = await db.getFirstAsync<{ id: string }>(
     'SELECT id FROM sessions WHERE name = ?',
     [name],
@@ -194,7 +205,7 @@ export type RunRow = {
 export async function getRuns(sessionId: string): Promise<RunRow[]> {
   const db = await getDb();
   return db.getAllAsync<RunRow>(
-    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, reaction_offset_ms, status, raw_json, created_at FROM runs WHERE session_id = ? ORDER BY run_index ASC',
+    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, reaction_offset_ms, status, raw_json, created_at FROM runs WHERE session_id = ? ORDER BY run_index DESC',
     [sessionId],
   );
 }

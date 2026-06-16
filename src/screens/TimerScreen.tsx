@@ -163,13 +163,22 @@ export default function TimerScreen() {
     return () => sub.remove();
   }, [go, setMeasuredAudioLatencyMs, addLatencySample]);
 
+  // Replay a one-shot cue reliably. After a sound reaches its end the player sits
+  // at the end, so play() alone is a no-op — it must be rewound first, and the
+  // seek must COMPLETE before play() or playback starts from the end (silent),
+  // which is why some countdown phases were intermittently quiet. Also force the
+  // volume back to 1 in case the mount-time priming left it muted. (Latency isn't
+  // critical here — only the GO cue is timing-sensitive, and it has its own path.)
   const playCue = useCallback((p: AudioPlayer) => {
-    try {
-      p.seekTo(0);
-      p.play();
-    } catch {
-      /* not ready */
-    }
+    void (async () => {
+      try {
+        p.volume = 1;
+        await p.seekTo(0);
+        p.play();
+      } catch {
+        /* not ready */
+      }
+    })();
   }, []);
 
   const stopTick = useCallback(() => {
