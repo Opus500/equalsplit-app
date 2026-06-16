@@ -187,13 +187,14 @@ export type RunRow = {
   split2_ms: number;
   reaction_offset_ms: number;
   status: string;
+  raw_json: string | null;
   created_at: number;
 };
 
 export async function getRuns(sessionId: string): Promise<RunRow[]> {
   const db = await getDb();
   return db.getAllAsync<RunRow>(
-    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, reaction_offset_ms, status, created_at FROM runs WHERE session_id = ? ORDER BY run_index ASC',
+    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, reaction_offset_ms, status, raw_json, created_at FROM runs WHERE session_id = ? ORDER BY run_index ASC',
     [sessionId],
   );
 }

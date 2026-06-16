@@ -251,6 +251,14 @@ export default function TimerScreen() {
       console.log(
         `[FINISH:${src}] mode=${r.mode} s1=${r.split1Ms} correction=${correction}(${source}) beepEngine=${beepEngine ?? 'n/a'} conf=±${confMs} early=${early}`,
       );
+      if (r.mode === 2) {
+        // Always print the computed ±X so it can be confirmed even if the UI path
+        // is the problem. source=fixed/conf=±0 means the run did NOT clock-sync.
+        console.log(
+          `[±X] run accuracy: source=${source} correctedReaction=${Math.max(0, r.split1Ms - correction)}ms ±${confMs}ms ` +
+            `(eClk=${Math.round(eClk)} acoustic=${ACOUSTIC_UNCERTAINTY_MS} audio=${AUDIO_MEAS_NOISE_MS}; minRtt=${cs?.minRttMs?.toFixed(1) ?? 'n/a'}, anchor=${cs ? 'set' : 'none'})`,
+        );
+      }
       setDbg(`finish(${src}) raw ${fmt(r.totalMs, 3)}s · −${correction}ms(${source}) · saving…`);
       const rawJson = JSON.stringify({
         source,
@@ -475,14 +483,17 @@ export default function TimerScreen() {
               label="Reaction → G1"
               ms={adjReactionMs}
               raw={result.split1Ms}
-              conf={corr?.source === 'synced' ? corr.confMs : undefined}
+              conf={corr && corr.confMs > 0 ? corr.confMs : undefined}
             />
             <Split label="G1 → G2" ms={result.split2Ms} />
             <Split label="Total" ms={adjTotalMs} raw={result.totalMs} strong />
+            {corr && corr.confMs > 0 ? (
+              <Text style={styles.accuracyNote}>reaction accuracy ±{corr.confMs} ms (clock-synced)</Text>
+            ) : null}
             <Text style={styles.offsetNote}>
               {corr?.source === 'synced'
-                ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic) · ±${corr.confMs} ms`
-                : `fixed offset · −${shownCorrection} ms (uncalibrated)`}
+                ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic)`
+                : `fixed offset · −${shownCorrection} ms · not clock-synced this run (no ±X)`}
             </Text>
             {corr?.early ? (
               <Text style={styles.earlyNote}>⚠ raw reaction &lt; correction — clamped, treat as suspect</Text>
@@ -652,7 +663,8 @@ const styles = StyleSheet.create({
   splitVal: { color: '#e2e8f0', fontSize: 15, fontVariant: ['tabular-nums'] },
   splitRaw: { color: '#475569', fontSize: 11, fontVariant: ['tabular-nums'] },
   splitStrong: { color: '#fff', fontWeight: '800' },
-  offsetNote: { color: '#64748b', fontSize: 11, marginTop: 8, textAlign: 'center' },
+  accuracyNote: { color: '#38bdf8', fontSize: 13, fontWeight: '700', marginTop: 10, textAlign: 'center' },
+  offsetNote: { color: '#64748b', fontSize: 11, marginTop: 6, textAlign: 'center' },
   earlyNote: { color: '#fb923c', fontSize: 11, marginTop: 4, textAlign: 'center' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 24, textAlign: 'center' },
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },

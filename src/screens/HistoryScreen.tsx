@@ -12,6 +12,17 @@ const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
 const adjTotal = (r: RunRow) => Math.max(0, r.total_ms - r.reaction_offset_ms);
 const adjReaction = (r: RunRow) => Math.max(0, r.split1_ms - r.reaction_offset_ms);
 
+// Per-run correction breakdown stored at save time (see TimerScreen applyFinish).
+type RawMeta = { source?: 'synced' | 'fixed'; confMs?: number; early?: boolean };
+const parseMeta = (r: RunRow): RawMeta => {
+  if (!r.raw_json) return {};
+  try {
+    return JSON.parse(r.raw_json) as RawMeta;
+  } catch {
+    return {};
+  }
+};
+
 export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [selected, setSelected] = useState<SessionRow | null>(null);
@@ -79,22 +90,34 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           data={runs}
           keyExtractor={(r) => r.id}
           ListEmptyComponent={<Text style={styles.empty}>No runs.</Text>}
-          renderItem={({ item }) => (
-            <View style={styles.runRow}>
-              <Text style={styles.runIdx}>#{item.run_index}</Text>
-              <Text style={styles.runMode}>M{item.mode}</Text>
-              <View style={{ flex: 1 }} />
-              {item.mode === 2 ? (
-                <Text style={styles.runSplits}>
-                  {fmt(adjReaction(item))} / {fmt(item.split2_ms)}
-                </Text>
-              ) : null}
-              <Text style={styles.runTotal}>{fmt(adjTotal(item))}s</Text>
-              <Pressable onPress={() => confirmDelete(item)} hitSlop={10} style={styles.del}>
-                <Text style={styles.delText}>✕</Text>
-              </Pressable>
-            </View>
-          )}
+          renderItem={({ item }) => {
+            const meta = parseMeta(item);
+            return (
+              <View style={styles.runRow}>
+                <Text style={styles.runIdx}>#{item.run_index}</Text>
+                <Text style={styles.runMode}>M{item.mode}</Text>
+                <View style={{ flex: 1 }} />
+                {item.mode === 2 ? (
+                  <View style={styles.runM2}>
+                    <Text style={styles.runSplits}>
+                      {fmt(adjReaction(item))} / {fmt(item.split2_ms)}
+                    </Text>
+                    {meta.confMs ? (
+                      <Text style={styles.runConf}>reaction ±{meta.confMs} ms · synced</Text>
+                    ) : (
+                      <Text style={styles.runConfDim}>
+                        {meta.source === 'fixed' ? 'fixed offset' : 'no ±X'}
+                      </Text>
+                    )}
+                  </View>
+                ) : null}
+                <Text style={styles.runTotal}>{fmt(adjTotal(item))}s</Text>
+                <Pressable onPress={() => confirmDelete(item)} hitSlop={10} style={styles.del}>
+                  <Text style={styles.delText}>✕</Text>
+                </Pressable>
+              </View>
+            );
+          }}
         />
       </View>
     );
@@ -172,7 +195,10 @@ const styles = StyleSheet.create({
   },
   runIdx: { color: '#64748b', width: 32, fontVariant: ['tabular-nums'] },
   runMode: { color: '#94a3b8', fontWeight: '700' },
-  runSplits: { color: '#64748b', fontSize: 13, marginRight: 10, fontVariant: ['tabular-nums'] },
+  runM2: { alignItems: 'flex-end', marginRight: 10 },
+  runSplits: { color: '#64748b', fontSize: 13, fontVariant: ['tabular-nums'] },
+  runConf: { color: '#38bdf8', fontSize: 10, fontWeight: '700', marginTop: 1, fontVariant: ['tabular-nums'] },
+  runConfDim: { color: '#475569', fontSize: 10, marginTop: 1 },
   runTotal: { color: '#fff', fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
   del: { paddingHorizontal: 6, paddingVertical: 2 },
   delText: { color: '#b4541f', fontSize: 16, fontWeight: '800' },
