@@ -17,7 +17,14 @@ import { useGate } from '../ble/GateProvider';
 import { useSettings } from '../settings/SettingsProvider';
 import { Evt, GateState, STATE_NAME } from '../ble/constants';
 import type { LastResult } from '../ble/events';
-import { saveRun } from '../db/database';
+import {
+  addRecentAthlete,
+  getRecentAthletes,
+  getSetting,
+  saveRun,
+  setSetting,
+} from '../db/database';
+import { TagPickerModal, formatTags } from '../components/TagPicker';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run';
 const nowMs = () =>
@@ -72,6 +79,15 @@ export default function TimerScreen() {
   const [result, setResult] = useState<Result | null>(null);
   const [gateState, setGateState] = useState<GateState | null>(null);
   const [dbg, setDbg] = useState('');
+  // Optional run tags. The current athlete/drill PERSIST across runs (until
+  // changed/cleared) so timing several runs needs no re-selecting; they're saved
+  // to settings so they also survive an app restart. finishedTags freezes what was
+  // attached to the just-finished run for the result display.
+  const [athlete, setAthlete] = useState('');
+  const [drill, setDrill] = useState('');
+  const [recents, setRecents] = useState<string[]>([]);
+  const [tagOpen, setTagOpen] = useState(false);
+  const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
   // Correction actually applied to the shown result (per run).
   const [corr, setCorr] = useState<{
     correction: number; // ms subtracted from raw split1 (and total)
@@ -101,6 +117,14 @@ export default function TimerScreen() {
   const offsetRef = useRef(reactionOffsetMs); // latest fixed offset, fallback at save time
   const correctionModeRef = useRef(correctionMode);
   const clockSyncRef = useRef(gate.clockSync); // latest sync (for ±X at finish)
+  const athleteRef = useRef(athlete); // latest tags, read by saveRun without re-creating it
+  const drillRef = useRef(drill);
+  useEffect(() => {
+    athleteRef.current = athlete;
+  }, [athlete]);
+  useEffect(() => {
+    drillRef.current = drill;
+  }, [drill]);
   useEffect(() => {
     offsetRef.current = reactionOffsetMs;
   }, [reactionOffsetMs]);
@@ -110,6 +134,27 @@ export default function TimerScreen() {
   useEffect(() => {
     clockSyncRef.current = gate.clockSync;
   }, [gate.clockSync]);
+
+  // Hydrate the persisted current tags + recent athletes once.
+  useEffect(() => {
+    (async () => {
+      try {
+        setAthlete((await getSetting('current_athlete')) ?? '');
+        setDrill((await getSetting('current_drill')) ?? '');
+        setRecents(await getRecentAthletes());
+      } catch {
+        /* defaults */
+      }
+    })();
+  }, []);
+
+  // Persist the current tags so they survive an app restart (and across runs).
+  const applyTags = useCallback((name: string, dr: string) => {
+    setAthlete(name);
+    setDrill(dr);
+    setSetting('current_athlete', name).catch(() => {});
+    setSetting('current_drill', dr).catch(() => {});
+  }, []);
 
   // Audio: preload + warm up the output pipeline so the first real cue is low-latency.
   useEffect(() => {
@@ -308,6 +353,9 @@ export default function TimerScreen() {
         minRttMs: cs?.minRttMs ?? null,
         offsetSpreadMs: cs?.offsetSpreadMs ?? null,
       });
+      const tagName = athleteRef.current.trim();
+      const tagDrill = drillRef.current.trim();
+      setFinishedTags({ name: tagName, drill: tagDrill });
       saveRun({
         mode: r.mode,
         totalMs: r.totalMs, // RAW authoritative (gate clock)
@@ -316,9 +364,12 @@ export default function TimerScreen() {
         reactionOffsetMs: correction,
         rawJson,
         status: early || implausible ? 'suspect' : r.flags & 0x01 ? 'valid' : 'invalid',
+        athleteName: tagName,
+        drillType: tagDrill,
       })
         .then(() => {
           console.log('[saveRun] ok');
+          if (tagName) addRecentAthlete(tagName).then(setRecents).catch(() => {});
           const shown = r.mode === 2 ? Math.max(0, r.totalMs - correction) : r.totalMs;
           setDbg(`finish(${src}) ${fmt(shown, 3)}s · saved ✓`);
         })
@@ -507,14 +558,37 @@ export default function TimerScreen() {
     ? fmt(result.totalMs, 3)
     : fmt(liveMs, runState === 'running' ? 2 : 3);
 
+  const currentTags = formatTags(athlete, drill);
+  const finishedTagStr = finishedTags ? formatTags(finishedTags.name, finishedTags.drill) : '';
+
   return (
     <View style={styles.container}>
       <ConnChip />
+
+      {/* Compact, optional tag bar. Persists across runs; tap to set, ✕ to clear. */}
+      <Pressable style={styles.tagBar} onPress={() => setTagOpen(true)}>
+        <Text
+          style={[styles.tagBarText, !currentTags && styles.tagBarPlaceholder]}
+          numberOfLines={1}
+        >
+          {currentTags || '＋  Athlete / drill (optional)'}
+        </Text>
+        {athlete || drill ? (
+          <Pressable onPress={() => applyTags('', '')} hitSlop={8}>
+            <Text style={styles.tagClear}>✕</Text>
+          </Pressable>
+        ) : (
+          <Text style={styles.tagSet}>Set</Text>
+        )}
+      </Pressable>
 
       <View style={styles.stage}>
         {phaseLabel ? <Text style={styles.phase}>{phaseLabel}</Text> : null}
         <Text style={[styles.timer, runState === 'finished' && styles.timerDone]}>{big}</Text>
         <Text style={styles.unit}>seconds</Text>
+        {runState === 'finished' && finishedTagStr ? (
+          <Text style={styles.resultTags}>{finishedTagStr}</Text>
+        ) : null}
 
         {result && result.mode === 2 && !devMode ? (
           // Clean mode: G1→G2 (exact) + total; reaction shown RAW with a caveat,
@@ -583,6 +657,15 @@ export default function TimerScreen() {
           <Btn label="Reset" onPress={gate.reset} disabled={!connected || isIdleState} kind="warn" />
         </Row>
       </View>
+
+      <TagPickerModal
+        visible={tagOpen}
+        initialName={athlete}
+        initialDrill={drill}
+        recents={recents}
+        onClose={() => setTagOpen(false)}
+        onSubmit={applyTags}
+      />
     </View>
   );
 }
@@ -723,6 +806,21 @@ const styles = StyleSheet.create({
   dotBusy: { backgroundColor: '#f59e0b' },
   chipText: { color: '#cbd5e1', fontSize: 13 },
   chipAction: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
+  tagBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#161b22',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginTop: 2,
+  },
+  tagBarText: { color: '#e2e8f0', fontSize: 14, fontWeight: '600', flex: 1 },
+  tagBarPlaceholder: { color: '#64748b', fontWeight: '400' },
+  tagClear: { color: '#fb923c', fontSize: 15, fontWeight: '800' },
+  tagSet: { color: '#60a5fa', fontSize: 13, fontWeight: '700' },
+  resultTags: { color: '#94a3b8', fontSize: 15, fontWeight: '600', marginTop: 6 },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   phase: { color: '#fbbf24', fontSize: 22, fontWeight: '700', marginBottom: 8 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },

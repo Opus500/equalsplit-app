@@ -42,6 +42,8 @@ export async function initDb(): Promise<void> {
       raw_json TEXT,
       created_at INTEGER NOT NULL,
       reaction_offset_ms INTEGER NOT NULL DEFAULT 0,
+      athlete_name TEXT,
+      drill_type TEXT,
       synced INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
@@ -51,10 +53,16 @@ export async function initDb(): Promise<void> {
     );
   `);
 
-  // Migration for DBs created before reaction_offset_ms existed.
+  // Migrations for DBs created before later columns existed (existing rows null).
   const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(runs)');
   if (!cols.some((c) => c.name === 'reaction_offset_ms')) {
     await db.execAsync('ALTER TABLE runs ADD COLUMN reaction_offset_ms INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!cols.some((c) => c.name === 'athlete_name')) {
+    await db.execAsync('ALTER TABLE runs ADD COLUMN athlete_name TEXT');
+  }
+  if (!cols.some((c) => c.name === 'drill_type')) {
+    await db.execAsync('ALTER TABLE runs ADD COLUMN drill_type TEXT');
   }
 }
 
@@ -136,6 +144,13 @@ export type RunInput = {
   reactionOffsetMs?: number;
   status?: string;
   rawJson?: string;
+  athleteName?: string | null;
+  drillType?: string | null;
+};
+
+const clean = (s?: string | null) => {
+  const t = s?.trim();
+  return t ? t : null;
 };
 
 export async function saveRun(r: RunInput): Promise<void> {
@@ -149,8 +164,8 @@ export async function saveRun(r: RunInput): Promise<void> {
   const now = Date.now();
   await db.runAsync(
     `INSERT INTO runs
-       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, synced)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, athlete_name, drill_type, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     [
       newId(),
       sessionId,
@@ -164,8 +179,49 @@ export async function saveRun(r: RunInput): Promise<void> {
       r.rawJson ?? null,
       now,
       r.reactionOffsetMs ?? 0,
+      clean(r.athleteName),
+      clean(r.drillType),
     ],
   );
+}
+
+// Edit a run's tags later (from History). Empty strings store as NULL.
+export async function updateRunTags(
+  id: string,
+  fields: { athleteName?: string | null; drillType?: string | null },
+): Promise<void> {
+  const db = await getDb();
+  await db.runAsync('UPDATE runs SET athlete_name = ?, drill_type = ? WHERE id = ?', [
+    clean(fields.athleteName),
+    clean(fields.drillType),
+    id,
+  ]);
+}
+
+// Recently-used athlete names (most-recent first), kept in settings so a freshly
+// typed name is available immediately (before any run with it is saved).
+const MAX_RECENT_ATHLETES = 12;
+export async function getRecentAthletes(): Promise<string[]> {
+  const v = await getSetting('recent_athletes');
+  if (!v) return [];
+  try {
+    const arr = JSON.parse(v);
+    return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function addRecentAthlete(name: string): Promise<string[]> {
+  const n = name.trim();
+  if (!n) return getRecentAthletes();
+  const cur = await getRecentAthletes();
+  const next = [n, ...cur.filter((x) => x.toLowerCase() !== n.toLowerCase())].slice(
+    0,
+    MAX_RECENT_ATHLETES,
+  );
+  await setSetting('recent_athletes', JSON.stringify(next));
+  return next;
 }
 
 export type SessionRow = {
@@ -200,13 +256,15 @@ export type RunRow = {
   reaction_offset_ms: number;
   status: string;
   raw_json: string | null;
+  athlete_name: string | null;
+  drill_type: string | null;
   created_at: number;
 };
 
 export async function getRuns(sessionId: string): Promise<RunRow[]> {
   const db = await getDb();
   return db.getAllAsync<RunRow>(
-    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, reaction_offset_ms, status, raw_json, created_at FROM runs WHERE session_id = ? ORDER BY run_index DESC',
+    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, reaction_offset_ms, status, raw_json, athlete_name, drill_type, created_at FROM runs WHERE session_id = ? ORDER BY run_index DESC',
     [sessionId],
   );
 }
