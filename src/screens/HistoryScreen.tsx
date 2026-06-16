@@ -14,7 +14,12 @@ const adjTotal = (r: RunRow) => Math.max(0, r.total_ms - r.reaction_offset_ms);
 const adjReaction = (r: RunRow) => Math.max(0, r.split1_ms - r.reaction_offset_ms);
 
 // Per-run correction breakdown stored at save time (see TimerScreen applyFinish).
-type RawMeta = { source?: 'synced' | 'fixed'; confMs?: number; early?: boolean };
+type RawMeta = {
+  source?: 'synced' | 'fixed';
+  confMs?: number;
+  early?: boolean;
+  implausible?: boolean;
+};
 const parseMeta = (r: RunRow): RawMeta => {
   if (!r.raw_json) return {};
   try {
@@ -101,8 +106,8 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                 <View style={{ flex: 1 }} />
                 {item.mode === 2 ? (
                   <View style={styles.runM2}>
-                    <Text style={styles.runSplits}>
-                      {fmt(adjReaction(item))} / {fmt(item.split2_ms)}
+                    <Text style={[styles.runSplits, meta.implausible && styles.runUnreliable]}>
+                      {meta.implausible ? 'unreliable' : fmt(adjReaction(item))} / {fmt(item.split2_ms)}
                     </Text>
                     {devMode ? (
                       meta.confMs ? (
@@ -201,6 +206,7 @@ const styles = StyleSheet.create({
   runMode: { color: '#94a3b8', fontWeight: '700' },
   runM2: { alignItems: 'flex-end', marginRight: 10 },
   runSplits: { color: '#64748b', fontSize: 13, fontVariant: ['tabular-nums'] },
+  runUnreliable: { color: '#fb923c', fontWeight: '700' },
   runConf: { color: '#38bdf8', fontSize: 10, fontWeight: '700', marginTop: 1, fontVariant: ['tabular-nums'] },
   runConfDim: { color: '#475569', fontSize: 10, marginTop: 1 },
   runTotal: { color: '#fff', fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },

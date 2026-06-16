@@ -33,6 +33,14 @@ const ACOUSTIC_OUTPUT_MS = 20; // best-estimate, added to the correction
 const ACOUSTIC_UNCERTAINTY_MS = 15; // ± residual on the above (cannot be measured here)
 const AUDIO_MEAS_NOISE_MS = 5; // residual audio-start noise after currentTime back-calc
 
+// Physical-plausibility floor for a corrected Mode 2 reaction. A human cannot
+// react to a stimulus faster than ~0.1s; sprint-start convention treats <0.15s
+// as effectively impossible. A corrected reaction below this means the per-run
+// correction subtracted MORE than the real beep latency — i.e. it over-corrected
+// — so the value is a measurement artefact, not a real time. Flag, don't show.
+const REACTION_FLOOR_MS = 150;
+const fmtN = (v: number | null) => (v == null ? 'n/a' : v.toFixed(1));
+
 type RunState = 'idle' | 'countdown' | 'running' | 'finished';
 type Result = { mode: number; totalMs: number; split1Ms: number; split2Ms: number; flags: number };
 
@@ -70,6 +78,7 @@ export default function TimerScreen() {
     source: 'synced' | 'fixed';
     beepEngine: number | null; // gate GO -> engine audio start (measured), pre-acoustic
     early: boolean; // raw split1 < correction (clamped, suspect)
+    implausible: boolean; // corrected reaction below the human floor (over-corrected)
     confMs: number; // ±X confidence on the corrected reaction (synced only)
   } | null>(null);
 
@@ -240,7 +249,12 @@ export default function TimerScreen() {
           source = 'fixed';
         }
       }
+      const corrected = r.mode === 2 ? Math.max(0, r.split1Ms - correction) : r.split1Ms;
       const early = r.mode === 2 && r.split1Ms < correction;
+      // Physical-plausibility guard: a corrected reaction below the human floor
+      // means we subtracted more than the real beep latency (over-corrected), so
+      // the number is a measurement artefact, not a real reaction time.
+      const implausible = r.mode === 2 && correction > 0 && corrected < REACTION_FLOOR_MS;
       // ±X (≈1σ): RSS of clock-sync bound (minRtt/2, conservative — reducible with
       // a tighter BLE interval), the UNMEASURABLE acoustic-output uncertainty (the
       // term the gate buzzer removes), and residual audio-start noise.
@@ -256,26 +270,41 @@ export default function TimerScreen() {
               ),
             )
           : 0;
-      setCorr({ correction, source, beepEngine, early, confMs });
-      console.log(
-        `[FINISH:${src}] mode=${r.mode} s1=${r.split1Ms} correction=${correction}(${source}) beepEngine=${beepEngine ?? 'n/a'} conf=±${confMs} early=${early}`,
-      );
+      setCorr({ correction, source, beepEngine, early, implausible, confMs });
+      // Full per-run breakdown so the source of the run-to-run correction swing is
+      // visible: which component (BLE delivery, audio gap, or the clock mapping)
+      // moved. correction = bleOneway + proc + audioGap + acoustic. If the swing is
+      // in the anchor/tGoPhone it's the clock mapping; if in audioGap/bleOneway it's
+      // real pipeline jitter the correction is (correctly) measuring but can't beat.
+      const m = runMeasureRef.current;
+      const bleOneway = m && m.tGoPhone != null ? m.tRecv - m.tGoPhone : null;
+      const proc = m ? m.tPlay - m.tRecv : null;
+      const audioGap = m && m.tAudioStart != null ? m.tAudioStart - m.tPlay : null;
+      const beepE = m && m.tAudioStart != null && m.tGoPhone != null ? m.tAudioStart - m.tGoPhone : null;
       if (r.mode === 2) {
-        // Always print the computed ±X so it can be confirmed even if the UI path
-        // is the problem. source=fixed/conf=±0 means the run did NOT clock-sync.
         console.log(
-          `[±X] run accuracy: source=${source} correctedReaction=${Math.max(0, r.split1Ms - correction)}ms ±${confMs}ms ` +
-            `(eClk=${Math.round(eClk)} acoustic=${ACOUSTIC_UNCERTAINTY_MS} audio=${AUDIO_MEAS_NOISE_MS}; minRtt=${cs?.minRttMs?.toFixed(1) ?? 'n/a'}, anchor=${cs ? 'set' : 'none'})`,
+          `[breakdown] raw=${r.split1Ms} corrected=${corrected} correction=${correction}(${source}) ` +
+            `conf=±${confMs} implausible=${implausible} early=${early}\n` +
+            `  components(ms): bleOneway=${fmtN(bleOneway)} proc=${fmtN(proc)} audioGap=${fmtN(audioGap)} ` +
+            `beepEngine=${fmtN(beepE)} +acoustic=${ACOUSTIC_OUTPUT_MS}\n` +
+            `  stamps(ms): tGoPhone=${fmtN(m?.tGoPhone ?? null)} tRecv=${fmtN(m?.tRecv ?? null)} ` +
+            `tPlay=${fmtN(m?.tPlay ?? null)} tAudioStart=${fmtN(m?.tAudioStart ?? null)} t0us=${m?.t0us ?? 'n/a'}\n` +
+            `  anchor: ${cs ? `g0Us=${cs.anchor.g0Us} p0Ms=${cs.anchor.p0Ms.toFixed(1)} minRtt=${cs.minRttMs.toFixed(1)} offsetSpread=${cs.offsetSpreadMs.toFixed(1)}` : 'none (fixed offset)'}`,
         );
       }
       setDbg(`finish(${src}) raw ${fmt(r.totalMs, 3)}s · −${correction}ms(${source}) · saving…`);
       const rawJson = JSON.stringify({
         source,
         correction,
+        corrected,
         beepEngine,
         acousticMs: ACOUSTIC_OUTPUT_MS,
         confMs,
         early,
+        implausible,
+        bleOneway: bleOneway != null ? Math.round(bleOneway) : null,
+        proc: proc != null ? Math.round(proc) : null,
+        audioGap: audioGap != null ? Math.round(audioGap) : null,
         minRttMs: cs?.minRttMs ?? null,
         offsetSpreadMs: cs?.offsetSpreadMs ?? null,
       });
@@ -286,7 +315,7 @@ export default function TimerScreen() {
         split2Ms: r.split2Ms,
         reactionOffsetMs: correction,
         rawJson,
-        status: early ? 'suspect' : r.flags & 0x01 ? 'valid' : 'invalid',
+        status: early || implausible ? 'suspect' : r.flags & 0x01 ? 'valid' : 'invalid',
       })
         .then(() => {
           console.log('[saveRun] ok');
@@ -483,7 +512,15 @@ export default function TimerScreen() {
 
       <View style={styles.stage}>
         {phaseLabel ? <Text style={styles.phase}>{phaseLabel}</Text> : null}
-        <Text style={[styles.timer, runState === 'finished' && styles.timerDone]}>{big}</Text>
+        <Text
+          style={[
+            styles.timer,
+            runState === 'finished' && styles.timerDone,
+            runState === 'finished' && corr?.implausible && styles.timerWarn,
+          ]}
+        >
+          {big}
+        </Text>
         <Text style={styles.unit}>seconds</Text>
 
         {result && result.mode === 2 ? (
@@ -493,10 +530,11 @@ export default function TimerScreen() {
               ms={adjReactionMs}
               raw={devMode ? result.split1Ms : undefined}
               conf={devMode && corr && corr.confMs > 0 ? corr.confMs : undefined}
+              unreliable={!!corr?.implausible}
             />
             <Split label="G1 → G2" ms={result.split2Ms} />
             <Split label="Total" ms={adjTotalMs} raw={devMode ? result.totalMs : undefined} strong />
-            {devMode && corr && corr.confMs > 0 ? (
+            {devMode && corr && corr.confMs > 0 && !corr.implausible ? (
               <Text style={styles.accuracyNote}>reaction accuracy ±{corr.confMs} ms (clock-synced)</Text>
             ) : null}
             {devMode ? (
@@ -506,8 +544,11 @@ export default function TimerScreen() {
                   : `fixed offset · −${shownCorrection} ms · not clock-synced this run (no ±X)`}
               </Text>
             ) : null}
-            {corr?.early ? (
-              <Text style={styles.earlyNote}>⚠ result may be unreliable (very early reaction)</Text>
+            {corr?.implausible ? (
+              <Text style={styles.earlyNote}>
+                ⚠ reaction over-corrected (below ~{REACTION_FLOOR_MS} ms human floor) — unreliable.
+                The GO-beep latency measured this run exceeded the real reaction.
+              </Text>
             ) : null}
           </View>
         ) : null}
@@ -602,19 +643,28 @@ function Split({
   raw,
   conf,
   strong,
+  unreliable,
 }: {
   label: string;
   ms: number;
   raw?: number;
   conf?: number;
   strong?: boolean;
+  unreliable?: boolean;
 }) {
   return (
     <View style={styles.splitRow}>
       <Text style={[styles.splitLabel, strong && styles.splitStrong]}>{label}</Text>
       <View style={styles.splitValCol}>
-        <Text style={[styles.splitVal, strong && styles.splitStrong]}>
-          {fmt(ms, 3)}s{conf != null ? ` ±${conf}ms` : ''}
+        {/* Over-corrected reactions are shown as "unreliable", not a fake time. */}
+        <Text
+          style={[
+            styles.splitVal,
+            strong && styles.splitStrong,
+            unreliable && styles.splitUnreliable,
+          ]}
+        >
+          {unreliable ? 'unreliable' : `${fmt(ms, 3)}s${conf != null ? ` ±${conf}ms` : ''}`}
         </Text>
         {raw != null ? <Text style={styles.splitRaw}>raw {fmt(raw, 3)}s</Text> : null}
       </View>
@@ -666,12 +716,14 @@ const styles = StyleSheet.create({
   phase: { color: '#fbbf24', fontSize: 22, fontWeight: '700', marginBottom: 8 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },
   timerDone: { color: '#34d399' },
+  timerWarn: { color: '#fb923c' },
   unit: { color: '#64748b', fontSize: 14, marginTop: -6 },
   splits: { marginTop: 20, width: '70%' },
   splitRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
   splitLabel: { color: '#94a3b8', fontSize: 15 },
   splitValCol: { alignItems: 'flex-end' },
   splitVal: { color: '#e2e8f0', fontSize: 15, fontVariant: ['tabular-nums'] },
+  splitUnreliable: { color: '#fb923c', fontWeight: '700' },
   splitRaw: { color: '#475569', fontSize: 11, fontVariant: ['tabular-nums'] },
   splitStrong: { color: '#fff', fontWeight: '800' },
   accuracyNote: { color: '#38bdf8', fontSize: 13, fontWeight: '700', marginTop: 10, textAlign: 'center' },
