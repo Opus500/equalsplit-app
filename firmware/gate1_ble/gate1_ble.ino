@@ -55,6 +55,16 @@ NimBLECharacteristic* chStatus    = nullptr;
 volatile bool bleConnected = false;
 uint8_t evtSeq = 0;
 
+// Deferred connection-parameter request. Requesting a tight interval inside
+// onConnect previously broke the iOS link, so we DEFER it: schedule on connect,
+// then fire ONCE from loop() a few seconds later, after the link has settled.
+// updateConnParams only *requests* — if the central declines, the link simply
+// keeps its current params (it does not drop), so this is safe to fail.
+volatile bool connParamPending = false;
+uint16_t pendingConnHandle = 0;
+unsigned long connParamDueMs = 0;
+const unsigned long CONN_PARAM_DELAY_MS = 3000;  // let the connection settle first
+
 // Command handoff from BLE task -> loop() (see note on task safety)
 volatile uint8_t pendingCmd = 0;
 volatile uint8_t pendingArg0 = 0;
@@ -312,12 +322,15 @@ class ServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* s, NimBLEConnInfo& info) override {
     bleConnected = true;
     Serial.println("BLE central connected");
-    // Connection-interval request disabled while debugging "won't connect".
-    // Re-enable later with Apple-safe values (12=15ms, 24=30ms) once stable:
-    // s->updateConnParams(info.getConnHandle(), 12, 24, 0, 400);
+    // Do NOT request conn params here (it broke the iOS link). Schedule the
+    // deferred request; serviceConnParam() fires it once from loop().
+    pendingConnHandle = info.getConnHandle();
+    connParamDueMs    = millis() + CONN_PARAM_DELAY_MS;
+    connParamPending  = true;
   }
   void onDisconnect(NimBLEServer* s, NimBLEConnInfo& info, int reason) override {
     bleConnected = false;
+    connParamPending = false;   // link gone before the request fired — cancel it
     Serial.println("BLE central disconnected — re-advertising");
     NimBLEDevice::startAdvertising();
   }
@@ -496,6 +509,25 @@ void handlePendingCommand() {
   }
 }
 
+// Fire the deferred connection-interval request ONCE per connection, a few
+// seconds after connect. min=max=12 units = 15 ms — the tightest interval Apple
+// accepts (it explicitly allows Interval Min == Interval Max == 15 ms). A tighter
+// interval shrinks the phone<->gate clock-sync error (eClk ~= RTT/2), pulling
+// Mode 2 reaction accuracy from ~±25 ms toward ~±15 ms. Runs on the loop() task
+// AFTER the link has settled, which avoids the drop seen when this was done in
+// onConnect. If iOS declines 15 ms, the link keeps its current params (no drop);
+// the fallback if it's rejected is a 12,24 (15–30 ms) range.
+void serviceConnParam() {
+  if (!connParamPending) return;
+  if (!bleConnected) { connParamPending = false; return; }
+  if ((long)(millis() - connParamDueMs) < 0) return;
+  connParamPending = false;  // exactly once
+  NimBLEServer* s = NimBLEDevice::getServer();
+  if (!s) return;
+  s->updateConnParams(pendingConnHandle, 12, 12, 0, 400);  // 15ms interval, 4s timeout
+  Serial.println(">>> conn-param request sent: 15ms interval (deferred)");
+}
+
 // ========== SETUP ==========
 void setup() {
   Serial.begin(115200);
@@ -553,6 +585,7 @@ void loop() {
   unsigned long now = millis();
 
   handlePendingCommand();   // consume any BLE command from the NimBLE task
+  serviceConnParam();       // fire the deferred conn-interval request once, post-connect
   serviceCountdown(now);    // advance the non-blocking Mode 2 countdown, if running
 
   // Sensor read ALWAYS first
