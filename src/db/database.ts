@@ -27,6 +27,7 @@ export async function initDb(): Promise<void> {
       id TEXT PRIMARY KEY NOT NULL,
       name TEXT NOT NULL,
       created_at INTEGER NOT NULL,
+      custom_name TEXT,
       synced INTEGER NOT NULL DEFAULT 0
     );
     CREATE TABLE IF NOT EXISTS runs (
@@ -63,6 +64,10 @@ export async function initDb(): Promise<void> {
   }
   if (!cols.some((c) => c.name === 'drill_type')) {
     await db.execAsync('ALTER TABLE runs ADD COLUMN drill_type TEXT');
+  }
+  const sCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(sessions)');
+  if (!sCols.some((c) => c.name === 'custom_name')) {
+    await db.execAsync('ALTER TABLE sessions ADD COLUMN custom_name TEXT');
   }
 }
 
@@ -226,8 +231,9 @@ export async function addRecentAthlete(name: string): Promise<string[]> {
 
 export type SessionRow = {
   id: string;
-  name: string;
+  name: string; // the auto date (YYYY-MM-DD); kept as the fallback/subtitle
   created_at: number;
+  custom_name: string | null; // user label; display = custom_name || name
   runCount: number;
   // No "best": a session can mix modes and drills (a 10m fly vs a 40yd reaction
   // start aren't comparable), so a single best/avg across the session is
@@ -237,13 +243,19 @@ export type SessionRow = {
 export async function getSessions(): Promise<SessionRow[]> {
   const db = await getDb();
   return db.getAllAsync<SessionRow>(`
-    SELECT s.id, s.name, s.created_at,
+    SELECT s.id, s.name, s.created_at, s.custom_name,
            COUNT(r.id) AS runCount
     FROM sessions s
     LEFT JOIN runs r ON r.session_id = s.id
     GROUP BY s.id
     ORDER BY s.created_at DESC
   `);
+}
+
+// Rename a session. Empty/blank reverts to the date (stored as NULL).
+export async function setSessionName(id: string, name: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync('UPDATE sessions SET custom_name = ? WHERE id = ?', [clean(name), id]);
 }
 
 export type RunRow = {

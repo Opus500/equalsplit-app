@@ -6,7 +6,18 @@
 // (the reaction correction is unreliable; see LATENCY.md).
 
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 import {
   addRecentAthlete,
@@ -14,6 +25,7 @@ import {
   getRecentAthletes,
   getRuns,
   getSessions,
+  setSessionName,
   updateRunTags,
   type RunRow,
   type SessionRow,
@@ -23,6 +35,9 @@ import { TagPickerModal, formatTags } from '../components/TagPicker';
 import { runShareLine, sessionShareText, shareText } from '../share';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
+// Display label: the custom name if set, else the auto date. The date (s.name)
+// stays available as a subtitle so a renamed session still shows when it was.
+const sessionLabel = (s: SessionRow) => (s.custom_name?.trim() ? s.custom_name.trim() : s.name);
 // Total is the raw gate measurement; the (unreliable) reaction correction is
 // applied only to the reaction in dev mode, never to the total. See LATENCY.md.
 const totalOf = (r: RunRow) => r.total_ms;
@@ -52,10 +67,21 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   const [athleteFilter, setAthleteFilter] = useState<string | null>(null);
   const [editing, setEditing] = useState<RunRow | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
+  const [renaming, setRenaming] = useState(false);
 
   const loadSessions = useCallback(async () => {
     setSessions(await getSessions());
   }, []);
+
+  const renameSelected = useCallback(
+    async (name: string) => {
+      if (!selected) return;
+      await setSessionName(selected.id, name);
+      setSelected({ ...selected, custom_name: name.trim() || null });
+      await loadSessions();
+    },
+    [selected, loadSessions],
+  );
 
   useEffect(() => {
     if (isActive && !selected) loadSessions();
@@ -130,19 +156,23 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
     return (
       <View style={styles.container}>
         <View style={styles.headerRow}>
-          <Pressable onPress={() => setSelected(null)} hitSlop={8}>
-            <Text style={styles.back}>‹ Sessions</Text>
+          <Pressable onPress={() => setSelected(null)} hitSlop={10}>
+            <Text style={styles.back}>‹</Text>
           </Pressable>
-          <Text style={styles.title} numberOfLines={1}>
-            {selected.name}
-          </Text>
-          <View style={{ flex: 1 }} />
+          <Pressable style={styles.titleCol} onPress={() => setRenaming(true)} hitSlop={6}>
+            <Text style={styles.detailTitle} numberOfLines={1}>
+              {sessionLabel(selected)} <Text style={styles.editHint}>✎</Text>
+            </Text>
+            {selected.custom_name?.trim() ? (
+              <Text style={styles.titleSub}>{selected.name}</Text>
+            ) : null}
+          </Pressable>
           {shown.length ? (
             <Pressable
               onPress={() =>
                 shareText(
                   sessionShareText(
-                    selected.name,
+                    sessionLabel(selected),
                     selected.name,
                     [...shown].sort((a, b) => a.run_index - b.run_index),
                   ),
@@ -245,6 +275,14 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           onClose={() => setEditing(null)}
           onSubmit={saveEdit}
         />
+
+        <RenameModal
+          visible={renaming}
+          initial={selected.custom_name ?? ''}
+          dateName={selected.name}
+          onClose={() => setRenaming(false)}
+          onSubmit={renameSelected}
+        />
       </View>
     );
   }
@@ -258,13 +296,15 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
         ListEmptyComponent={<Text style={styles.empty}>No sessions yet. Finish a run to start one.</Text>}
         renderItem={({ item }) => (
           <Pressable style={styles.sessRow} onPress={() => openSession(item)}>
-            <View>
-              <Text style={styles.sessName}>{item.name}</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sessName} numberOfLines={1}>
+                {sessionLabel(item)}
+              </Text>
               <Text style={styles.sessSub}>
+                {item.custom_name?.trim() ? `${item.name} · ` : ''}
                 {item.runCount} run{item.runCount === 1 ? '' : 's'}
               </Text>
             </View>
-            <View style={{ flex: 1 }} />
             <Text style={styles.chev}>›</Text>
           </Pressable>
         )}
@@ -303,10 +343,74 @@ function FilterChip({
   );
 }
 
+function RenameModal({
+  visible,
+  initial,
+  dateName,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean;
+  initial: string;
+  dateName: string;
+  onClose: () => void;
+  onSubmit: (name: string) => void;
+}) {
+  const [text, setText] = useState(initial);
+  useEffect(() => {
+    if (visible) setText(initial);
+  }, [visible, initial]);
+  const submit = () => {
+    onSubmit(text.trim());
+    onClose();
+  };
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <Pressable style={styles.rmBackdrop} onPress={onClose}>
+          <Pressable style={styles.rmCard} onPress={() => {}}>
+            <Text style={styles.rmTitle}>Rename session</Text>
+            <TextInput
+              style={styles.rmInput}
+              value={text}
+              onChangeText={setText}
+              placeholder={dateName}
+              placeholderTextColor="#475569"
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={submit}
+            />
+            <Text style={styles.rmNote}>Leave empty to use the date ({dateName}).</Text>
+            <View style={styles.rmActions}>
+              <Pressable onPress={onClose} style={({ pressed }) => [styles.rmBtn, pressed && { opacity: 0.5 }]}>
+                <Text style={styles.rmBtnText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={submit}
+                style={({ pressed }) => [styles.rmBtn, styles.rmBtnPrimary, pressed && { opacity: 0.5 }]}
+              >
+                <Text style={[styles.rmBtnText, styles.rmBtnPrimaryText]}>Save</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  flex: { flex: 1 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
-  back: { color: '#60a5fa', fontSize: 16, fontWeight: '600' },
+  back: { color: '#60a5fa', fontSize: 26, fontWeight: '700', marginTop: -4 },
+  titleCol: { flexShrink: 1, flex: 1 },
+  detailTitle: { color: '#fff', fontSize: 20, fontWeight: '800' },
+  editHint: { color: '#60a5fa', fontSize: 14 },
+  titleSub: { color: '#64748b', fontSize: 12, marginTop: 1 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
   empty: { color: '#64748b', marginTop: 24, textAlign: 'center' },
   filterRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
@@ -375,4 +479,26 @@ const styles = StyleSheet.create({
     borderColor: '#374151',
   },
   headerShareText: { color: '#e2e8f0', fontSize: 13, fontWeight: '700' },
+  rmBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  rmCard: { backgroundColor: '#161b22', borderRadius: 16, padding: 18 },
+  rmTitle: { color: '#fff', fontSize: 17, fontWeight: '800', marginBottom: 12 },
+  rmInput: {
+    backgroundColor: '#0b0e13',
+    color: '#fff',
+    fontSize: 16,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  rmNote: { color: '#64748b', fontSize: 11, marginTop: 8 },
+  rmActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  rmBtn: { flex: 1, backgroundColor: '#243042', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  rmBtnText: { color: '#cbd5e1', fontWeight: '700' },
+  rmBtnPrimary: { backgroundColor: '#2563eb' },
+  rmBtnPrimaryText: { color: '#fff' },
 });
