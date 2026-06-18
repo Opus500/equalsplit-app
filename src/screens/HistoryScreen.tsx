@@ -20,6 +20,7 @@ import {
 } from '../db/database';
 import { useSettings } from '../settings/SettingsProvider';
 import { TagPickerModal, formatTags } from '../components/TagPicker';
+import { runShareLine, sessionShareText, shareText } from '../share';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
 // Total is the raw gate measurement; the (unreliable) reaction correction is
@@ -132,7 +133,26 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           <Pressable onPress={() => setSelected(null)} hitSlop={8}>
             <Text style={styles.back}>‹ Sessions</Text>
           </Pressable>
-          <Text style={styles.title}>{selected.name}</Text>
+          <Text style={styles.title} numberOfLines={1}>
+            {selected.name}
+          </Text>
+          <View style={{ flex: 1 }} />
+          {shown.length ? (
+            <Pressable
+              onPress={() =>
+                shareText(
+                  sessionShareText(
+                    selected.name,
+                    selected.name,
+                    [...shown].sort((a, b) => a.run_index - b.run_index),
+                  ),
+                )
+              }
+              style={({ pressed }) => [styles.headerShare, pressed && { opacity: 0.6 }]}
+            >
+              <Text style={styles.headerShareText}>⤴ Share</Text>
+            </Pressable>
+          ) : null}
         </View>
 
         {athletes.length ? (
@@ -199,7 +219,16 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                   </View>
                 ) : null}
                 <Text style={styles.runTotal}>{fmt(totalOf(item))}s</Text>
-                <Pressable onPress={() => confirmDelete(item)} hitSlop={10} style={styles.del}>
+                <Pressable
+                  onPress={() =>
+                    shareText(runShareLine(item.athlete_name, item.drill_type, item.total_ms))
+                  }
+                  hitSlop={8}
+                  style={styles.rowIcon}
+                >
+                  <Text style={styles.shareGlyph}>⤴</Text>
+                </Pressable>
+                <Pressable onPress={() => confirmDelete(item)} hitSlop={10} style={styles.rowIcon}>
                   <Text style={styles.delText}>✕</Text>
                 </Pressable>
               </Pressable>
@@ -334,6 +363,16 @@ const styles = StyleSheet.create({
   runConf: { color: '#38bdf8', fontSize: 10, fontWeight: '700', marginTop: 1, fontVariant: ['tabular-nums'] },
   runConfDim: { color: '#475569', fontSize: 10, marginTop: 1 },
   runTotal: { color: '#fff', fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  del: { paddingHorizontal: 6, paddingVertical: 2 },
+  rowIcon: { paddingHorizontal: 6, paddingVertical: 2 },
+  shareGlyph: { color: '#60a5fa', fontSize: 16, fontWeight: '800' },
   delText: { color: '#b4541f', fontSize: 16, fontWeight: '800' },
+  headerShare: {
+    backgroundColor: '#1f2937',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  headerShareText: { color: '#e2e8f0', fontSize: 13, fontWeight: '700' },
 });

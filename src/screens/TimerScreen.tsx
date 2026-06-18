@@ -25,6 +25,7 @@ import {
   setSetting,
 } from '../db/database';
 import { TagPickerModal, formatTags } from '../components/TagPicker';
+import { runShareLine, shareText } from '../share';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run';
 const nowMs = () =>
@@ -638,6 +639,19 @@ export default function TimerScreen() {
           </View>
         ) : null}
 
+        {runState === 'finished' && result ? (
+          <Pressable
+            onPress={() =>
+              shareText(
+                runShareLine(finishedTags?.name, finishedTags?.drill, result.totalMs),
+              )
+            }
+            style={({ pressed }) => [styles.shareBtn, pressed && styles.dim]}
+          >
+            <Text style={styles.shareBtnText}>⤴  Share</Text>
+          </Pressable>
+        ) : null}
+
         <Text style={styles.hint}>{hintFor(connected, gateState, runState)}</Text>
         {dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
       </View>
@@ -821,6 +835,16 @@ const styles = StyleSheet.create({
   tagClear: { color: '#fb923c', fontSize: 15, fontWeight: '800' },
   tagSet: { color: '#60a5fa', fontSize: 13, fontWeight: '700' },
   resultTags: { color: '#94a3b8', fontSize: 15, fontWeight: '600', marginTop: 6 },
+  shareBtn: {
+    marginTop: 18,
+    backgroundColor: '#1f2937',
+    borderRadius: 999,
+    paddingHorizontal: 20,
+    paddingVertical: 9,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  shareBtnText: { color: '#e2e8f0', fontSize: 14, fontWeight: '700' },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   phase: { color: '#fbbf24', fontSize: 22, fontWeight: '700', marginBottom: 8 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },
