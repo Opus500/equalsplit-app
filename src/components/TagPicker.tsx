@@ -4,7 +4,17 @@
 // a bulky dropdown; "Other…" reveals a custom text field.
 
 import { useEffect, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 
 export const DRILL_PRESETS = [
   '10m',
@@ -97,11 +107,16 @@ export function TagPickerModal({
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.backdrop} onPress={onClose}>
-        <Pressable style={styles.card} onPress={() => {}}>
-          <Text style={styles.cardTitle}>{title}</Text>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <Pressable style={styles.backdrop} onPress={onClose}>
+          <Pressable style={styles.card} onPress={() => {}}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <Text style={styles.cardTitle}>{title}</Text>
 
-          <View style={styles.labelRow}>
+              <View style={styles.labelRow}>
             <Text style={styles.label}>Athlete</Text>
             {name ? (
               <Pressable onPress={() => setName('')} hitSlop={8}>
@@ -145,31 +160,37 @@ export function TagPickerModal({
             />
           ) : null}
 
-          <View style={styles.actions}>
-            <Pressable onPress={onClose} style={({ pressed }) => [styles.btn, pressed && styles.dim]}>
-              <Text style={styles.btnText}>Cancel</Text>
-            </Pressable>
-            <Pressable
-              onPress={submit}
-              style={({ pressed }) => [styles.btn, styles.btnPrimary, pressed && styles.dim]}
-            >
-              <Text style={[styles.btnText, styles.btnPrimaryText]}>Done</Text>
-            </Pressable>
-          </View>
+              <View style={styles.actions}>
+                <Pressable
+                  onPress={onClose}
+                  style={({ pressed }) => [styles.btn, pressed && styles.dim]}
+                >
+                  <Text style={styles.btnText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  onPress={submit}
+                  style={({ pressed }) => [styles.btn, styles.btnPrimary, pressed && styles.dim]}
+                >
+                  <Text style={[styles.btnText, styles.btnPrimaryText]}>Done</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
+          </Pressable>
         </Pressable>
-      </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  flex: { flex: 1 },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
     justifyContent: 'center',
     paddingHorizontal: 20,
   },
-  card: { backgroundColor: '#161b22', borderRadius: 16, padding: 18 },
+  card: { backgroundColor: '#161b22', borderRadius: 16, padding: 18, maxHeight: '88%' },
   cardTitle: { color: '#fff', fontSize: 17, fontWeight: '800', marginBottom: 12 },
   labelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   label: { color: '#94a3b8', fontSize: 13, fontWeight: '700', marginBottom: 6 },
