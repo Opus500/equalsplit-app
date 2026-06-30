@@ -100,3 +100,14 @@ export async function sendCommand(
   const payload = bytesToBase64(new Uint8Array([op, arg0, arg1, arg2]));
   await device.writeCharacteristicWithResponseForService(UUID.service, UUID.command, payload);
 }
+
+/** Write a raw, variable-length v2 command frame (built by src/ble/v2.ts) to the
+ *  same Command characteristic. v2 opcodes (0x30+) are disjoint from v1's, so the
+ *  gate routes by the first byte. */
+export async function sendV2Frame(device: Device, bytes: Uint8Array): Promise<void> {
+  await device.writeCharacteristicWithResponseForService(
+    UUID.service,
+    UUID.command,
+    bytesToBase64(bytes),
+  );
+}
