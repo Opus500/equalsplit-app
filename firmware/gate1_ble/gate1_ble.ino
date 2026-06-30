@@ -73,6 +73,110 @@ volatile uint8_t pendingArg1 = 0;
 // ESP-NOW finish-link health, surfaced in Status
 volatile bool finishLinkOk = true;
 
+// ============================================================================
+// ===== v2 RAW-EVENT LAYER (write-once gate) — see docs/BLE-CONTRACT.md   =====
+// Added ALONGSIDE the legacy v1 timing path. This gate is the BRIDGE: it relays
+// every gate's raw events up over BLE (Event char 0x0003, disjoint frame-type
+// space so v1 + v2 share the channel), accepts the v2 command set on the
+// Command char (0x0002), and is the gate-network TIME MASTER for this
+// transition (offset 0, always synced — becomes a runtime election at the
+// symmetric-binary merge). None of the legacy STATE/GO/SPLIT/FINISH emit, the
+// ESP-NOW result path, or the timing logic is changed.
+// ============================================================================
+#define V2_FW_VER 2
+
+// Event frame types (0x01-0x0F)
+#define V2_BEAM_BREAK    0x01
+#define V2_BEAM_CLEAR    0x02
+#define V2_BUZZER_FIRED  0x03
+#define V2_BUTTON_PRESS  0x04
+// Link / discovery (0x20-0x2F)
+#define V2_HEARTBEAT     0x20
+#define V2_TIME_SYNC     0x21
+// Commands (0x30-0x3F)
+#define V2_ASSIGN_IDS    0x30
+#define V2_SET_THRESHOLD 0x31
+#define V2_BUZZER_FIRE   0x32
+#define V2_CLEAR_QUEUE   0x33
+#define V2_PING          0x34
+#define V2_GET_STATUS    0x35
+// Replies (0x40-0x4F)
+#define V2_PING_REPLY    0x40
+#define V2_STATUS_REPLY  0x41
+// TIME_SYNC subtypes — firmware-internal payload (type 0x21 is frozen, payload is not)
+#define TS_PING 0x01
+#define TS_PONG 0x02
+
+#define GATE_ID_ALL 0xFF
+#define BUZZER_PIN  25            // declared now, wired at PCB respin (contract §15)
+
+uint8_t bcastMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+uint8_t myMac[6]   = {0};
+
+uint8_t  v2GateId    = 0;                 // 0 = unassigned until ASSIGN_IDS
+uint16_t thresholdCm = 100;               // v2 runtime threshold; default == legacy GATE_THRESHOLD
+
+// Time MASTER: shared gate-network clock == this gate's micros(), offset 0,
+// always synced. (Followers sync TO us; see the symmetric-binary TODO above.)
+volatile int32_t clkOffset = 0;
+volatile bool    timeSynced = true;
+
+// v2 beam edge detector (independent debounce from the legacy detector)
+bool v2LastBeam = false;
+unsigned long v2DebounceUs = 0;
+
+// always-on button edge → BUTTON_PRESS (independent of legacy button handling)
+bool v2B1Last = false, v2B2Last = false;
+unsigned long v2B1Deb = 0, v2B2Deb = 0;
+
+// buzzer (unwired; we still drive the pin and emit BUZZER_FIRED)
+bool buzzerOn = false;
+unsigned long buzzerOffMs = 0;
+
+// heartbeat cadence
+unsigned long lastHeartbeatMs = 0;
+
+// v2 command captured from the NimBLE task (full frame, variable length)
+volatile bool v2CmdPending = false;
+uint8_t v2CmdBuf[32];
+volatile uint8_t v2CmdLen = 0;
+
+// inbound v2 ESP-NOW frames staged in the recv callback, drained in loop()
+#define V2_RX_SLOTS 8
+uint8_t v2Rx[V2_RX_SLOTS][32];
+uint8_t v2RxLen[V2_RX_SLOTS];
+volatile uint8_t v2RxHead = 0, v2RxTail = 0;
+
+// BLE relay event ring: accumulates while disconnected, drains on connect, and
+// notifies live while connected (contract §7). 7-byte event frames only.
+#define V2_QUEUE_LEN 64
+uint8_t evQ[V2_QUEUE_LEN][7];
+volatile uint16_t evQHead = 0, evQTail = 0;
+
+// v2 forward declarations (implementations at end of file)
+uint32_t rd32(const uint8_t* p);
+uint32_t sharedMicros();
+uint8_t  v2QueueDepth();
+void v2Enqueue7(const uint8_t* f);
+void v2EnqueueEvent(uint8_t type, uint32_t sharedUs, uint8_t flags);
+void v2ServiceQueue();
+void v2Gate1Beam(int16_t dist, unsigned long nowUs);
+void legacyGate1Detect(int16_t dist, unsigned long nowUs);
+void v2ServiceButtons(unsigned long nowMs);
+void v2FireBuzzer(uint16_t durMs);
+void v2ServiceBuzzer(unsigned long nowMs);
+void v2ServiceHeartbeat(unsigned long nowMs);
+void v2SendPingReply(uint32_t appMicros);
+void v2SendStatusSelf();
+void v2SendPong(const uint8_t* pingFrame);
+void v2Rebroadcast(const uint8_t* f, uint8_t len);
+void v2DoAssignIds(const uint8_t* f, uint8_t len);
+void v2HandleCommand();
+void v2HandleFrame(const uint8_t* f, uint8_t len);
+void v2StageInbound(const uint8_t* d, int len);
+void v2ProcessInbound();
+// ===== end v2 declarations ==================================================
+
 // ========== HARDWARE ==========
 #define LUNA_RX 16
 #define LUNA_TX 17
@@ -213,13 +317,16 @@ void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 }
 
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  if (len != sizeof(GateData)) return;       // ignore malformed packets
-  GateData received;
-  memcpy(&received, data, sizeof(received));
-  if (!received.isResult) return;
-  resultRecvUs = micros();                   // stamp arrival immediately
-  lastResult = received;
-  resultReady = true;
+  if (len == (int)sizeof(GateData)) {        // ----- legacy result packet (unchanged) -----
+    GateData received;
+    memcpy(&received, data, sizeof(received));
+    if (!received.isResult) return;
+    resultRecvUs = micros();                 // stamp arrival immediately
+    lastResult = received;
+    resultReady = true;
+    return;
+  }
+  v2StageInbound(data, len);                 // ----- v2 frame from another gate -----
 }
 
 // ========== BLE: STATE MAPPING & EMITTERS ==========
@@ -343,7 +450,15 @@ class CommandCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& info) override {
     std::string v = c->getValue();
     if (v.size() < 1) return;
-    pendingArg0 = v.size() > 1 ? (uint8_t)v[1] : 0;
+    uint8_t op = (uint8_t)v[0];
+    if (op >= 0x30) {                 // ----- v2 command: stash the full frame -----
+      size_t n = v.size(); if (n > sizeof(v2CmdBuf)) n = sizeof(v2CmdBuf);
+      memcpy(v2CmdBuf, v.data(), n);
+      v2CmdLen = (uint8_t)n;
+      v2CmdPending = true;            // set last so loop() sees the buffer first
+      return;
+    }
+    pendingArg0 = v.size() > 1 ? (uint8_t)v[1] : 0;   // ----- legacy (unchanged) -----
     pendingArg1 = v.size() > 2 ? (uint8_t)v[2] : 0;
     pendingCmd  = (uint8_t)v[0];   // set last so loop() sees args first
   }
@@ -418,7 +533,6 @@ void startMode1();
 void startMode2();
 void handleGate1Trigger(unsigned long nowUs);
 void processResult(GateData& received);
-bool readGate1();
 void armMode2Phone();
 void startSequencePhone(uint8_t minUnits, uint8_t maxUnits);
 void serviceCountdown(unsigned long now);
@@ -546,8 +660,11 @@ void setup() {
 
   pinMode(BUTTON1_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
+  pinMode(BUZZER_PIN, OUTPUT);           // v2: unwired now, safe to drive
+  digitalWrite(BUZZER_PIN, LOW);
 
   WiFi.mode(WIFI_STA);
+  WiFi.macAddress(myMac);                // v2: own MAC for HEARTBEAT / ASSIGN_IDS
   Serial.print("Gate 1 MAC: ");
   Serial.println(WiFi.macAddress());
 
@@ -575,6 +692,13 @@ void setup() {
     Serial.println("Gate 2 peer added OK");
   }
 
+  // v2: broadcast peer (FF:FF:FF:FF:FF:FF) for the raw-event layer
+  esp_now_peer_info_t bpeer = {};
+  memcpy(bpeer.peer_addr, bcastMAC, 6);
+  bpeer.channel = 0;
+  bpeer.encrypt = false;
+  if (esp_now_add_peer(&bpeer) != ESP_OK) Serial.println("Failed to add broadcast peer");
+
   resetToIdle();
 
   setupBLE();   // after ESP-NOW; validate coexistence on hardware (contract §10)
@@ -588,12 +712,27 @@ void loop() {
   serviceConnParam();       // fire the deferred conn-interval request once, post-connect
   serviceCountdown(now);    // advance the non-blocking Mode 2 countdown, if running
 
-  // Sensor read ALWAYS first
-  if (currentMode == MODE_1_ACTIVATED || currentMode == MODE_2_WAITING_GATE1) {
-    readGate1();
-  } else {
-    // Not armed: drain the buffer so it never sits in overflow
-    while (Serial2.available()) Serial2.read();
+  // ===== v2 raw-event services (run every pass, mode-free) =====
+  v2HandleCommand();        // consume a v2 command stashed by the NimBLE task
+  v2ProcessInbound();       // handle/relay v2 frames from other gates (ESP-NOW)
+  v2ServiceButtons(now);    // emit BUTTON_PRESS on physical button edges
+  v2ServiceBuzzer(now);     // drop the buzzer pin when its pulse is done
+  v2ServiceHeartbeat(now);  // self-heartbeat up to the app
+  v2ServiceQueue();         // drain the event ring to BLE while connected
+
+  // ===== unified LiDAR poll — one read feeds BOTH pipelines =====
+  // v2 emits BEAM_BREAK/CLEAR on every edge (mode-free). The proven legacy
+  // detector runs only while armed, with its OWN debounce state — its logic is
+  // unchanged, only its read source moved here so the two pipelines never fight
+  // over the UART.
+  {
+    int16_t d;
+    while (readLuna(d)) {
+      unsigned long nowUs = micros();
+      v2Gate1Beam(d, nowUs);                                          // v2: always
+      if (currentMode == MODE_1_ACTIVATED || currentMode == MODE_2_WAITING_GATE1)
+        legacyGate1Detect(d, nowUs);                                  // legacy: armed only
+    }
   }
 
   if (resultReady) {
@@ -959,12 +1098,11 @@ void processResult(GateData& received) {
   updateStatus();
 }
 
-// ========== READ GATE 1 ==========
-bool readGate1() {
-  if (!readLuna(distance)) return false;
-  unsigned long nowUs = micros();
-
-  bool triggered = (distance > 0 && distance <= GATE_THRESHOLD);
+// ========== LEGACY GATE 1 DETECTION ==========
+// Body lifted verbatim from the old readGate1(); only the readLuna()/micros()
+// read moved up into the unified poll in loop(). Timing logic unchanged.
+void legacyGate1Detect(int16_t dist, unsigned long nowUs) {
+  bool triggered = (dist > 0 && dist <= GATE_THRESHOLD);
 
   if (triggered && !lastGate1State) {
     if ((nowUs - gate1DebounceUs) > SENSOR_DEBOUNCE_US) {
@@ -978,5 +1116,221 @@ bool readGate1() {
   } else if (!triggered) {
     lastGate1State = false;
   }
-  return false;
+}
+
+// ============================================================================
+// ===== v2 RAW-EVENT LAYER — implementations (bridge + time master)       =====
+// ============================================================================
+
+uint32_t rd32(const uint8_t* p) {
+  return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+// Local micros mapped into the shared gate-network clock. We are the master, so
+// clkOffset is 0 and this is just micros(); kept as a function so event emit and
+// reply code reads identically to the follower firmware. APP does sdiff32.
+uint32_t sharedMicros() { return (uint32_t)micros() + (uint32_t)clkOffset; }
+
+uint8_t v2QueueDepth() {
+  return (uint8_t)((evQHead - evQTail + V2_QUEUE_LEN) % V2_QUEUE_LEN);
+}
+
+// Push a 7-byte event into the BLE relay ring; overwrite oldest when full.
+void v2Enqueue7(const uint8_t* f) {
+  memcpy(evQ[evQHead], f, 7);
+  uint16_t nh = (evQHead + 1) % V2_QUEUE_LEN;
+  if (nh == evQTail) evQTail = (evQTail + 1) % V2_QUEUE_LEN;  // drop oldest
+  evQHead = nh;
+}
+
+void v2EnqueueEvent(uint8_t type, uint32_t sharedUs, uint8_t flags) {
+  uint8_t f[7];
+  f[0] = type; f[1] = v2GateId; putU32(&f[2], sharedUs); f[6] = flags;
+  v2Enqueue7(f);
+}
+
+// Drain the event ring to BLE. Accumulates while disconnected; on connect this
+// flushes the backlog first, then keeps it near-empty live (contract §7).
+void v2ServiceQueue() {
+  if (!bleConnected) return;
+  uint8_t budget = 12;                  // bounded per pass so the BLE tx buffers keep up
+  while (evQTail != evQHead && budget--) {
+    notifyEvent(evQ[evQTail], 7);
+    evQTail = (evQTail + 1) % V2_QUEUE_LEN;
+  }
+}
+
+// Always-on beam edge detector — emits BOTH edges, mode-free. Gate 1's own
+// events go straight into the relay ring (no self-broadcast needed).
+void v2Gate1Beam(int16_t dist, unsigned long nowUs) {
+  bool beam = (dist > 0 && dist <= (int)thresholdCm);
+  if (beam != v2LastBeam && (nowUs - v2DebounceUs) > SENSOR_DEBOUNCE_US) {
+    v2DebounceUs = nowUs;
+    v2LastBeam = beam;
+    v2EnqueueEvent(beam ? V2_BEAM_BREAK : V2_BEAM_CLEAR, sharedMicros(), 0);
+  }
+}
+
+// Physical button edges → BUTTON_PRESS (flags = 0 per frozen §7; gate_id
+// identifies the gate). Independent of the legacy button/arming handling.
+void v2ServiceButtons(unsigned long nowMs) {
+  bool b1 = (digitalRead(BUTTON1_PIN) == LOW);
+  if (b1 && !v2B1Last && (nowMs - v2B1Deb) > 200) {
+    v2B1Deb = nowMs; v2EnqueueEvent(V2_BUTTON_PRESS, sharedMicros(), 0);
+  }
+  v2B1Last = b1;
+  bool b2 = (digitalRead(BUTTON2_PIN) == LOW);
+  if (b2 && !v2B2Last && (nowMs - v2B2Deb) > 200) {
+    v2B2Deb = nowMs; v2EnqueueEvent(V2_BUTTON_PRESS, sharedMicros(), 0);
+  }
+  v2B2Last = b2;
+}
+
+void v2FireBuzzer(uint16_t durMs) {
+  digitalWrite(BUZZER_PIN, HIGH);
+  buzzerOn = true;
+  buzzerOffMs = millis() + durMs;
+  v2EnqueueEvent(V2_BUZZER_FIRED, sharedMicros(), 0);   // GO reference, stamped at fire
+}
+
+void v2ServiceBuzzer(unsigned long nowMs) {
+  if (buzzerOn && (long)(nowMs - buzzerOffMs) >= 0) {
+    digitalWrite(BUZZER_PIN, LOW);
+    buzzerOn = false;
+  }
+}
+
+// Self-heartbeat relayed live so the app discovers the bridge gate. Remote
+// gates' heartbeats are relayed in v2HandleFrame.
+void v2ServiceHeartbeat(unsigned long nowMs) {
+  unsigned long iv = (v2GateId == 0) ? 1000UL : 5000UL;
+  if ((long)(nowMs - lastHeartbeatMs) < (long)iv) return;
+  lastHeartbeatMs = nowMs;
+  uint8_t f[7];
+  f[0] = V2_HEARTBEAT; memcpy(&f[1], myMac, 6);
+  notifyEvent(f, 7);
+}
+
+void v2SendPingReply(uint32_t appMicros) {
+  uint8_t f[9];
+  f[0] = V2_PING_REPLY; putU32(&f[1], appMicros); putU32(&f[5], sharedMicros());
+  notifyEvent(f, 9);
+}
+
+void v2SendStatusSelf() {
+  uint8_t f[8];
+  f[0] = V2_STATUS_REPLY; f[1] = v2GateId;
+  f[2] = thresholdCm & 0xFF; f[3] = (thresholdCm >> 8) & 0xFF;
+  f[4] = 0xFF;                       // battery: not sensed
+  f[5] = v2QueueDepth();
+  f[6] = V2_FW_VER;
+  uint8_t caps = 0x01 | 0x02;        // has_display + has_buttons (Gate 1 populated)
+  if (timeSynced) caps |= 0x08;      // bit2 buzzer_wired stays 0 until the respin
+  f[7] = caps;
+  notifyEvent(f, 8);
+}
+
+// Master answers a follower's TIME_SYNC ping with our local micros as t2.
+void v2SendPong(const uint8_t* pingFrame) {
+  uint8_t f[14];
+  f[0] = V2_TIME_SYNC; f[1] = TS_PONG;
+  memcpy(&f[2], &pingFrame[2], 4);     // echo seq
+  memcpy(&f[6], &pingFrame[6], 4);     // echo t1
+  putU32(&f[10], (uint32_t)micros());  // t2 (master local == shared clock)
+  esp_now_send(bcastMAC, f, 14);
+}
+
+void v2Rebroadcast(const uint8_t* f, uint8_t len) {
+  esp_now_send(bcastMAC, f, len);
+}
+
+void v2DoAssignIds(const uint8_t* f, uint8_t len) {
+  if (len < 2) return;
+  uint8_t count = f[1];
+  uint8_t p = 2;
+  for (uint8_t i = 0; i < count && (uint8_t)(p + 7) <= len; i++, p += 7) {
+    bool match = true;
+    for (uint8_t b = 0; b < 6; b++) if (f[p + b] != myMac[b]) { match = false; break; }
+    if (match) v2GateId = f[p + 6];
+  }
+}
+
+// A v2 command arrived from the app on the Command characteristic. Execute it
+// locally if we are the target, and re-broadcast targeted commands so remote
+// gates self-match.
+void v2HandleCommand() {
+  if (!v2CmdPending) return;
+  v2CmdPending = false;
+  uint8_t len = v2CmdLen;
+  if (len < 1) return;
+  uint8_t* f = v2CmdBuf;
+  switch (f[0]) {
+    case V2_ASSIGN_IDS:
+      v2DoAssignIds(f, len);
+      v2Rebroadcast(f, len);
+      break;
+    case V2_SET_THRESHOLD:
+      if (len >= 4) { uint8_t tgt = f[1]; if (tgt == v2GateId || tgt == GATE_ID_ALL) thresholdCm = f[2] | (f[3] << 8); }
+      v2Rebroadcast(f, len);
+      break;
+    case V2_BUZZER_FIRE:
+      if (len >= 5) { uint8_t tgt = f[1]; if (tgt == v2GateId || tgt == GATE_ID_ALL) v2FireBuzzer(f[2] | (f[3] << 8)); }
+      v2Rebroadcast(f, len);
+      break;
+    case V2_CLEAR_QUEUE:
+      if (len >= 2) { uint8_t tgt = f[1]; if (tgt == v2GateId || tgt == GATE_ID_ALL) evQTail = evQHead; }
+      v2Rebroadcast(f, len);
+      break;
+    case V2_PING:
+      if (len >= 5) v2SendPingReply(rd32(&f[1]));   // bridge-only; never re-broadcast
+      break;
+    case V2_GET_STATUS:
+      if (len >= 2) { uint8_t tgt = f[1]; if (tgt == v2GateId || tgt == GATE_ID_ALL) v2SendStatusSelf(); }
+      v2Rebroadcast(f, len);                        // remote target replies via broadcast→relay
+      break;
+    default:
+      break;
+  }
+}
+
+// A v2 frame arrived over ESP-NOW from another gate. Events/heartbeats/replies
+// are relayed up to the app; TIME_SYNC pings get a pong (we are the master).
+void v2HandleFrame(const uint8_t* f, uint8_t len) {
+  uint8_t t = f[0];
+  if (t >= V2_BEAM_BREAK && t <= 0x0F) {     // event from another gate → relay (queue)
+    if (len >= 7) v2Enqueue7(f);
+    return;
+  }
+  switch (t) {
+    case V2_HEARTBEAT:
+      if (len >= 7) notifyEvent(f, 7);
+      break;
+    case V2_TIME_SYNC:
+      if (len >= 10 && f[1] == TS_PING) v2SendPong(f);
+      break;
+    case V2_STATUS_REPLY:
+      if (len >= 8) notifyEvent(f, 8);
+      break;
+    case V2_PING_REPLY:
+      if (len >= 9) notifyEvent(f, 9);
+      break;
+    default:
+      break;
+  }
+}
+
+void v2StageInbound(const uint8_t* d, int len) {
+  if (len < 1 || len > 32) return;
+  uint8_t nh = (v2RxHead + 1) % V2_RX_SLOTS;
+  if (nh == v2RxTail) return;            // full: drop
+  memcpy(v2Rx[v2RxHead], d, len);
+  v2RxLen[v2RxHead] = (uint8_t)len;
+  v2RxHead = nh;
+}
+
+void v2ProcessInbound() {
+  while (v2RxTail != v2RxHead) {
+    v2HandleFrame(v2Rx[v2RxTail], v2RxLen[v2RxTail]);
+    v2RxTail = (v2RxTail + 1) % V2_RX_SLOTS;
+  }
 }
