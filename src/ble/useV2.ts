@@ -185,8 +185,11 @@ export function useV2Pipeline(): V2Pipeline {
           if (f.edge === 'break') {
             engine.onBeamBreak(f.gateId, f.micros, atMs); // completion fires engine.onRun
             setEngineState(engine.state);
-            pushLog(`BEAM_BREAK g${f.gateId} @${f.micros}us`);
           }
+          // Log BOTH edges: the detector requires a CLEAR before the next BREAK,
+          // so logging only breaks made hand-wave chatter look like back-to-back
+          // breaks. Seeing the alternation confirms debounce is holding.
+          pushLog(`BEAM_${f.edge === 'break' ? 'BREAK' : 'CLEAR'} g${f.gateId} @${f.micros}us`);
           break;
         case 'buzzer':
           pushLog(`BUZZER_FIRED g${f.gateId} @${f.micros}us`);
