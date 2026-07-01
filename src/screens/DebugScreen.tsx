@@ -9,12 +9,14 @@ import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-nat
 import { useGate } from '../ble/GateProvider';
 import { EVT_NAME, STATE_NAME } from '../ble/constants';
 import { describeEvent, toHex } from '../ble/decode';
+import V2Lab from '../components/V2Lab';
 
 type LogLine = { id: string; text: string; kind: 'evt' | 'status' };
 let logSeq = 0;
 
 export default function DebugScreen() {
   const gate = useGate();
+  const [view, setView] = useState<'diag' | 'v2'>('diag');
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const lastStatusRef = useRef('');
@@ -60,6 +62,25 @@ export default function DebugScreen() {
         {gate.gateStatus ? ` · proto ${gate.gateStatus.protoVer}` : ''}
       </Text>
 
+      <View style={styles.seg}>
+        <Pressable
+          style={[styles.segBtn, view === 'diag' && styles.segOn]}
+          onPress={() => setView('diag')}
+        >
+          <Text style={[styles.segText, view === 'diag' && styles.segTextOn]}>Diagnostics</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.segBtn, view === 'v2' && styles.segOn]}
+          onPress={() => setView('v2')}
+        >
+          <Text style={[styles.segText, view === 'v2' && styles.segTextOn]}>v2 Lab</Text>
+        </Pressable>
+      </View>
+
+      {view === 'v2' ? (
+        <V2Lab />
+      ) : (
+        <>
       <View style={styles.cards}>
         <View style={styles.card}>
           <Text style={styles.cardNum}>{gateRuns}</Text>
@@ -121,6 +142,8 @@ export default function DebugScreen() {
           <Text style={[styles.logLine, item.kind === 'status' && styles.logStatus]}>{item.text}</Text>
         )}
       />
+        </>
+      )}
     </View>
   );
 }
@@ -185,4 +208,9 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   logStatus: { color: '#7dd3fc' },
+  seg: { flexDirection: 'row', backgroundColor: '#161b22', borderRadius: 10, padding: 3, marginBottom: 10 },
+  segBtn: { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: 'center' },
+  segOn: { backgroundColor: '#2563eb' },
+  segText: { color: '#8b98a9', fontWeight: '700', fontSize: 13 },
+  segTextOn: { color: '#fff' },
 });
