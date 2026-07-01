@@ -2,6 +2,7 @@
 #include <U8g2lib.h>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_mac.h>       // esp_read_mac() — factory STA MAC from eFuse (v2)
 #include <esp_random.h>    // hardware TRNG for the Mode 2 random GO delay
 #include <NimBLEDevice.h>   // Install "NimBLE-Arduino" via Library Manager
 
@@ -664,9 +665,13 @@ void setup() {
   digitalWrite(BUZZER_PIN, LOW);
 
   WiFi.mode(WIFI_STA);
-  WiFi.macAddress(myMac);                // v2: own MAC for HEARTBEAT / ASSIGN_IDS
-  Serial.print("Gate 1 MAC: ");
-  Serial.println(WiFi.macAddress());
+  // v2: read the factory STA MAC from eFuse. WiFi.macAddress() returns zeros
+  // until the WiFi stack is fully up; esp_read_mac() is valid immediately and
+  // returns the SAME MAC ESP-NOW uses (so it matches the hardcoded peer MACs
+  // and the app's ASSIGN_IDS). Needed for HEARTBEAT / ASSIGN_IDS.
+  esp_read_mac(myMac, ESP_MAC_WIFI_STA);
+  Serial.printf("Gate 1 MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5]);
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init FAILED");

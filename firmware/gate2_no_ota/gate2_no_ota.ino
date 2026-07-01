@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_mac.h>       // esp_read_mac() — factory STA MAC from eFuse (v2)
 
 // ========== HARDWARE ==========
 #define LUNA_RX 16
@@ -312,9 +313,10 @@ void setup() {
   setLunaFrameRate(250);
 
   WiFi.mode(WIFI_STA);
-  WiFi.macAddress(myMac);
-  Serial.print("Gate 2 MAC: ");
-  Serial.println(WiFi.macAddress());
+  // v2: factory STA MAC from eFuse (valid pre-WiFi-up, matches ESP-NOW / peers).
+  esp_read_mac(myMac, ESP_MAC_WIFI_STA);
+  Serial.printf("Gate 2 MAC: %02X:%02X:%02X:%02X:%02X:%02X\n",
+                myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5]);
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
