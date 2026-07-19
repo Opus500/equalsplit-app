@@ -1251,20 +1251,14 @@ void v2Rebroadcast(const uint8_t* f, uint8_t len) {
 }
 
 void v2DoAssignIds(const uint8_t* f, uint8_t len) {
-  Serial.printf("[v2] ASSIGN_IDS rx len=%d count=%d myMac=%02X:%02X:%02X:%02X:%02X:%02X\n",  // DIAG
-                len, (len >= 2 ? f[1] : 0),
-                myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5]);
   if (len < 2) return;
   uint8_t count = f[1];
   uint8_t p = 2;
   for (uint8_t i = 0; i < count && (uint8_t)(p + 7) <= len; i++, p += 7) {
     bool match = true;
     for (uint8_t b = 0; b < 6; b++) if (f[p + b] != myMac[b]) { match = false; break; }
-    Serial.printf("[v2]   entry %d mac=%02X:%02X:%02X:%02X:%02X:%02X id=%d match=%d\n",       // DIAG
-                  i, f[p], f[p + 1], f[p + 2], f[p + 3], f[p + 4], f[p + 5], f[p + 6], match);
     if (match) v2GateId = f[p + 6];
   }
-  Serial.printf("[v2] ASSIGN_IDS done: v2GateId=%d\n", v2GateId);                              // DIAG
 }
 
 // A v2 command arrived from the app on the Command characteristic. Execute it
@@ -1276,7 +1270,6 @@ void v2HandleCommand() {
   uint8_t len = v2CmdLen;
   if (len < 1) return;
   uint8_t* f = v2CmdBuf;
-  Serial.printf("[v2] cmd rx op=0x%02X len=%d\n", f[0], len);   // DIAG
   switch (f[0]) {
     case V2_ASSIGN_IDS:
       v2DoAssignIds(f, len);
