@@ -29,10 +29,10 @@ const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // This 2-gate product's known MACs (from firmware/README.md). App-owned mapping:
 // start gate = id 1, finish gate = id 2. Mirrors the firmware peer pairing.
-const GATE1_MAC = Uint8Array.from([0xf4, 0x2d, 0xc9, 0x6a, 0xa0, 0x50]); // start
-const GATE2_MAC = Uint8Array.from([0xf4, 0x2d, 0xc9, 0x6b, 0xf7, 0x3c]); // finish
-const GATE1_MAC_STR = 'f4:2d:c9:6a:a0:50';
-const GATE2_MAC_STR = 'f4:2d:c9:6b:f7:3c';
+const GATE1_MAC = Uint8Array.from([0xb4, 0xbf, 0xe9, 0x32, 0xda, 0x64]); // start
+const GATE2_MAC = Uint8Array.from([0x30, 0x76, 0xf5, 0xa6, 0x43, 0xbc]); // finish
+const GATE1_MAC_STR = 'b4:bf:e9:32:da:64';
+const GATE2_MAC_STR = '30:76:f5:a6:43:bc';
 const KNOWN_ID: Record<string, number> = { [GATE1_MAC_STR]: 1, [GATE2_MAC_STR]: 2 };
 
 export type DiscoveredGate = { mac: string; gateId: number | null; lastSeenMs: number };

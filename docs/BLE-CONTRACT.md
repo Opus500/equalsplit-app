@@ -352,7 +352,7 @@ cut over.
   there going forward (not the OneDrive folder); delete the scattered copies.
 - **Gate-2 live source (verified):** `firmware/gate2_no_ota/gate2_no_ota.ino` — newest by mtime
   (2026-06-13 01:07), **byte-identical** to `Downloads/gate2_no_ota/` (md5 `7d218143…`), already
-  OTA-free, and its ESP-NOW peer (`gate1MAC F4:2D:C9:6A:A0:50`) pairs with `gate1_ble`'s
+  OTA-free, and its ESP-NOW peer (`gate1MAC B4:BF:E9:32:DA:64`) pairs with `gate1_ble`'s
   `gate2MAC` — i.e. it is the matching half of the live pair. Older/larger strays
   (`Downloads/gate2/gate2.ino` 8052 B, `gate267*`) are superseded. **The symmetric-binary merge
   is still gated on Louis's explicit OK that this is what's physically flashed on gate 2.**

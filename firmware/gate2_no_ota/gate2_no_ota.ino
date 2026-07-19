@@ -8,8 +8,7 @@
 const int GATE_THRESHOLD = 100;
 int16_t distance;
 
-uint8_t gate1MAC[] = {0xF4, 0x2D, 0xC9, 0x6A, 0xA0, 0x50};
-
+uint8_t gate1MAC[] = {0xB4, 0xBF, 0xE9, 0x32, 0xDA, 0x64};
 // All timing fields are in MICROSECONDS, matching Gate 1.
 struct GateData {
   int gateNumber;

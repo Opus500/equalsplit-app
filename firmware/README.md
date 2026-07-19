@@ -9,11 +9,11 @@ below were verified byte-identical to what is physically flashed before any clea
 
 | Sketch | Role | MAC | Notes |
 |---|---|---|---|
-| `gate1_ble/gate1_ble.ino` | **Gate 1** — start gate, BLE bridge, timekeeper | `F4:2D:C9:6A:A0:50` | NimBLE + ESP-NOW; verified identical to the flashed OneDrive copy (md5 `25700e9b…`, 2026-06-15). |
-| `gate2_no_ota/gate2_no_ota.ino` | **Gate 2** — finish gate | `F4:2D:C9:6B:F7:3C` | ESP-NOW only; confirmed live by Louis (flashed, Mode-1 split correct). Already OTA-free. |
+| `gate1_ble/gate1_ble.ino` | **Gate 1** — start gate, BLE bridge, timekeeper | `B4:BF:E9:32:DA:64` | NimBLE + ESP-NOW. MAC read from eFuse (esp_efuse_mac_get_default) and verified 2026-07. |
+| `gate2_no_ota/gate2_no_ota.ino` | **Gate 2** — finish gate | `30:76:F5:A6:43:BC` | ESP-NOW only; confirmed live by Louis (flashed, Mode-1 split correct). Already OTA-free. |
 
-The two pair: `gate1_ble` sends to `gate2MAC F4:2D:C9:6B:F7:3C`; `gate2_no_ota` sends to
-`gate1MAC F4:2D:C9:6A:A0:50`. Hardware is symmetric (identical TF-Luna `Serial2 16/17`,
+The two pair: `gate1_ble` sends to `gate2MAC 30:76:F5:A6:43:BC`; `gate2_no_ota` sends to
+`gate1MAC B4:BF:E9:32:DA:64`. Hardware is symmetric (identical TF-Luna `Serial2 16/17`,
 threshold 100, 15 ms debounce); Gate 2 has no OLED/buttons populated — hence boot-time
 feature detection in v2.
 

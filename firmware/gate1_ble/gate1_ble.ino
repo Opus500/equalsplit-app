@@ -201,8 +201,7 @@ RunRecord sessionRuns[MAX_RUNS];
 int runCount = 0;
 
 // ========== ESP-NOW ==========
-uint8_t gate2MAC[] = {0xF4, 0x2D, 0xC9, 0x6B, 0xF7, 0x3C};
-
+uint8_t gate2MAC[] = {0x30, 0x76, 0xF5, 0xA6, 0x43, 0xBC};
 // All timing fields are in MICROSECONDS for precision.
 struct GateData {
   int gateNumber;
