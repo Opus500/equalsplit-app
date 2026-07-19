@@ -22,6 +22,7 @@ import {
   type V2Run,
 } from './v2';
 import { GATE_ID_ALL } from './v2constants';
+import type { LastResult } from './events';
 
 const perfNow = () =>
   typeof globalThis.performance?.now === 'function' ? globalThis.performance.now() : Date.now();
@@ -87,10 +88,23 @@ export function useV2Pipeline(): V2Pipeline {
   const [busy, setBusy] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
 
-  // Pairing state (refs so the stream handler never reads stale values).
-  const pendingV1 = useRef<{ totalMs: number; atMs: number } | null>(null);
-  const pendingV2 = useRef<{ splitMs: number; synced: boolean; atMs: number } | null>(null);
+  // Pairing state (refs so the stream handler never reads stale values). We pair
+  // the v2 run against the v1 result; the v1 FINISH *notification* drops ~100% on
+  // this hardware, so the reliable path is the LastResult read keyed by runIndex.
+  const pendingV2 = useRef<{ splitMs: number; synced: boolean; atMs: number; token: number } | null>(
+    null,
+  );
+  const runToken = useRef(0); // tags each v2 run so a stale fallback can't pair a newer run
+  const lastPairedRunIndex = useRef(-1); // v1 LastResult.runIndex already consumed
   const cmpSeq = useRef(0);
+  // De-dupe raw events by (type, gate_id, micros): the same physical edge is
+  // delivered twice (live notify + queue drain). micros is the capture instant,
+  // so an identical key is definitionally the same edge, not two crossings.
+  const recentKeys = useRef<Set<string>>(new Set());
+  const recentKeyOrder = useRef<string[]>([]);
+  // Always-latest gate handle, for timers/closures that must not re-subscribe.
+  const gateRef = useRef(gate);
+  gateRef.current = gate;
   // Outstanding PING requests keyed by the echoed app_micros.
   const pingWaiters = useRef<Map<number, (r: { gateMicros: number; atMs: number }) => void>>(
     new Map(),
@@ -106,42 +120,94 @@ export function useV2Pipeline(): V2Pipeline {
   useEffect(() => {
     const engine = engineRef.current;
 
-    const tryPair = () => {
-      const v1 = pendingV1.current;
-      const v2 = pendingV2.current;
-      if (!v1 || !v2) return;
-      if (Math.abs(v1.atMs - v2.atMs) > 3000) return; // too far apart to be one run
-      pendingV1.current = null;
-      pendingV2.current = null;
+    const emitComparison = (
+      v1Ms: number,
+      v2: { splitMs: number; synced: boolean },
+      atMs: number,
+    ) => {
       cmpSeq.current += 1;
       const c: Comparison = {
         id: `${cmpSeq.current}`,
-        atMs: Math.max(v1.atMs, v2.atMs),
-        v1Ms: v1.totalMs,
+        atMs,
+        v1Ms,
         v2Ms: v2.splitMs,
-        deltaMs: v2.splitMs - v1.totalMs,
+        deltaMs: v2.splitMs - v1Ms,
         synced: v2.synced,
       };
       setComparisons((prev) => [c, ...prev].slice(0, 50));
-      pushLog(`compare v1=${c.v1Ms}ms v2=${c.v2Ms}ms Δ=${c.deltaMs}ms${c.synced ? '' : ' (unsynced)'}`);
+      pushLog(
+        `compare v1=${v1Ms}ms v2=${v2.synced ? v2.splitMs : '—'}ms Δ=${v2.synced ? c.deltaMs : '—'}ms`,
+      );
+    };
+
+    // Pair the pending v2 run with a v1 total. Returns whether it paired.
+    const pairV1 = (v1Ms: number, atMs: number, source: string): boolean => {
+      const v2 = pendingV2.current;
+      if (!v2) return false;
+      if (Math.abs(atMs - v2.atMs) > 5000) return false; // not the same rep
+      pendingV2.current = null;
+      emitComparison(v1Ms, v2, Math.max(atMs, v2.atMs));
+      pushLog(`paired via ${source}`);
+      return true;
+    };
+
+    // The real pairing path here: FINISH notifications drop ~100%, so a few
+    // hundred ms after the v2 run completes we read the RELIABLE LastResult (the
+    // same recovery the Timer uses) and pair by its runIndex. Token-guarded so a
+    // late retry can never pair a newer run; runIndex-guarded so a pre-run read
+    // can't pair a stale result.
+    const pairViaLastResult = async (token: number, attempt: number) => {
+      const cur = pendingV2.current;
+      if (!cur || cur.token !== token) return; // already paired, or superseded
+      let lr: LastResult | null = null;
+      try {
+        lr = await gateRef.current.readLastResultNow();
+      } catch {
+        /* read failed; fall through to retry */
+      }
+      if (!pendingV2.current || pendingV2.current.token !== token) return;
+      if (lr && lr.runIndex !== lastPairedRunIndex.current) {
+        lastPairedRunIndex.current = lr.runIndex;
+        pairV1(lr.totalMs, perfNow(), `LastResult run#${lr.runIndex}`);
+        return;
+      }
+      if (attempt < 4) {
+        setTimeout(() => pairViaLastResult(token, attempt + 1), 400);
+      } else {
+        pushLog('no v1 result for this rep (LastResult never advanced)');
+      }
     };
 
     engine.onRun = (run) => {
       setLastRun(run);
       setEngineState(engine.state);
-      pendingV2.current = { splitMs: run.splitMs, synced: run.synced, atMs: run.finishAtMs };
+      runToken.current += 1;
+      const token = runToken.current;
+      pendingV2.current = { splitMs: run.splitMs, synced: run.synced, atMs: run.finishAtMs, token };
       pushLog(`v2 run split=${run.splitMs}ms${run.synced ? '' : ' (unsynced — withheld)'}`);
-      tryPair();
+      // FINISH may pair it first (fast path); otherwise LastResult picks it up.
+      setTimeout(() => pairViaLastResult(token, 0), 450);
     };
 
     const off = gate.subscribe((raw, parsed, atMs) => {
-      // v1 side of the comparison: Mode-1 FINISH total == the g1→g2 split.
+      // v1 fast path: a Mode-1 FINISH total == the g1→g2 split. Usually dropped
+      // on this hardware; pairs the pending v2 run directly when it does arrive.
       if (parsed && parsed.type === Evt.Finish) {
-        pendingV1.current = { totalMs: parsed.totalMs, atMs };
-        tryPair();
+        pairV1(parsed.totalMs, atMs, 'FINISH');
       }
       const f: V2Frame | null = parseV2Frame(raw);
       if (!f) return;
+      // De-dupe duplicate delivery of the same physical edge (live + queue drain).
+      if (f.kind === 'beam' || f.kind === 'buzzer' || f.kind === 'button') {
+        const key = `${f.kind}:${f.gateId}:${f.micros}`;
+        if (recentKeys.current.has(key)) return;
+        recentKeys.current.add(key);
+        recentKeyOrder.current.push(key);
+        if (recentKeyOrder.current.length > 128) {
+          const old = recentKeyOrder.current.shift();
+          if (old) recentKeys.current.delete(old);
+        }
+      }
       switch (f.kind) {
         case 'heartbeat':
           setDiscovered((prev) => {
@@ -327,7 +393,6 @@ export function useV2Pipeline(): V2Pipeline {
   const resetEngine = useCallback(() => {
     engineRef.current.reset();
     setEngineState(engineRef.current.state);
-    pendingV1.current = null;
     pendingV2.current = null;
   }, []);
 
