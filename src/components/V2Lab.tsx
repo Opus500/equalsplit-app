@@ -1,67 +1,79 @@
-// Dev-only v2 acceptance-test surface (docs/BLE-CONTRACT.md §14). Runs the raw
-// v2 pipeline alongside the live v1 gate result and shows the per-run agreement.
+// Dev-only v2 acceptance-test surface (docs/BLE-CONTRACT.md §14). Consumes the
+// shared V2Provider session: it activates the pipeline on mount (auto bring-up:
+// discover -> assign -> sync -> ping), then shows each rep's v1-vs-v2 agreement.
 // Green Δ = within the ±5 ms TF-Luna quantization band → cut-over signal.
 
+import { useEffect } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { useV2Pipeline, type Comparison } from '../ble/useV2';
+import { useV2, type Comparison } from '../ble/V2Provider';
 
 const AGREE_MS = 5; // TF-Luna 250 Hz frame quantization band (§14)
 const WARN_MS = 10;
 
 export default function V2Lab() {
-  const p = useV2Pipeline();
+  const v2 = useV2();
 
-  const agree = p.comparisons.filter((c) => c.synced && Math.abs(c.deltaMs) <= AGREE_MS).length;
-  const synced = p.comparisons.filter((c) => c.synced).length;
+  // Activate the v2 session while this view is mounted; go dormant on leave.
+  useEffect(() => {
+    v2.setActive(true);
+    return () => v2.setActive(false);
+  }, [v2.setActive]);
+
+  const agree = v2.comparisons.filter((c) => c.synced && Math.abs(c.deltaMs) <= AGREE_MS).length;
+  const synced = v2.comparisons.filter((c) => c.synced).length;
+  const busy = v2.phase !== 'ready' && v2.phase !== 'idle' && v2.phase !== 'error';
 
   return (
     <View style={styles.wrap}>
       <Text style={styles.h1}>v2 raw-pipeline lab</Text>
       <Text style={styles.sub}>
-        engine: {p.engineState}
-        {p.ping ? `  ·  ping ${p.ping.rttMs.toFixed(1)}ms` : ''}
-        {p.comparisons.length ? `  ·  agree ${agree}/${synced} synced` : ''}
+        {v2.phase}
+        {v2.ping ? `  ·  ping ${v2.ping.rttMs.toFixed(1)}ms` : ''}
+        {`  ·  engine ${v2.engineState}`}
+        {v2.comparisons.length ? `  ·  agree ${agree}/${synced}` : ''}
       </Text>
 
-      {/* Discovered gates + their assigned id / sync state */}
+      {/* Gates */}
       <Text style={styles.section}>gates</Text>
-      {p.discovered.length === 0 ? (
-        <Text style={styles.muted}>no heartbeats yet… connect and wait ~1s</Text>
+      {v2.gates.length === 0 ? (
+        <Text style={styles.muted}>no heartbeats yet… (need connection)</Text>
       ) : (
-        p.discovered.map((g) => {
-          const st = p.statuses.find((s) => s.gateId === g.gateId);
-          return (
-            <View key={g.mac} style={styles.gateRow}>
-              <Text style={styles.mono}>{g.mac}</Text>
-              <Text style={styles.gateMeta}>
-                id {g.gateId ?? '—'}
-                {st ? `  ·  ${st.timeSynced ? 'synced' : 'UNSYNCED'}  ·  ${st.thresholdCm}cm  ·  q${st.queueDepth}` : ''}
-              </Text>
-            </View>
-          );
-        })
+        v2.gates.map((g) => (
+          <View key={g.mac} style={styles.gateRow}>
+            <Text style={styles.mono}>{g.mac}</Text>
+            <Text style={styles.gateMeta}>
+              {g.id ? `id ${g.id}` : 'unassigned'}
+              {g.role ? ` · ${g.role}` : ''}
+              {g.hasDisplay ? ' · OLED' : ''}
+              {g.id ? ` · ${g.timeSynced ? 'synced' : 'UNSYNCED'}` : ''}
+            </Text>
+          </View>
+        ))
       )}
 
-      {/* Workflow */}
+      {/* Controls */}
       <View style={styles.row}>
-        <Btn label="1· Assign IDs" onPress={p.assignIds} disabled={!p.connected || !!p.busy} />
-        <Btn label="2· Get status" onPress={p.getStatus} disabled={!p.connected || !!p.busy} />
+        <Btn label={busy ? 'Bringing up…' : 'Re-bring-up'} onPress={v2.bringUp} disabled={!v2.connected || busy} />
+        <Btn
+          label={v2.swapRoles ? 'Start = other gate' : 'Start = OLED gate'}
+          onPress={() => v2.setSwapRoles(!v2.swapRoles)}
+          disabled={busy}
+        />
       </View>
       <View style={styles.row}>
-        <Btn label="Ping/offset" onPress={p.pingSync} disabled={!p.connected || !!p.busy} />
-        <Btn label="Clear queue" onPress={p.clearQueue} disabled={!p.connected || !!p.busy} />
+        <Btn label="Arm run (M1)" onPress={v2.arm} disabled={!v2.ready} kind="go" />
+        <Btn label="Reset engine" onPress={v2.resetEngine} disabled={!v2.connected} />
       </View>
-      <View style={styles.row}>
-        <Btn label="3· Arm run (M1)" onPress={p.armRun} disabled={!p.connected || !!p.busy} kind="go" />
-        <Btn label="Reset engine" onPress={p.resetEngine} disabled={!p.connected} />
-      </View>
+      {v2.swapRoles ? (
+        <Text style={styles.hint}>role swap pending — tap Re-bring-up to apply</Text>
+      ) : null}
 
       {/* Comparison table */}
       <View style={styles.cmpHead}>
-        <Text style={styles.cmpTitle}>v1 vs v2 split  (Δ = v2 − v1)</Text>
-        {p.comparisons.length ? (
-          <Pressable onPress={p.clearComparisons}>
+        <Text style={styles.cmpTitle}>v1 vs v2 split (Δ = v2 − v1)</Text>
+        {v2.comparisons.length ? (
+          <Pressable onPress={v2.clearComparisons}>
             <Text style={styles.clear}>clear</Text>
           </Pressable>
         ) : null}
@@ -74,12 +86,10 @@ export default function V2Lab() {
       </View>
       <FlatList
         style={styles.cmpList}
-        data={p.comparisons}
+        data={v2.comparisons}
         keyExtractor={(c) => c.id}
         ListEmptyComponent={
-          <Text style={styles.muted}>
-            arm a Mode-1 rep and run both gates — the v1 result and v2 split land here paired.
-          </Text>
+          <Text style={styles.muted}>arm a Mode-1 rep and run both gates — rows land here paired.</Text>
         }
         renderItem={({ item }) => <CmpRow c={item} />}
       />
@@ -87,7 +97,7 @@ export default function V2Lab() {
       <Text style={styles.section}>v2 event log</Text>
       <FlatList
         style={styles.log}
-        data={p.log}
+        data={v2.log}
         keyExtractor={(_l, i) => `${i}`}
         renderItem={({ item }) => <Text style={styles.logLine}>{item}</Text>}
       />
@@ -143,6 +153,7 @@ const styles = StyleSheet.create({
   sub: { color: '#8b98a9', marginTop: 2, marginBottom: 8, fontSize: 12 },
   section: { color: '#8b98a9', fontWeight: '700', marginTop: 8, marginBottom: 4, fontSize: 12 },
   muted: { color: '#64748b', fontSize: 12, paddingVertical: 6 },
+  hint: { color: '#fbbf24', fontSize: 11, marginTop: 6 },
   gateRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
   mono: { color: '#cbd5e1', fontFamily: mono, fontSize: 12 },
   gateMeta: { color: '#93c5fd', fontSize: 12 },

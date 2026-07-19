@@ -7,6 +7,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 
 import { GateProvider } from './src/ble/GateProvider';
+import { V2Provider } from './src/ble/V2Provider';
 import { SettingsProvider, useSettings } from './src/settings/SettingsProvider';
 import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
@@ -24,7 +25,9 @@ export default function App() {
   return (
     <SettingsProvider>
       <GateProvider>
-        <AppShell />
+        <V2Provider>
+          <AppShell />
+        </V2Provider>
       </GateProvider>
     </SettingsProvider>
   );
