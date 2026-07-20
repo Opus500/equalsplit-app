@@ -80,7 +80,11 @@ type StatusView = {
 
 export type V2ContextValue = {
   active: boolean;
-  setActive: (b: boolean) => void;
+  // Ref-counted activation: each consumer (Timer, Lab) retains on mount and
+  // releases on unmount. The session is dormant (no subscription, no commands)
+  // while the count is 0, so v1-default users are untouched.
+  retain: () => void;
+  release: () => void;
   phase: V2Phase;
   connected: boolean;
   ready: boolean;
@@ -88,12 +92,14 @@ export type V2ContextValue = {
   swapRoles: boolean;
   setSwapRoles: (b: boolean) => void;
   engineState: string;
+  running: { startUs: number; startAtMs: number } | null;
   lastRun: V2Run | null;
   comparisons: Comparison[];
   ping: { rttMs: number; offsetMs: number } | null;
   log: string[];
   bringUp: () => Promise<void>;
   arm: () => Promise<void>;
+  armCompare: () => Promise<void>;
   resetEngine: () => void;
   clearComparisons: () => void;
   gateToPhoneMs: (gateUs: number) => number | null;
@@ -105,7 +111,10 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const gate = useGate();
   const engineRef = useRef(new V2RunEngine(START_ID, FINISH_ID));
 
-  const [active, setActive] = useState(false);
+  const [activeCount, setActiveCount] = useState(0);
+  const active = activeCount > 0;
+  const retain = useCallback(() => setActiveCount((c) => c + 1), []);
+  const release = useCallback(() => setActiveCount((c) => Math.max(0, c - 1)), []);
   const [phase, setPhase] = useState<V2Phase>('idle');
   const [swapRoles, setSwapRoles] = useState(false);
   const [engineState, setEngineState] = useState<string>(engineRef.current.state);
@@ -114,6 +123,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const [ping, setPing] = useState<{ rttMs: number; offsetMs: number } | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [gates, setGates] = useState<GateView[]>([]);
+  const [running, setRunning] = useState<{ startUs: number; startAtMs: number } | null>(null);
 
   // Live mirrors (refs) so the async bring-up reads current values, not stale.
   const discoveredRef = useRef<Record<string, number>>({}); // mac -> lastSeenMs
@@ -131,6 +141,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
   );
   const runToken = useRef(0);
   const lastPairedRunIndex = useRef(-1);
+  const expectV1Ref = useRef(false); // pair against v1 LastResult? (Lab comparison only)
   const cmpSeq = useRef(0);
   const pingWaiters = useRef<Map<number, (r: { gateMicros: number; atMs: number }) => void>>(
     new Map(),
@@ -221,18 +232,27 @@ export function V2Provider({ children }: { children: ReactNode }) {
       if (attempt < 4) setTimeout(() => pairViaLastResult(token, attempt + 1), 400);
     };
 
+    engine.onStart = (startUs, startAtMs) => {
+      setRunning({ startUs, startAtMs });
+      setEngineState(engine.state);
+    };
+
     engine.onRun = (run) => {
+      setRunning(null);
       setLastRun(run);
       setEngineState(engine.state);
+      pushLog(`v2 run split=${run.splitMs}ms${run.synced ? '' : ' (unsynced — withheld)'}`);
+      if (!expectV1Ref.current) return; // Timer path: no v1 comparison
       runToken.current += 1;
       const token = runToken.current;
       pendingV2.current = { splitMs: run.splitMs, synced: run.synced, atMs: run.finishAtMs, token };
-      pushLog(`v2 run split=${run.splitMs}ms${run.synced ? '' : ' (unsynced — withheld)'}`);
       setTimeout(() => pairViaLastResult(token, 0), 450);
     };
 
     const off = gate.subscribe((raw, parsed, atMs) => {
-      if (parsed && parsed.type === Evt.Finish) pairV1(parsed.totalMs, atMs, 'FINISH');
+      if (expectV1Ref.current && parsed && parsed.type === Evt.Finish) {
+        pairV1(parsed.totalMs, atMs, 'FINISH');
+      }
       const f: V2Frame | null = parseV2Frame(raw);
       if (!f) return;
       if (f.kind === 'beam' || f.kind === 'buzzer' || f.kind === 'button') {
@@ -467,15 +487,27 @@ export function V2Provider({ children }: { children: ReactNode }) {
   }, [active, connected, runBringUp]);
 
   const bringUp = useCallback(async () => {
-    setActive(true);
     broughtUpForConn.current = true; // we are driving it explicitly
     await runBringUp();
   }, [runBringUp]);
 
+  // v2-only arm (Timer). No gate command needed — v2 gates emit edges always;
+  // arming is purely the app-side engine waiting for the start-gate break.
   const arm = useCallback(async () => {
+    expectV1Ref.current = false;
+    setRunning(null);
     engineRef.current.arm();
     setEngineState(engineRef.current.state);
-    // v1 arm too, so the gate produces its result for the live comparison.
+    pushLog('armed (v2, Mode 1)');
+  }, [pushLog]);
+
+  // Lab/acceptance arm: also arm v1 (arm1) so the gate produces its result to
+  // pair against, and enable the LastResult comparison for this run.
+  const armCompare = useCallback(async () => {
+    expectV1Ref.current = true;
+    setRunning(null);
+    engineRef.current.arm();
+    setEngineState(engineRef.current.state);
     try {
       await gateRef.current.arm1();
       pushLog('armed (v1 + v2, Mode 1)');
@@ -487,6 +519,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const resetEngine = useCallback(() => {
     engineRef.current.reset();
     setEngineState(engineRef.current.state);
+    setRunning(null);
     pendingV2.current = null;
   }, []);
 
@@ -498,7 +531,8 @@ export function V2Provider({ children }: { children: ReactNode }) {
 
   const value: V2ContextValue = {
     active,
-    setActive,
+    retain,
+    release,
     phase,
     connected,
     ready: phase === 'ready',
@@ -506,12 +540,14 @@ export function V2Provider({ children }: { children: ReactNode }) {
     swapRoles,
     setSwapRoles,
     engineState,
+    running,
     lastRun,
     comparisons,
     ping,
     log,
     bringUp,
     arm,
+    armCompare,
     resetEngine,
     clearComparisons,
     gateToPhoneMs,

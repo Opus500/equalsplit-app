@@ -46,11 +46,15 @@ type SettingsValue = {
   // (±X accuracy, clock-sync detail, raw split values, the Debug tab); the
   // underlying data is still measured and stored — this only gates display.
   devMode: boolean;
+  // Dev-only: run the main Timer on the v2 raw-event engine (Mode-1) instead of
+  // the v1 pipeline. Default OFF while v2 is being brought to parity (Stage 2).
+  useV2Engine: boolean;
   setReactionOffsetMs: (ms: number) => void;
   setMeasuredAudioLatencyMs: (ms: number) => void;
   setCorrectionMode: (m: CorrectionMode) => void;
   addLatencySample: (s: LatencySample) => void;
   setDevMode: (on: boolean) => void;
+  setUseV2Engine: (on: boolean) => void;
 };
 
 const SettingsContext = createContext<SettingsValue | null>(null);
@@ -62,6 +66,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [correctionMode, setMode] = useState<CorrectionMode>('synced');
   const [latencySamples, setLatencySamples] = useState<LatencySample[]>([]);
   const [devMode, setDev] = useState(false);
+  const [useV2Engine, setV2Eng] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -71,6 +76,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         const m = await getSetting('correction_mode');
         if (m === 'fixed' || m === 'synced') setMode(m);
         setDev((await getSetting('dev_mode')) === '1');
+        setV2Eng((await getSetting('use_v2_engine')) === '1');
       } catch {
         /* keep defaults */
       } finally {
@@ -105,6 +111,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     setSetting('dev_mode', on ? '1' : '0').catch(() => {});
   }, []);
 
+  const setUseV2Engine = useCallback((on: boolean) => {
+    setV2Eng(on);
+    setSetting('use_v2_engine', on ? '1' : '0').catch(() => {});
+  }, []);
+
   return (
     <SettingsContext.Provider
       value={{
@@ -114,11 +125,13 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         correctionMode,
         latencySamples,
         devMode,
+        useV2Engine,
         setReactionOffsetMs,
         setMeasuredAudioLatencyMs,
         setCorrectionMode,
         addLatencySample,
         setDevMode,
+        setUseV2Engine,
       }}
     >
       {children}

@@ -11,6 +11,7 @@ import { V2Provider } from './src/ble/V2Provider';
 import { SettingsProvider, useSettings } from './src/settings/SettingsProvider';
 import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
+import TimerV2Screen from './src/screens/TimerV2Screen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DebugScreen from './src/screens/DebugScreen';
@@ -35,7 +36,7 @@ export default function App() {
 
 // Inside the providers so it can read devMode (gates the Debug tab). Default OFF.
 function AppShell() {
-  const { devMode } = useSettings();
+  const { devMode, useV2Engine } = useSettings();
   const [tab, setTab] = useState<Tab>('timer');
 
   // If dev mode is turned off while on the Debug tab, fall back to Timer.
@@ -48,7 +49,7 @@ function AppShell() {
       <StatusBar style="light" />
       <View style={styles.screens}>
         <View style={[styles.fill, tab !== 'timer' && styles.hidden]}>
-          <TimerScreen />
+          {useV2Engine ? <TimerV2Screen /> : <TimerScreen />}
         </View>
         {tab === 'history' && (
           <View style={styles.fill}>

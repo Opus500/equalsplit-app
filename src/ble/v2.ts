@@ -208,6 +208,8 @@ export class V2RunEngine {
   private startAtMs = 0;
   /** Optional sink for completed runs (e.g. the dev comparison view). */
   onRun: ((run: V2Run) => void) | null = null;
+  /** Fired when the run starts (armed → running), for a live timer. */
+  onStart: ((startUs: number, startAtMs: number) => void) | null = null;
 
   constructor(startGateId = 1, finishGateId = 2) {
     this.startGateId = startGateId;
@@ -245,6 +247,7 @@ export class V2RunEngine {
       this.startUs = micros;
       this.startAtMs = atMs;
       this.state = 'running';
+      this.onStart?.(micros, atMs);
       return null;
     }
     if (this.state === 'running' && gateId === this.finishGateId) {

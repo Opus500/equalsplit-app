@@ -16,9 +16,9 @@ export default function V2Lab() {
 
   // Activate the v2 session while this view is mounted; go dormant on leave.
   useEffect(() => {
-    v2.setActive(true);
-    return () => v2.setActive(false);
-  }, [v2.setActive]);
+    v2.retain();
+    return v2.release;
+  }, [v2.retain, v2.release]);
 
   const agree = v2.comparisons.filter((c) => c.synced && Math.abs(c.deltaMs) <= AGREE_MS).length;
   const synced = v2.comparisons.filter((c) => c.synced).length;
@@ -62,7 +62,7 @@ export default function V2Lab() {
         />
       </View>
       <View style={styles.row}>
-        <Btn label="Arm run (M1)" onPress={v2.arm} disabled={!v2.ready} kind="go" />
+        <Btn label="Arm run (M1)" onPress={v2.armCompare} disabled={!v2.ready} kind="go" />
         <Btn label="Reset engine" onPress={v2.resetEngine} disabled={!v2.connected} />
       </View>
       {v2.swapRoles ? (

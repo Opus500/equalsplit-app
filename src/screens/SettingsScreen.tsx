@@ -47,6 +47,8 @@ export default function SettingsScreen() {
     latencySamples,
     devMode,
     setDevMode,
+    useV2Engine,
+    setUseV2Engine,
   } = useSettings();
   const gate = useGate();
   const connected = gate.status === 'connected';
@@ -87,6 +89,23 @@ export default function SettingsScreen() {
 
       {devMode ? (
       <>
+      <Section title="Timing engine (experimental)">
+        <View style={styles.devRow}>
+          <Text style={styles.devLabel}>Use v2 raw-event engine (Mode 1)</Text>
+          <Switch
+            value={useV2Engine}
+            onValueChange={setUseV2Engine}
+            trackColor={{ false: '#243042', true: '#1d4ed8' }}
+            thumbColor="#e2e8f0"
+          />
+        </View>
+        <Text style={styles.note}>
+          Runs the main Timer on the new write-once gate pipeline (gates auto-discover, assign, and
+          time-sync; the app computes the split from the raw event stream). Mode 1 only for now. Off
+          uses the proven v1 pipeline. Both save to the same history.
+        </Text>
+      </Section>
+
       <Section title="Reaction latency calibration">
         <Text style={styles.help}>
           The GO beep plays on the phone, slightly after the gate's real GO, so Mode 2 reaction
