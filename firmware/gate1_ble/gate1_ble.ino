@@ -117,10 +117,19 @@ uint8_t myMac[6]   = {0};
 uint8_t  v2GateId    = 0;                 // 0 = unassigned until ASSIGN_IDS
 uint16_t thresholdCm = 100;               // v2 runtime threshold; default == legacy GATE_THRESHOLD
 
-// Time MASTER: shared gate-network clock == this gate's micros(), offset 0,
-// always synced. (Followers sync TO us; see the symmetric-binary TODO above.)
+// Time-master ELECTION (lowest MAC wins) — symmetric: a gate is MASTER (offset 0,
+// always synced, answers TS_PING) if its MAC is the lowest it has heard, else a
+// FOLLOWER (pings the master, applies TS_PONG). Boot = master (we only know
+// ourselves) until a lower MAC's heartbeat demotes us. (F1: previously gate1 was
+// hardcoded master; now both roles live here for the symmetric binary.)
 volatile int32_t clkOffset = 0;
 volatile bool    timeSynced = true;
+bool     isMaster = true;
+uint8_t  lowestMac[6] = {0};             // set to myMac in setup
+uint32_t tsMinRtt      = 0xFFFFFFFFUL;   // follower: best round-trip this window
+uint32_t tsSeq         = 0;              // follower: our outstanding ping id
+unsigned long lastTsPingMs  = 0;
+unsigned long lastTsResetMs = 0;
 
 // v2 beam edge detector (independent debounce from the legacy detector)
 bool v2LastBeam = false;
@@ -170,6 +179,10 @@ void v2ServiceHeartbeat(unsigned long nowMs);
 void v2SendPingReply(uint32_t appMicros);
 void v2SendStatusSelf();
 void v2SendPong(const uint8_t* pingFrame);
+void v2ApplyPong(const uint8_t* f);
+void v2ServiceTimeSync(unsigned long nowMs);
+void updateElection();
+void noteMac(const uint8_t* mac);
 void v2Rebroadcast(const uint8_t* f, uint8_t len);
 void v2DoAssignIds(const uint8_t* f, uint8_t len);
 void v2HandleCommand();
@@ -673,6 +686,7 @@ void setup() {
   esp_err_t macErr = esp_efuse_mac_get_default(myMac);
   Serial.printf("Gate 1 MAC: %02X:%02X:%02X:%02X:%02X:%02X (efuse err=%d)\n",
                 myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5], macErr);
+  memcpy(lowestMac, myMac, 6);           // election seed: we are master until we hear lower
 
   if (esp_now_init() != ESP_OK) {
     Serial.println("ESP-NOW init FAILED");
@@ -723,7 +737,8 @@ void loop() {
   v2ProcessInbound();       // handle/relay v2 frames from other gates (ESP-NOW)
   v2ServiceButtons(now);    // emit BUTTON_PRESS on physical button edges
   v2ServiceBuzzer(now);     // drop the buzzer pin when its pulse is done
-  v2ServiceHeartbeat(now);  // self-heartbeat up to the app
+  v2ServiceHeartbeat(now);  // self-heartbeat (ESP-NOW broadcast + BLE relay)
+  v2ServiceTimeSync(now);   // follower: ping the master for the shared clock
   v2ServiceQueue();         // drain the event ring to BLE while connected
 
   // ===== unified LiDAR poll — one read feeds BOTH pipelines =====
@@ -1214,7 +1229,8 @@ void v2ServiceHeartbeat(unsigned long nowMs) {
   lastHeartbeatMs = nowMs;
   uint8_t f[7];
   f[0] = V2_HEARTBEAT; memcpy(&f[1], myMac, 6);
-  notifyEvent(f, 7);
+  esp_now_send(bcastMAC, f, 7);   // broadcast so other gates hear us (election)
+  notifyEvent(f, 7);              // + relay to the app (discovery)
 }
 
 void v2SendPingReply(uint32_t appMicros) {
@@ -1244,6 +1260,55 @@ void v2SendPong(const uint8_t* pingFrame) {
   memcpy(&f[6], &pingFrame[6], 4);     // echo t1
   putU32(&f[10], (uint32_t)micros());  // t2 (master local == shared clock)
   esp_now_send(bcastMAC, f, 14);
+}
+
+// Follower: apply a master's TS_PONG (min-RTT filtered) → shared-clock offset.
+void v2ApplyPong(const uint8_t* f) {
+  uint32_t seq = rd32(&f[2]);
+  if (seq != tsSeq) return;
+  uint32_t t1 = rd32(&f[6]);
+  uint32_t t2 = rd32(&f[10]);
+  uint32_t t4 = (uint32_t)micros();
+  uint32_t rtt = (uint32_t)(t4 - t1);
+  if (rtt > 50000UL) return;
+  if (rtt < tsMinRtt) {
+    tsMinRtt = rtt;
+    uint32_t midpoint = t1 + rtt / 2;
+    clkOffset = (int32_t)(t2 - midpoint);
+    timeSynced = true;
+  }
+}
+
+// Follower time sync: ping the network; the master answers. Master doesn't ping.
+void v2ServiceTimeSync(unsigned long nowMs) {
+  if (isMaster) return;
+  if ((long)(nowMs - lastTsResetMs) >= 10000) { lastTsResetMs = nowMs; tsMinRtt = 0xFFFFFFFFUL; }
+  if ((long)(nowMs - lastTsPingMs) < 500) return;
+  lastTsPingMs = nowMs;
+  tsSeq++;
+  uint8_t f[14];
+  f[0] = V2_TIME_SYNC; f[1] = TS_PING;
+  putU32(&f[2], tsSeq); putU32(&f[6], (uint32_t)micros()); putU32(&f[10], 0);
+  esp_now_send(bcastMAC, f, 14);
+}
+
+// Lowest-MAC election. Master = our MAC is the lowest we've heard.
+void updateElection() {
+  bool nowMaster = (memcmp(myMac, lowestMac, 6) == 0);
+  if (nowMaster == isMaster) return;
+  isMaster = nowMaster;
+  if (isMaster) {
+    clkOffset = 0;
+    timeSynced = true;
+  } else {
+    tsMinRtt = 0xFFFFFFFFUL;   // must (re)sync to the new master
+    timeSynced = false;
+    lastTsResetMs = millis();
+  }
+}
+
+void noteMac(const uint8_t* mac) {
+  if (memcmp(mac, lowestMac, 6) < 0) { memcpy(lowestMac, mac, 6); updateElection(); }
 }
 
 void v2Rebroadcast(const uint8_t* f, uint8_t len) {
@@ -1309,10 +1374,11 @@ void v2HandleFrame(const uint8_t* f, uint8_t len) {
   }
   switch (t) {
     case V2_HEARTBEAT:
-      if (len >= 7) notifyEvent(f, 7);
+      if (len >= 7) { noteMac(&f[1]); notifyEvent(f, 7); }   // election + relay to app
       break;
     case V2_TIME_SYNC:
-      if (len >= 10 && f[1] == TS_PING) v2SendPong(f);
+      if (len >= 14 && f[1] == TS_PONG) { if (!isMaster) v2ApplyPong(f); }
+      else if (len >= 10 && f[1] == TS_PING) { if (isMaster) v2SendPong(f); }
       break;
     case V2_STATUS_REPLY:
       if (len >= 8) notifyEvent(f, 8);

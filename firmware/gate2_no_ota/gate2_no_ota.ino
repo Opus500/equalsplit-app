@@ -75,9 +75,15 @@ uint8_t myMac[6]   = {0};
 uint8_t  v2GateId    = 0;                 // 0 = unassigned until ASSIGN_IDS
 uint16_t thresholdCm = GATE_THRESHOLD;    // runtime; default == legacy const
 
-// Shared gate-network clock (follower): shared = local micros() + clkOffset.
+// Shared gate-network clock + lowest-MAC master election (symmetric). MASTER
+// (offset 0, always synced, answers TS_PING) if our MAC is the lowest we've
+// heard; else FOLLOWER (pings the master, applies TS_PONG). Boot = master until
+// a lower MAC's heartbeat demotes us. (F1: gate2 is lowest here, so it becomes
+// the master and gate1 the follower.)
 volatile int32_t clkOffset = 0;
-volatile bool    timeSynced = false;
+volatile bool    timeSynced = true;
+bool     isMaster = true;
+uint8_t  lowestMac[6] = {0};              // set to myMac in setup
 uint32_t tsMinRtt    = 0xFFFFFFFFUL;      // best round-trip seen this window
 uint32_t tsSeq       = 0;                 // our outstanding ping id
 unsigned long lastTsPingMs   = 0;
@@ -142,6 +148,7 @@ void v2ServiceBuzzer(unsigned long nowMs) {
 // FOLLOWER time sync: ping the network, refine the offset off the min-RTT
 // reply (PTP-lite). Kept deliberately modest — sub-ms when the link is quiet.
 void v2ServiceTimeSync(unsigned long nowMs) {
+  if (isMaster) return;                   // master doesn't ping; it answers pings
   // Periodically forget the best sample so the offset re-acquires against
   // crystal drift (a few ms/min between two ESP32s).
   if ((long)(nowMs - lastTsResetMs) >= 10000) { lastTsResetMs = nowMs; tsMinRtt = 0xFFFFFFFFUL; }
@@ -169,6 +176,35 @@ void v2ApplyPong(const uint8_t* f) {
     clkOffset = (int32_t)(t2 - midpoint);   // shared(=master) = local + offset
     timeSynced = true;
   }
+}
+
+// Master answers a follower's TIME_SYNC ping with our local micros as t2.
+void v2SendPong(const uint8_t* ping) {
+  uint8_t f[14];
+  f[0] = V2_TIME_SYNC; f[1] = TS_PONG;
+  memcpy(&f[2], &ping[2], 4);       // echo seq
+  memcpy(&f[6], &ping[6], 4);       // echo t1
+  wr32(&f[10], (uint32_t)micros()); // t2 (master local == shared clock)
+  esp_now_send(bcastMAC, f, 14);
+}
+
+// Lowest-MAC election. Master = our MAC is the lowest we've heard.
+void updateElection() {
+  bool nowMaster = (memcmp(myMac, lowestMac, 6) == 0);
+  if (nowMaster == isMaster) return;
+  isMaster = nowMaster;
+  if (isMaster) {
+    clkOffset = 0;
+    timeSynced = true;
+  } else {
+    tsMinRtt = 0xFFFFFFFFUL;         // must (re)sync to the new master
+    timeSynced = false;
+    lastTsResetMs = millis();
+  }
+}
+
+void noteMac(const uint8_t* mac) {
+  if (memcmp(mac, lowestMac, 6) < 0) { memcpy(lowestMac, mac, 6); updateElection(); }
 }
 
 void v2ServiceHeartbeat(unsigned long nowMs) {
@@ -207,8 +243,12 @@ void v2DoAssignIds(const uint8_t* f, uint8_t len) {
 // Dispatch one inbound v2 frame (from the bridge or another gate).
 void v2HandleFrame(const uint8_t* f, uint8_t len) {
   switch (f[0]) {
+    case V2_HEARTBEAT:
+      if (len >= 7) noteMac(&f[1]);   // election (not the bridge — no relay)
+      break;
     case V2_TIME_SYNC:
-      if (len >= 14 && f[1] == TS_PONG) v2ApplyPong(f);
+      if (len >= 14 && f[1] == TS_PONG) { if (!isMaster) v2ApplyPong(f); }
+      else if (len >= 10 && f[1] == TS_PING) { if (isMaster) v2SendPong(f); }
       break;
     case V2_ASSIGN_IDS:
       v2DoAssignIds(f, len);
@@ -318,6 +358,7 @@ void setup() {
   esp_err_t macErr = esp_efuse_mac_get_default(myMac);
   Serial.printf("Gate 2 MAC: %02X:%02X:%02X:%02X:%02X:%02X (efuse err=%d)\n",
                 myMac[0], myMac[1], myMac[2], myMac[3], myMac[4], myMac[5], macErr);
+  memcpy(lowestMac, myMac, 6);           // election seed: we are master until we hear lower
 
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
