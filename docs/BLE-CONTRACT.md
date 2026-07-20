@@ -301,6 +301,37 @@ are **not** part of the wire contract and may change anytime.
   them, ignores them otherwise.
 - All split / lap / drill interpretation is app-side, against the frozen 7-byte event stream.
 
+### 12.1 Standalone consumer (gate-side, no phone required)
+
+A shipped gate MUST time a basic run with **no phone**. This is a small **v2-stream consumer
+that lives on the gate** — architecturally identical to the app (it reads the same frozen event
+stream), **not** the old v1 machinery. It is deliberately minimal and never changes when app
+modes are added (modes are app-side by definition): the gate knows exactly one thing forever —
+the basic gate-to-gate split. Because the gate and the app read the **same** stream, they
+cannot disagree.
+
+- **Where it runs:** only on gates with a **display + buttons** (feature-detected). A bare gate
+  (no OLED/buttons) does nothing standalone; it still **broadcasts its beam events** so a display
+  gate can compute the split. Standalone assumes **2 gates** (own + one other).
+- **Arming:** a **button press** arms the local consumer. No wire command, no "mode" — just local
+  UI state on the gate.
+- **Run logic (no `gate_id` needed):** standalone gates are never `ASSIGN_IDS`'d, so ids stay 0.
+  The consumer keys on **origin, not id**: its **own** locally-detected edge vs an edge **received
+  over ESP-NOW** (distinct code paths). After arming, the first break (either source) **starts**;
+  the first break from the *other* source **finishes**. Direction-agnostic.
+- **Split:** `interval = sdiff32(finish.micros, start.micros)` — one subtraction, both timestamps
+  already in the shared gate-network clock (§4, §11.1). Requires `time_synced`; until the gate has
+  converged it shows **"SYNCING"**, never a wrong number. The master is always synced; a follower
+  is ready once its first good `TIME_SYNC` lands (seconds after boot).
+- **Display + local timeout:** live elapsed timer while running, split/total on finish, on the
+  OLED. A **local display timeout** (~30 s armed-without-finish → idle) lives in this consumer.
+  This does **not** contradict "no timeouts in firmware" (§12) — that rule constrains the *event
+  stream / emitter* (edges forever, no run-end); a local display is free to time out, exactly like
+  the app's per-mode timeouts.
+- **Every gate broadcasts its own beam events** (not only relays received ones), so other gates'
+  standalone consumers — and the bridge's BLE relay — all see them. Frame format unchanged; this
+  is simply the broadcast model of §7 made uniform across gates.
+
 ---
 
 ## 13. Phased migration & legacy coexistence (Q2 — working timer must not go dark)
