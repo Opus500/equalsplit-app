@@ -193,6 +193,9 @@ void updateElection() {
   bool nowMaster = (memcmp(myMac, lowestMac, 6) == 0);
   if (nowMaster == isMaster) return;
   isMaster = nowMaster;
+  Serial.printf("[v2] election -> %s (lowest %02X:%02X:%02X:%02X:%02X:%02X)\n",
+                isMaster ? "MASTER" : "follower",
+                lowestMac[0], lowestMac[1], lowestMac[2], lowestMac[3], lowestMac[4], lowestMac[5]);
   if (isMaster) {
     clkOffset = 0;
     timeSynced = true;
