@@ -5,7 +5,7 @@
 
 // Firmware build marker (see gate1). BUMP on every firmware change; __DATE__/
 // __TIME__ auto-update only on a real recompile, catching a stale build cache.
-#define FW_BUILD "gate2-b7 (espnow ch1 + no-sleep)"
+#define FW_BUILD "gate2-b8 (F1 verified)"
 
 // ESP-NOW peers must share ONE WiFi channel; broadcast only reaches same-channel
 // gates. Pin it + disable modem-sleep so passive broadcast RX works (see gate1).
@@ -338,10 +338,6 @@ void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 }
 
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  Serial.printf("[rx] %02X:%02X:%02X:%02X:%02X:%02X type=0x%02X len=%d\n",   // DIAG (remove after channel fix verified)
-                info->src_addr[0], info->src_addr[1], info->src_addr[2],
-                info->src_addr[3], info->src_addr[4], info->src_addr[5],
-                (len > 0 ? data[0] : 0), len);
   if (len == (int)sizeof(GateData)) {          // ----- legacy trigger packet (unchanged) -----
     GateData received;
     memcpy(&received, data, sizeof(received));

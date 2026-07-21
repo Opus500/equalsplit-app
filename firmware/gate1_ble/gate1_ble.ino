@@ -10,7 +10,7 @@
 // ===== Firmware build marker — printed on boot so every flash is verifiable. =====
 // BUMP FW_BUILD on every firmware change. __DATE__/__TIME__ auto-update only on a
 // REAL recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate1-b7 (espnow ch1 + no-sleep)"
+#define FW_BUILD "gate1-b8 (F1 verified)"
 
 // ESP-NOW peers must share ONE WiFi channel; a broadcast only reaches same-channel
 // gates. STA-without-AP defaults to ch1 but isn't guaranteed identical across gates
@@ -342,10 +342,6 @@ void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 }
 
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  Serial.printf("[rx] %02X:%02X:%02X:%02X:%02X:%02X type=0x%02X len=%d\n",   // DIAG (remove after channel fix verified)
-                info->src_addr[0], info->src_addr[1], info->src_addr[2],
-                info->src_addr[3], info->src_addr[4], info->src_addr[5],
-                (len > 0 ? data[0] : 0), len);
   if (len == (int)sizeof(GateData)) {        // ----- legacy result packet (unchanged) -----
     GateData received;
     memcpy(&received, data, sizeof(received));

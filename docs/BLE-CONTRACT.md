@@ -374,6 +374,17 @@ cut over.
 - **Battery:** **confirmed — no battery-sense hardware** on the board (and none planned).
   `STATUS_REPLY.battery_pct` stays `0xFF` (reserved, **not** dropped — a later board respin can
   light it up with no contract change).
+- **Radio (MUST — non-optional, firmware invariant):** every gate MUST call
+  `WiFi.setSleep(false)` (disable STA modem-sleep) at boot, and MUST keep it disabled. Default
+  modem-sleep parks the radio between the gate's *own* transmissions, so **all unsolicited
+  ESP-NOW RX is silently dropped** — heartbeats, `TIME_SYNC`, relayed events — and only
+  transactional request/reply survives. This is invisible: sends still report success, the gate
+  just never hears anything, so election never fires and the gate network never forms. (It is
+  exactly why v1's transactional unicast worked and v2's passive broadcast did not.) All gates
+  MUST also pin one shared WiFi channel (`esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE)` +
+  `peer.channel = ch`), **re-asserted after BLE init** on the bridge (coex can re-enable
+  power-save). A rewrite that drops either silently breaks the entire gate network with no error
+  — treat both as load-bearing as the shared-clock invariant (§4).
 - **Power / decoupling (respin — required):** brownouts (`E BOD: Brownout detector was
   triggered`) recur under v2 radio duty on the current build, worse on marginal USB/cable.
   Add bulk + local decoupling at the PCB respin — e.g. a **~470 µF** electrolytic on the 3V3
@@ -404,3 +415,41 @@ cut over.
 `proto_ver` / `fw_ver` reported in `STATUS_REPLY` (and legacy `Status` during transition).
 End-state `PROTO_VER = 2`. Bump on any frozen-layout change. The app refuses to interpret an
 unknown `proto_ver`.
+
+---
+
+## 18. F2 freeze checklist (the write-once gate ships when ALL pass)
+
+The single symmetric `firmware/gate/gate.ino` is "done — never touch again" only when every
+item holds. Firmware freezes into sold units (USB-only updates), so this is the real gate.
+
+**Functional**
+- [ ] One binary flashes and runs on **both** physical gates (feature-detect: OLED present vs
+      absent); either gate can be the BLE bridge (whichever the phone connects to).
+- [ ] Lowest-MAC election settles within a couple seconds of both powering; roles correct.
+- [ ] Radio invariants present: `WiFi.setSleep(false)` + pinned channel, re-asserted after BLE
+      init (§15). *(F1 proved omitting these silently kills the gate network.)*
+- [ ] App v2 Timer: bring-up → arm → time → save, across a full session.
+- [ ] Standalone (no phone): button arms; split shown on OLED; `SYNCING` until time-synced;
+      local display timeout resets a stale arm.
+
+**Correctness**
+- [ ] Ball-drop agreement ≤ ±4–5 ms via **both** the app **and** the standalone consumer.
+- [ ] **Wrap boundary:** a run and a standalone run that straddle the ~71.6-min `micros` wrap
+      still give the correct split (firmware standalone MUST use `sdiff32`; TIME_SYNC offset math
+      survives the wrap). This is *guaranteed* to happen on an always-on unit — test it, don't
+      assume it.
+
+**Stability (the write-once threat — standalone units are unwatched)**
+- [ ] **No unexplained resets across a 20+ rep session.** A mid-session reset is invisible to a
+      standalone athlete. Capture `rst:` reason on any reset; root-cause before freeze
+      (brownout vs firmware crash vs coex).
+- [ ] Long-idle soak (hours powered, no runs) with no reset and no RX degradation.
+- [ ] Brownout mitigation in place (decoupling caps on the respin, §15) — `setSleep(false)`
+      raises steady-state draw, so power margin must be real, not marginal-USB luck.
+
+**Hygiene / provenance**
+- [ ] v1 fully deleted (STATE/GO/SPLIT/FINISH, `0004`/`0005`, opcodes `0x01–0x06`, the ESP-NOW
+      `GateData` path, Mode 1/2 state machines); `PROTO_VER 1` gone, `fw_ver = 2`.
+- [ ] Boot build marker present (`FW_BUILD` + `__DATE__`/`__TIME__`), bumped for this build.
+- [ ] Every gate broadcasts its own beam events (uniform, for other gates' standalone consumers).
