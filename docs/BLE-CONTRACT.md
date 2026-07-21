@@ -126,7 +126,7 @@ share the BLE channels during phase-in (§13).
 | `0x01–0x0F` | **Events** (gate-emitted, broadcast + relayed) | `0x01 BEAM_BREAK`, `0x02 BEAM_CLEAR`, `0x03 BUZZER_FIRED`, `0x04 BUTTON_PRESS`, `0x05–0x0F` reserved |
 | `0x10–0x1F` | *(avoid — legacy v1 event types live here until cutover)* | — |
 | `0x20–0x2F` | **Link / discovery** | `0x20 HEARTBEAT`, `0x21 TIME_SYNC` (gate↔gate, firmware-internal payload), `0x22–0x2F` reserved |
-| `0x30–0x3F` | **Commands** (phone → gate; relayed gate → gate) | `0x30 ASSIGN_IDS`, `0x31 SET_THRESHOLD`, `0x32 BUZZER_FIRE`, `0x33 CLEAR_QUEUE`, `0x34 PING`, `0x35 GET_STATUS`, `0x36–0x3F` reserved |
+| `0x30–0x3F` | **Commands** (phone → gate; relayed gate → gate) | `0x30 ASSIGN_IDS`, `0x31 SET_THRESHOLD`, `0x32 BUZZER_FIRE`, `0x33 CLEAR_QUEUE`, `0x34 PING`, `0x35 GET_STATUS`, `0x36 SET_PARAM`, `0x37–0x3F` reserved |
 | `0x40–0x4F` | **Replies** (gate → phone) | `0x40 PING_REPLY`, `0x41 STATUS_REPLY`, `0x42–0x4F` reserved |
 
 `event_type` 0x03/0x04 are **reserved now even though the buzzer is unwired and buttons may be
@@ -189,12 +189,50 @@ locally if it is the target and **re-broadcasts** it over ESP-NOW so remote gate
 | `0x33` | `CLEAR_QUEUE` | `target:u8` | target gate(s) empty the RAM event queue (app calls at session start) |
 | `0x34` | `PING` | `app_micros:u32` | **connected gate only** (no target) — reply `PING_REPLY` immediately |
 | `0x35` | `GET_STATUS` | `target:u8` | target gate(s) reply `STATUS_REPLY` |
+| `0x36` | `SET_PARAM` | `target:u8`, `flags:u8`, `param_id:u16`, `value:u32` | target gate(s) set one runtime param (§8.1). `flags` bit0 = **persist** (commit to NVS, applied on future boots); `param_id 0x0000` = **restore defaults** (clears NVS overrides, `value` ignored) |
 
 `ASSIGN_IDS` needs no `target` byte — the MAC list *is* the targeting. For 2 gates it is
 `1 + 1 + 2×7 = 16` bytes (within MTU); larger fleets need MTU negotiation or chunking.
 
 There is **no** `ARM`, `MODE`, `START_SEQUENCE`, or `RESET` — arming, modes, sequences, and
 resets are entirely app-side now.
+
+### 8.1 `SET_PARAM` — runtime knobs (FROZEN opcode; the anti-reflash escape hatch)
+
+Every sensor/link constant that today is a compile-time `#define` gets a **param_id** here.
+Purpose is narrow and specific: **foreclose the fleet-reflash scenario.** If a field condition
+ever needs a different debounce (sun, dust, mounting height, faster/slower athletes), you retune
+over the air instead of USB-flashing every sold unit. Reserving the ids is free; wire the ones we
+can validate now, reserve the rest so unlocking them later is an app-only change.
+
+**Persistence (the part that actually forecloses reflash):** `SET_PARAM` writes RAM immediately.
+With `flags` bit0 set it **also commits to NVS**, and the gate loads NVS overrides at boot on top
+of the compile-time defaults. This is what lets a **phone-less standalone unit** be permanently
+retuned by connecting a phone **once** — without it, RAM-only means every power cycle reverts to
+the compiled default and a truly standalone fleet still needs a reflash to change. NVS writes only
+happen on an explicit persist (config is rare — wear is a non-issue); any NVS read error at boot
+falls back to the compiled default. `param_id 0x0000` = **restore defaults** wipes the NVS blob.
+*(Decision flagged for review: if we accept "a phone is always at the track to set params each
+session," persistence can be dropped and `flags` bit0 becomes reserved-must-be-0 — but then bit0
+is meaningless forever, since firmware is frozen. Default recommendation: implement persistence.)*
+
+| `param_id` | Name | Unit | Default | Status | Notes / clamp |
+|---|---|---|---|---|---|
+| `0x0000` | `RESTORE_DEFAULTS` | — | — | **wired (F2)** | clears all NVS overrides; `value` ignored |
+| `0x0001` | `BEAM_DEBOUNCE_US` | µs | `15000` | **wired (F2)** | edge debounce (`SENSOR_DEBOUNCE_US`); clamp `1000…200000` |
+| `0x0002` | `SENSOR_FRAME_RATE_HZ` | Hz | `250` | reserved | re-inits TF-Luna (`setLunaFrameRate`); clamp to sensor-supported set |
+| `0x0003` | `THRESHOLD_CM` | cm | `100` | **wired (F2)** | mirrors `SET_THRESHOLD` (§8); either path sets `threshold_cm`; clamp `10…800` |
+| `0x0004` | `STANDALONE_TIMEOUT_MS` | ms | `30000` | **wired (F2)** | standalone armed/running give-up (§12.1); clamp `3000…600000` |
+| `0x0005` | `AMP_MIN` | raw | `0` | reserved | TF-Luna min signal amplitude noise-gate (currently unread) |
+| `0x0006` | `HEARTBEAT_MS` | ms | `1000` | reserved | election/keepalive cadence |
+| `0x0007` | `TIMESYNC_PING_MS` | ms | `1000` | reserved | follower `TIME_SYNC` ping cadence |
+| `0x0008` | `EVENT_REBROADCAST_N` | count | `1` | reserved | times each event is broadcast — loss mitigation for a dropped standalone finish frame (§12.1); clamp `1…5` |
+| `0x0009–0x00FF` | *reserved* | — | — | — | future sensor / link constants |
+| `0x0100–0xFFFF` | *reserved* | — | — | — | future / app-experimental |
+
+`STATUS_REPLY` already reports `threshold_cm` and caps; other params are write-mostly (the app
+tracks what it set). An out-of-range `value` is **clamped, not rejected** — a gate never ends up
+un-tunable because a bad number bricked the setter. Unknown `param_id` is a no-op (forward-compat).
 
 ---
 
@@ -332,6 +370,36 @@ cannot disagree.
   standalone consumers — and the bridge's BLE relay — all see them. Frame format unchanged; this
   is simply the broadcast model of §7 made uniform across gates.
 
+#### 12.1.1 State machine (the whole of standalone behaviour — nothing more)
+
+Six states. All interval math is `sdiff32` (§11.1) — **including the live elapsed timer**, never
+a naive `now − start`.
+
+| State | OLED | Beam edges | Button | Exit |
+|---|---|---|---|---|
+| `SYNCING` | `SYNCING` | ignored | ignored | → `READY` when `time_synced` (master: immediate at boot) |
+| `READY` | `READY ·` | ignored (no phantom runs) | → `ARMED` | — |
+| `ARMED` | `ARMED ·` | first break (either source) → `RUNNING`, latch start source + start `micros` | → `READY` (cancel) | on first break |
+| `RUNNING` | live `sdiff32(now,start)` counting up | break from **other** source → `RESULT`; break from **same** source ignored | → `READY` (cancel) | finish edge, timeout, or cancel |
+| `RESULT` | split, e.g. `3.271` | ignored (walking back through a gate does **not** start a run) | → `ARMED` (new run) | button |
+| *(timeout)* | `— —` ~2 s, then `READY` | — | — | auto → `READY` |
+
+- **Loss of sync** (`time_synced` → false, a follower that hasn't re-heard the master): new runs
+  are blocked — `ARMED`/`RUNNING` fall back to `SYNCING`. A `RUNNING` run whose **start** was
+  already stamped in a synced clock still finishes correctly (both stamps are in the same clock).
+
+#### 12.1.2 Failure modes (decide these here, not at the track)
+
+| Case | Behaviour |
+|---|---|
+| **Break, no matching finish edge** | `RUNNING` runs the live timer until `STANDALONE_TIMEOUT_MS` (default **30 s**, tunable via `SET_PARAM 0x0004`). On expiry → show `— —` ~2 s → `READY`. No number is shown; a stale arm never silently persists. |
+| **Second break at the same gate mid-run** | Ignored. Finish must come from the *other* source (origin-keyed, §12.1); a same-source re-trigger (arm swing, re-entry, sensor chatter past debounce) does not re-start or re-stamp. Live timer keeps running. |
+| **Athlete walks back through the finish gate after a run** | Ignored. After finish the consumer is in `RESULT` — **disarmed**. No edge starts a run without an explicit button re-arm. Prevents phantom runs from an athlete clearing the lane. |
+| **`micros` wrap lands mid-run** | Correct, unconditionally, for any true interval < ~35.8 min (§11.1). The finish stamp having wrapped past 0 still yields the right small positive split via `sdiff32`; the live `RUNNING` timer uses `sdiff32(now,start)` so it never flashes a garbage value at the wrap instant. The `TIME_SYNC` offset add is done mod-2³². |
+| **Cold boot before `time_synced`** | On boot: `SYNCING` (has_display gate shows the word `SYNCING`; the boot build marker may flash first). **Master**: synced immediately (offset 0) → `READY` at once. **Follower**: `SYNCING` until its first good `TIME_SYNC` lands (seconds); a button in `SYNCING` is ignored, so you can never arm a run the gate can't time. ids are 0 (RAM), threshold/params at default+NVS overrides, election re-runs. |
+| **Dropped finish frame over ESP-NOW** (added — real write-once risk) | The finishing gate broadcasts its beam edge **once**; a single dropped frame = no finish = a spurious timeout. Mitigation: `EVENT_REBROADCAST_N` (`SET_PARAM 0x0008`, default 1) re-sends each event N times; the receiver already dedupes by `(type,gate_id,micros)`, so N>1 is free of double-counting. **Decision: ship default N=1 or N≥2?** N≥2 trades a little airtime for robustness on the unattended path. |
+| **Near-simultaneous edges from both sources** (added) | First edge processed = start, second = finish, direction-agnostic → a near-zero split. A `MIN_INTERVAL` guard (a few ms) could reject it as invalid; **decision: guard or accept the tiny split?** Default: accept — a real double-break that fast is not a run either way, and the athlete sees an obviously-wrong `00.00x` rather than a hidden rejection. |
+
 ---
 
 ## 13. Phased migration & legacy coexistence (Q2 — working timer must not go dark)
@@ -432,6 +500,10 @@ item holds. Firmware freezes into sold units (USB-only updates), so this is the 
 - [ ] App v2 Timer: bring-up → arm → time → save, across a full session.
 - [ ] Standalone (no phone): button arms; split shown on OLED; `SYNCING` until time-synced;
       local display timeout resets a stale arm.
+- [ ] Standalone failure modes (§12.1.2) all behave as specified: no-finish timeout, same-source
+      re-break ignored, walk-back does not re-run, cold-boot `SYNCING` gate.
+- [ ] `SET_PARAM` (§8.1): `BEAM_DEBOUNCE_US` round-trips and changes behaviour; `persist` bit
+      survives a power cycle; `RESTORE_DEFAULTS` clears NVS; out-of-range clamps (never bricks).
 
 **Correctness**
 - [ ] Ball-drop agreement ≤ ±4–5 ms via **both** the app **and** the standalone consumer.

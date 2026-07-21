@@ -68,6 +68,7 @@ const unsigned long GATE2_DELAY_US = 100000;     // 100 ms lockout after packet
 #define V2_CLEAR_QUEUE   0x33
 #define V2_PING          0x34
 #define V2_GET_STATUS    0x35
+#define V2_SET_PARAM     0x36    // runtime knobs (contract §8.1); handler lands in F2
 // Replies (0x40-0x4F)
 #define V2_PING_REPLY    0x40
 #define V2_STATUS_REPLY  0x41
