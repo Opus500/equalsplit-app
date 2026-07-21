@@ -374,6 +374,12 @@ cut over.
 - **Battery:** **confirmed — no battery-sense hardware** on the board (and none planned).
   `STATUS_REPLY.battery_pct` stays `0xFF` (reserved, **not** dropped — a later board respin can
   light it up with no contract change).
+- **Power / decoupling (respin — required):** brownouts (`E BOD: Brownout detector was
+  triggered`) recur under v2 radio duty on the current build, worse on marginal USB/cable.
+  Add bulk + local decoupling at the PCB respin — e.g. a **~470 µF** electrolytic on the 3V3
+  rail plus a **100 nF** ceramic right at the ESP32 `3V3`/`EN` pins — to absorb Wi-Fi/BLE TX
+  current spikes. Firmware mitigations (TIME_SYNC ping at **1 s**, heartbeat 5 s post-assign)
+  cut the duty but are not a substitute for the cap.
 
 ---
 
