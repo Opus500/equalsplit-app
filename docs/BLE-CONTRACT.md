@@ -226,13 +226,29 @@ is meaningless forever, since firmware is frozen. Default recommendation: implem
 | `0x0005` | `AMP_MIN` | raw | `0` | reserved | TF-Luna min signal amplitude noise-gate (currently unread) |
 | `0x0006` | `HEARTBEAT_MS` | ms | `1000` | reserved | election/keepalive cadence |
 | `0x0007` | `TIMESYNC_PING_MS` | ms | `1000` | reserved | follower `TIME_SYNC` ping cadence |
-| `0x0008` | `EVENT_REBROADCAST_N` | count | `1` | reserved | times each event is broadcast — loss mitigation for a dropped standalone finish frame (§12.1); clamp `1…5` |
+| `0x0008` | `EVENT_REBROADCAST_N` | count | `2` | **wired (F2)** | times each **event** frame (`0x01–0x0F` only) is sent, **spaced ~5–10 ms**; loss mitigation for a dropped standalone finish frame (§12.1.2); clamp `1…5` |
 | `0x0009–0x00FF` | *reserved* | — | — | — | future sensor / link constants |
 | `0x0100–0xFFFF` | *reserved* | — | — | — | future / app-experimental |
 
 `STATUS_REPLY` already reports `threshold_cm` and caps; other params are write-mostly (the app
-tracks what it set). An out-of-range `value` is **clamped, not rejected** — a gate never ends up
-un-tunable because a bad number bricked the setter. Unknown `param_id` is a no-op (forward-compat).
+tracks what it set). Unknown `param_id` is a no-op (forward-compat).
+
+**NVS safety (MANDATORY — this is unpatchable firmware, so fallback-on-*error* is not enough):**
+- **Clamp on every load path, not just the setter.** Each param is range-clamped when applied from
+  a `SET_PARAM` write **and** when loaded from NVS at boot. A structurally-valid but semantically
+  garbage persisted value (CRC passes, value is nonsense) fires no error — clamping is the only
+  thing that stops it putting the gate out of spec. A bad debounce degrades to a boundary value
+  (suboptimal, still functional), never out-of-range. **Clamp-on-write alone does not cover this.**
+- **Versioned, self-checked blob.** Params persist as one blob with our own `magic + schema_version
+  + CRC`, written only on an explicit `persist`. On boot, any magic/version/CRC mismatch → discard
+  the whole blob → compile-time defaults. Don't trust NVS to be ours.
+- **Init-error self-heal.** `nvs_flash_init` returning `NO_FREE_PAGES`/`NEW_VERSION_FOUND` →
+  `nvs_flash_erase` + reinit; if `nvs_open` still fails → run on defaults. NVS never being available
+  must be survivable, not a boot hang.
+- **Non-BLE recovery.** Hold a button during boot → `RESTORE_DEFAULTS`. A deployed phone-less unit
+  with a bad persisted value must be recoverable without a phone or a reflash. (`RESTORE_DEFAULTS`
+  over BLE always works too — param values never break the radio — but the boot escape is the one
+  that matters for a no-phone fleet.)
 
 ---
 
@@ -377,13 +393,21 @@ a naive `now − start`.
 
 | State | OLED | Beam edges | Button | Exit |
 |---|---|---|---|---|
-| `SYNCING` | `SYNCING` | ignored | ignored | → `READY` when `time_synced` (master: immediate at boot) |
-| `READY` | `READY ·` | ignored (no phantom runs) | → `ARMED` | — |
+| `NO_GATE` | `NO GATE — CHECK 2ND` | ignored | ignored | → `SYNCING` as soon as *any* other gate's heartbeat is heard |
+| `SYNCING` | `SYNCING` | ignored | ignored | → `READY` when peer heard **and** `time_synced`; → `NO_GATE` if no peer heartbeat for ~5 s |
+| `READY` | `READY ·` | ignored (no phantom runs) | → `ARMED` | → `NO_GATE`/`SYNCING` if peer/sync lost |
 | `ARMED` | `ARMED ·` | first break (either source) → `RUNNING`, latch start source + start `micros` | → `READY` (cancel) | on first break |
 | `RUNNING` | live `sdiff32(now,start)` counting up | break from **other** source → `RESULT`; break from **same** source ignored | → `READY` (cancel) | finish edge, timeout, or cancel |
 | `RESULT` | split, e.g. `3.271` | ignored (walking back through a gate does **not** start a run) | → `ARMED` (new run) | button |
 | *(timeout)* | `— —` ~2 s, then `READY` | — | — | auto → `READY` |
 
+- **`READY` requires a peer, not just sync.** A lone gate (master *or* follower) cannot produce a
+  gate-to-gate split, so the display distinguishes two pre-run conditions a coach must act on
+  differently: **`NO GATE`** (no other gate's heartbeat for ~5 s → *go check the second gate's
+  battery/power*) vs **`SYNCING`** (peer heard, shared clock not yet converged → *wait a moment*).
+  The master is clock-synced at boot (offset 0) but still shows `NO GATE` until it hears the second
+  gate. Recovery is automatic: a heartbeat pulls `NO_GATE → SYNCING`, convergence pulls
+  `SYNCING → READY`. (Peer-present is tracked off the same heartbeat `noteMac` the election uses.)
 - **Loss of sync** (`time_synced` → false, a follower that hasn't re-heard the master): new runs
   are blocked — `ARMED`/`RUNNING` fall back to `SYNCING`. A `RUNNING` run whose **start** was
   already stamped in a synced clock still finishes correctly (both stamps are in the same clock).
@@ -397,8 +421,8 @@ a naive `now − start`.
 | **Athlete walks back through the finish gate after a run** | Ignored. After finish the consumer is in `RESULT` — **disarmed**. No edge starts a run without an explicit button re-arm. Prevents phantom runs from an athlete clearing the lane. |
 | **`micros` wrap lands mid-run** | Correct, unconditionally, for any true interval < ~35.8 min (§11.1). The finish stamp having wrapped past 0 still yields the right small positive split via `sdiff32`; the live `RUNNING` timer uses `sdiff32(now,start)` so it never flashes a garbage value at the wrap instant. The `TIME_SYNC` offset add is done mod-2³². |
 | **Cold boot before `time_synced`** | On boot: `SYNCING` (has_display gate shows the word `SYNCING`; the boot build marker may flash first). **Master**: synced immediately (offset 0) → `READY` at once. **Follower**: `SYNCING` until its first good `TIME_SYNC` lands (seconds); a button in `SYNCING` is ignored, so you can never arm a run the gate can't time. ids are 0 (RAM), threshold/params at default+NVS overrides, election re-runs. |
-| **Dropped finish frame over ESP-NOW** (added — real write-once risk) | The finishing gate broadcasts its beam edge **once**; a single dropped frame = no finish = a spurious timeout. Mitigation: `EVENT_REBROADCAST_N` (`SET_PARAM 0x0008`, default 1) re-sends each event N times; the receiver already dedupes by `(type,gate_id,micros)`, so N>1 is free of double-counting. **Decision: ship default N=1 or N≥2?** N≥2 trades a little airtime for robustness on the unattended path. |
-| **Near-simultaneous edges from both sources** (added) | First edge processed = start, second = finish, direction-agnostic → a near-zero split. A `MIN_INTERVAL` guard (a few ms) could reject it as invalid; **decision: guard or accept the tiny split?** Default: accept — a real double-break that fast is not a run either way, and the athlete sees an obviously-wrong `00.00x` rather than a hidden rejection. |
+| **Dropped finish frame over ESP-NOW** (real write-once risk) | The finishing gate's edge is broadcast, then **retransmitted** `EVENT_REBROADCAST_N` times (`SET_PARAM 0x0008`, **default 2**). Two facts make this actually work: copies are **spaced ~5–10 ms** (ESP-NOW loss is bursty — two frames 200 µs apart die in the same coex/channel-busy window; spacing decorrelates them), and rebroadcast is **scoped to event frames `0x01–0x0F` only** (heartbeats/TIME_SYNC are already periodic + self-healing, so doubling them only adds queue pressure). The receiver dedupes by `(type,gate_id,micros)`, so extra copies are free of double-counting. Tunable in case congestion ever appears. |
+| **Near-simultaneous edges from both sources** | First edge processed = start, second = finish, direction-agnostic → a near-zero split. **Firmware/standalone: accept** — the OLED is ephemeral (nothing recorded), so showing an obviously-wrong `00.00x` beats a hidden rejection that looks identical to a dropped frame. **App (app-owned, §12): a plausibility floor** — a split below a physically-impossible threshold (~50–100 ms; no real gate-to-gate run is sub-100 ms) is **display-only, never written as a PB-eligible result**, so a double-trigger artifact can't become a permanent bogus PB. The two surfaces differ on purpose: ephemeral truth on the gate, no persisted junk in history. |
 
 ---
 
