@@ -14,7 +14,7 @@
 //
 // BUMP FW_BUILD every change. __DATE__/__TIME__ auto-update only on a REAL
 // recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate-f2b (v1 UI restored)"
+#define FW_BUILD "gate-f2c (mirror-gated + m2 trace)"
 // ============================================================================
 
 #include <Wire.h>
@@ -245,6 +245,8 @@ void v2HandleCommand();
 void v2HandleFrame(const uint8_t* f, uint8_t len);
 void v2StageInbound(const uint8_t* d, int len);
 void v2ProcessInbound();
+const char* saName(SaState s);
+void saGo(SaState s);
 void saOnB1(unsigned long nowMs);
 void saOnB2Release();
 void pushRecentRun(bool isM2, uint32_t totalMs, uint32_t s1, uint32_t s2);
@@ -449,14 +451,18 @@ void v2ServiceButtons(unsigned long nowMs) {
   v2B1Last = b1;
 
   // B2: emit on press; a >=300ms hold in READY arms Mode 2 (release = GO). The
-  // hold requirement is what stops a stray B2 tap from starting a Mode-2 run.
+  // hold requirement stops a stray B2 tap from starting a Mode-2 run. A B2 tap
+  // also dismisses a result (v1 parity: B1 OR B2 leaves the result).
   bool b2 = (digitalRead(BUTTON2_PIN) == LOW);
   if (b2 && !v2B2Last && (nowMs - v2B2Deb) > 200) {   // press edge
     v2B2Deb = nowMs; v2B2PressMs = nowMs;
     v2EmitLocalEvent(V2_BUTTON_PRESS, sharedMicros(), 0);
+    if (saState == SA_RESULT && (long)(nowMs - saBtnLockMs) >= 0) {
+      saGo(SA_READY); saBtnLockMs = nowMs + SA_BTN_LOCK_MS;
+    }
   }
   if (b2 && saState == SA_READY && (nowMs - v2B2PressMs) >= SA_M2_HOLD_MIN_MS) {
-    saState = SA_M2_HOLD;                              // held long enough: release to start
+    saGo(SA_M2_HOLD);                                  // held long enough: release to start
   }
   if (!b2 && v2B2Last && saState == SA_M2_HOLD) {      // release edge -> GO
     saOnB2Release();
@@ -697,18 +703,35 @@ void pushRecentRun(bool isM2, uint32_t totalMs, uint32_t s1, uint32_t s2) {
   if (recentCount < 0xFFFF) recentCount++;
 }
 
+// State-transition trace (serial only) — the fastest way to see what the gate is
+// actually doing on the bench. Strip before freeze if flash gets tight.
+const char* saName(SaState s) {
+  switch (s) {
+    case SA_NO_GATE: return "NO_GATE"; case SA_SYNCING: return "SYNCING";
+    case SA_READY: return "READY";     case SA_ARMED: return "ARMED";
+    case SA_RUNNING: return "RUNNING"; case SA_M2_HOLD: return "M2_HOLD";
+    case SA_M2_RUN1: return "M2_RUN1"; case SA_M2_RUN2: return "M2_RUN2";
+    case SA_RESULT: return "RESULT";   case SA_TIMEOUT: return "TIMEOUT"; default: return "?";
+  }
+}
+void saGo(SaState s) {
+  if (s == saState) return;
+  Serial.printf("[sa] %s -> %s\n", saName(saState), saName(s));
+  saState = s;
+}
+
 // B1: Mode-1 arm / cancel / dismiss. A 500ms post-action lockout (v1's value)
 // means a bounce or a nervous second tap can't cancel a run you just started.
 void saOnB1(unsigned long nowMs) {
   if ((long)(nowMs - saBtnLockMs) < 0) return;
   switch (saState) {
-    case SA_READY:   saState = SA_ARMED; break;                    // arm Mode 1
-    case SA_ARMED:   saState = SA_READY; break;                    // cancel arm
-    case SA_RUNNING: saState = SA_READY; saMirror = false; break;  // cancel run / stop mirror
+    case SA_READY:   saGo(SA_ARMED); break;                    // arm Mode 1
+    case SA_ARMED:   saGo(SA_READY); break;                    // cancel arm
+    case SA_RUNNING: saMirror = false; saGo(SA_READY); break;  // cancel run / stop mirror
     case SA_M2_HOLD: case SA_M2_RUN1: case SA_M2_RUN2:
-                     saState = SA_READY; saMirror = false; break;  // cancel Mode 2
-    case SA_RESULT:  saState = SA_READY; break;                    // dismiss (recent list updates)
-    default: break;                                                // NO_GATE/SYNCING/TIMEOUT: ignore
+                     saMirror = false; saGo(SA_READY); break;  // cancel Mode 2
+    case SA_RESULT:  saGo(SA_READY); break;                    // dismiss (recent list updates)
+    default: break;                                            // NO_GATE/SYNCING/TIMEOUT: ignore
   }
   saBtnLockMs = nowMs + SA_BTN_LOCK_MS;
 }
@@ -718,26 +741,27 @@ void saOnB2Release() {
   saGoUs = sharedMicros();
   saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
   saMirror = false; saIsM2 = true;
-  saState = SA_M2_RUN1;
+  saGo(SA_M2_RUN1);
 }
 void saOnEvent(uint8_t type, bool local, uint32_t us) {
   if (type != V2_BEAM_BREAK) return;              // BEAM_CLEAR/others: run-irrelevant
+  Serial.printf("[sa] BEAM %s in %s\n", local ? "local" : "recv", saName(saState));
 
-  // Mode 1 — explicit standalone arm.
-  if (saState == SA_ARMED) {
+  if (saState == SA_ARMED) {                      // Mode 1 explicit arm
     saMirror = false; saIsM2 = false;
     saStartLocal = local; saStartUs = us;
     saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
-    saState = SA_RUNNING;
-    return;
+    saGo(SA_RUNNING); return;
   }
-  // App-mirror — a phone is driving; follow the stream for display only, no arm.
-  if (saState == SA_READY && bleConnected) {
+  // App-mirror: ONLY inside an app session. v2GateId != 0 means the app assigned
+  // us an id via ASSIGN_IDS — that IS the "session armed" signal. A bare gate
+  // (id 0, no phone) never mirrors on a beam; it needs B1/B2. So a random person
+  // walking through a gate with no session gets nothing. Display-only, no save.
+  if (saState == SA_READY && v2GateId != 0) {
     saMirror = true; saIsM2 = false;
     saStartLocal = local; saStartUs = us;
     saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
-    saState = SA_RUNNING;
-    return;
+    saGo(SA_RUNNING); return;
   }
   if (saState == SA_RUNNING) {                    // Mode 1 / mirror finish
     if (local != saStartLocal) {
@@ -745,7 +769,7 @@ void saOnEvent(uint8_t type, bool local, uint32_t us) {
       saSplitMs = (uint32_t)(((uint32_t)d + 500) / 1000);
       saIsM2 = false;
       if (!saMirror) pushRecentRun(false, saSplitMs, 0, 0);
-      saState = SA_RESULT; saShownMs = millis();
+      saShownMs = millis(); saGo(SA_RESULT);
     }
     return;
   }
@@ -754,8 +778,7 @@ void saOnEvent(uint8_t type, bool local, uint32_t us) {
     int32_t d = sdiff32(us, saGoUs); if (d < 0) d = 0;
     saSplit1Ms = (uint32_t)(((uint32_t)d + 500) / 1000);
     saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
-    saState = SA_M2_RUN2;
-    return;
+    saGo(SA_M2_RUN2); return;
   }
   if (saState == SA_M2_RUN2) {                    // Mode 2 leg 2: the OTHER gate finishes
     if (local != saStartLocal) {
@@ -765,7 +788,7 @@ void saOnEvent(uint8_t type, bool local, uint32_t us) {
       saSplitMs = (uint32_t)(((uint32_t)dt + 500) / 1000);
       saIsM2 = true;
       pushRecentRun(true, saSplitMs, saSplit1Ms, saSplit2Ms);
-      saState = SA_RESULT; saShownMs = millis();
+      saShownMs = millis(); saGo(SA_RESULT);
     }
     return;
   }
@@ -776,18 +799,18 @@ void saService(unsigned long now) {
   // Pre-run states track peer/sync: NO_GATE (go check the 2nd gate) vs SYNCING
   // (wait) vs READY. A lone gate can't split, so READY needs a peer, not just sync.
   if (saState == SA_NO_GATE || saState == SA_SYNCING || saState == SA_READY) {
-    saState = !peer ? SA_NO_GATE : (!synced ? SA_SYNCING : SA_READY);
+    saGo(!peer ? SA_NO_GATE : (!synced ? SA_SYNCING : SA_READY));
   } else if (saState == SA_ARMED && (!peer || !synced)) {
-    saState = !peer ? SA_NO_GATE : SA_SYNCING;    // lost readiness before the start
+    saGo(!peer ? SA_NO_GATE : SA_SYNCING);        // lost readiness before the start
   } else if (saState == SA_RUNNING || saState == SA_M2_RUN1 || saState == SA_M2_RUN2) {
     if ((long)(now - saTimeoutAtMs) >= 0) {
-      if (saMirror) saState = SA_READY;           // mirror: silently drop, no error shown
-      else { saState = SA_TIMEOUT; saShownMs = now; }
+      if (saMirror) saGo(SA_READY);               // mirror: silently drop, no error shown
+      else { saShownMs = now; saGo(SA_TIMEOUT); }
     }
   } else if (saState == SA_RESULT) {
-    if (saMirror && (long)(now - saShownMs) >= (long)SA_RESULT_AUTOCLEAR_MS) saState = SA_READY;
+    if (saMirror && (long)(now - saShownMs) >= (long)SA_RESULT_AUTOCLEAR_MS) saGo(SA_READY);
   } else if (saState == SA_TIMEOUT) {
-    if ((long)(now - saShownMs) >= 2000) saState = SA_READY;   // re-evaluated next pass
+    if ((long)(now - saShownMs) >= 2000) saGo(SA_READY);   // re-evaluated next pass
   }
   // SA_M2_HOLD is left via the B2 release edge (or a B1 cancel) in v2ServiceButtons.
 }
@@ -820,12 +843,12 @@ void saRender() {
   char b[40];
   switch (saState) {
     case SA_NO_GATE:                              // connecting screen (gate 1 up before gate 2)
-      u8g2.drawStr(0, 10, "STANDALONE");
+      u8g2.drawStr(0, 10, "not connected yet");
       u8g2.setFont(u8g2_font_ncenB14_tr); u8g2.drawStr(0, 34, "NO GATE");
       u8g2.setFont(u8g2_font_ncenB08_tr); u8g2.drawStr(0, 54, "check 2nd gate");
       break;
     case SA_SYNCING:
-      u8g2.drawStr(0, 10, "STANDALONE");
+      u8g2.drawStr(0, 10, "not connected yet");
       u8g2.setFont(u8g2_font_ncenB18_tr); u8g2.drawStr(0, 40, "SYNCING");
       break;
     case SA_READY: {                              // v1 idle screen: header + last 3 runs
@@ -889,7 +912,7 @@ void saRender() {
       }
       break;
     case SA_TIMEOUT:
-      u8g2.drawStr(0, 10, "STANDALONE");
+      u8g2.drawStr(0, 10, "run timed out");
       u8g2.setFont(u8g2_font_ncenB24_tr); u8g2.drawStr(20, 44, "-- --");
       u8g2.setFont(u8g2_font_ncenB08_tr); u8g2.drawStr(0, 60, "no finish");
       break;
