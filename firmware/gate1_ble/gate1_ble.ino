@@ -3,13 +3,20 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_mac.h>       // esp_efuse_mac_get_default() — factory MAC from eFuse (v2)
+#include <esp_wifi.h>      // esp_wifi_set_channel() — pin the ESP-NOW channel (v2)
 #include <esp_random.h>    // hardware TRNG for the Mode 2 random GO delay
 #include <NimBLEDevice.h>   // Install "NimBLE-Arduino" via Library Manager
 
 // ===== Firmware build marker — printed on boot so every flash is verifiable. =====
 // BUMP FW_BUILD on every firmware change. __DATE__/__TIME__ auto-update only on a
 // REAL recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate1-b6 (F1 election, 1s sync)"
+#define FW_BUILD "gate1-b7 (espnow ch1 + no-sleep)"
+
+// ESP-NOW peers must share ONE WiFi channel; a broadcast only reaches same-channel
+// gates. STA-without-AP defaults to ch1 but isn't guaranteed identical across gates
+// (esp. gate1's BLE coex), so pin it. Also disable modem-sleep: passive broadcast RX
+// needs the radio awake — v1 only worked because it was transactional (TX woke the radio).
+#define ESPNOW_CHANNEL 1
 
 // ========== BLE CONTRACT v1 ==========
 #define PROTO_VER 1
@@ -335,6 +342,10 @@ void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 }
 
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  Serial.printf("[rx] %02X:%02X:%02X:%02X:%02X:%02X type=0x%02X len=%d\n",   // DIAG (remove after channel fix verified)
+                info->src_addr[0], info->src_addr[1], info->src_addr[2],
+                info->src_addr[3], info->src_addr[4], info->src_addr[5],
+                (len > 0 ? data[0] : 0), len);
   if (len == (int)sizeof(GateData)) {        // ----- legacy result packet (unchanged) -----
     GateData received;
     memcpy(&received, data, sizeof(received));
@@ -684,6 +695,8 @@ void setup() {
   digitalWrite(BUZZER_PIN, LOW);
 
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);                                         // radio stays awake for ESP-NOW RX
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);  // pin the shared ESP-NOW channel
   // v2: read the base MAC straight from eFuse. Both WiFi.macAddress() and
   // esp_read_mac(ESP_MAC_WIFI_STA) returned zeros this early in setup (they lean
   // on a RAM base-MAC copy the WiFi stack hasn't populated yet);
@@ -710,7 +723,7 @@ void setup() {
 
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, gate2MAC, 6);
-  peerInfo.channel = 0;
+  peerInfo.channel = ESPNOW_CHANNEL;
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -722,13 +735,15 @@ void setup() {
   // v2: broadcast peer (FF:FF:FF:FF:FF:FF) for the raw-event layer
   esp_now_peer_info_t bpeer = {};
   memcpy(bpeer.peer_addr, bcastMAC, 6);
-  bpeer.channel = 0;
+  bpeer.channel = ESPNOW_CHANNEL;
   bpeer.encrypt = false;
   if (esp_now_add_peer(&bpeer) != ESP_OK) Serial.println("Failed to add broadcast peer");
 
   resetToIdle();
 
   setupBLE();   // after ESP-NOW; validate coexistence on hardware (contract §10)
+  WiFi.setSleep(false);                                         // re-assert: BLE coex init can re-enable modem-sleep
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
 }
 
 // ========== MAIN LOOP ==========

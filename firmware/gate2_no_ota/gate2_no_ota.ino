@@ -1,10 +1,15 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_mac.h>       // esp_efuse_mac_get_default() — factory MAC from eFuse (v2)
+#include <esp_wifi.h>      // esp_wifi_set_channel() — pin the ESP-NOW channel (v2)
 
 // Firmware build marker (see gate1). BUMP on every firmware change; __DATE__/
 // __TIME__ auto-update only on a real recompile, catching a stale build cache.
-#define FW_BUILD "gate2-b6 (F1 election, 1s sync)"
+#define FW_BUILD "gate2-b7 (espnow ch1 + no-sleep)"
+
+// ESP-NOW peers must share ONE WiFi channel; broadcast only reaches same-channel
+// gates. Pin it + disable modem-sleep so passive broadcast RX works (see gate1).
+#define ESPNOW_CHANNEL 1
 
 // ========== HARDWARE ==========
 #define LUNA_RX 16
@@ -333,6 +338,10 @@ void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) {
 }
 
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  Serial.printf("[rx] %02X:%02X:%02X:%02X:%02X:%02X type=0x%02X len=%d\n",   // DIAG (remove after channel fix verified)
+                info->src_addr[0], info->src_addr[1], info->src_addr[2],
+                info->src_addr[3], info->src_addr[4], info->src_addr[5],
+                (len > 0 ? data[0] : 0), len);
   if (len == (int)sizeof(GateData)) {          // ----- legacy trigger packet (unchanged) -----
     GateData received;
     memcpy(&received, data, sizeof(received));
@@ -361,6 +370,8 @@ void setup() {
   setLunaFrameRate(250);
 
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);                                         // radio stays awake for ESP-NOW RX
+  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);  // pin the shared ESP-NOW channel
   // v2: base MAC straight from eFuse (esp_read_mac returned zeros this early —
   // it depends on a RAM base-MAC copy that isn't set yet). Valid immediately and
   // == the MAC ESP-NOW uses, so it matches the peers and the app's ASSIGN_IDS.
@@ -382,7 +393,7 @@ void setup() {
 
   esp_now_peer_info_t peerInfo = {};
   memcpy(peerInfo.peer_addr, gate1MAC, 6);
-  peerInfo.channel = 0;
+  peerInfo.channel = ESPNOW_CHANNEL;
   peerInfo.encrypt = false;
 
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
@@ -394,7 +405,7 @@ void setup() {
   // v2: broadcast peer (FF:FF:FF:FF:FF:FF) for the raw-event layer
   esp_now_peer_info_t bpeer = {};
   memcpy(bpeer.peer_addr, bcastMAC, 6);
-  bpeer.channel = 0;
+  bpeer.channel = ESPNOW_CHANNEL;
   bpeer.encrypt = false;
   if (esp_now_add_peer(&bpeer) != ESP_OK) Serial.println("Failed to add broadcast peer");
 
