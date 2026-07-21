@@ -126,7 +126,7 @@ share the BLE channels during phase-in (§13).
 | `0x01–0x0F` | **Events** (gate-emitted, broadcast + relayed) | `0x01 BEAM_BREAK`, `0x02 BEAM_CLEAR`, `0x03 BUZZER_FIRED`, `0x04 BUTTON_PRESS`, `0x05–0x0F` reserved |
 | `0x10–0x1F` | *(avoid — legacy v1 event types live here until cutover)* | — |
 | `0x20–0x2F` | **Link / discovery** | `0x20 HEARTBEAT`, `0x21 TIME_SYNC` (gate↔gate, firmware-internal payload), `0x22–0x2F` reserved |
-| `0x30–0x3F` | **Commands** (phone → gate; relayed gate → gate) | `0x30 ASSIGN_IDS`, `0x31 SET_THRESHOLD`, `0x32 BUZZER_FIRE`, `0x33 CLEAR_QUEUE`, `0x34 PING`, `0x35 GET_STATUS`, `0x36 SET_PARAM`, `0x37–0x3F` reserved |
+| `0x30–0x3F` | **Commands** (phone → gate; relayed gate → gate) | `0x30 ASSIGN_IDS`, `0x31 SET_THRESHOLD`, `0x32 BUZZER_FIRE`, `0x33 CLEAR_QUEUE`, `0x34 PING`, `0x35 GET_STATUS`, `0x36 SET_PARAM`, `0x37 RUN_HINT`, `0x38–0x3F` reserved |
 | `0x40–0x4F` | **Replies** (gate → phone) | `0x40 PING_REPLY`, `0x41 STATUS_REPLY`, `0x42–0x4F` reserved |
 
 `event_type` 0x03/0x04 are **reserved now even though the buzzer is unwired and buttons may be
@@ -190,6 +190,7 @@ locally if it is the target and **re-broadcasts** it over ESP-NOW so remote gate
 | `0x34` | `PING` | `app_micros:u32` | **connected gate only** (no target) — reply `PING_REPLY` immediately |
 | `0x35` | `GET_STATUS` | `target:u8` | target gate(s) reply `STATUS_REPLY` |
 | `0x36` | `SET_PARAM` | `target:u8`, `flags:u8`, `param_id:u16`, `value:u32` | target gate(s) set one runtime param (§8.1). `flags` bit0 = **persist** (commit to NVS, applied on future boots); `param_id 0x0000` = **restore defaults** (clears NVS overrides, `value` ignored) |
+| `0x37` | `RUN_HINT` | `target:u8`, `armed:u8` | **display-only** (§8.2). Tells target gate(s) a run is `armed=1` / disarmed `=0` so the OLED can mirror a live run. Gate derives **no** timing/validity from it |
 
 `ASSIGN_IDS` needs no `target` byte — the MAC list *is* the targeting. For 2 gates it is
 `1 + 1 + 2×7 = 16` bytes (within MTU); larger fleets need MTU negotiation or chunking.
@@ -249,6 +250,23 @@ tracks what it set). Unknown `param_id` is a no-op (forward-compat).
   with a bad persisted value must be recoverable without a phone or a reflash. (`RESTORE_DEFAULTS`
   over BLE always works too — param values never break the radio — but the boot escape is the one
   that matters for a no-phone fleet.)
+
+### 8.2 `RUN_HINT` — display-only mirror gate (FROZEN opcode; NON-authoritative)
+
+`RUN_HINT (0x37) {target, armed}` exists for exactly one reason: a display gate's OLED should
+mirror a live run **only when a run is actually happening**, not fire a phantom timer every time
+someone walks through a gate between reps. The app sends `armed=1` when it arms a run and
+`armed=0` when the run ends / is reset; the gate uses it **solely** to enable its OLED mirror.
+
+**This does not give firmware run semantics — and must not.** The gate derives no split, no
+validity, no mode, no timeout from `RUN_HINT`. It is the display-layer twin of "the OLED shows
+`SYNCING`": a screen state, not authority. The event stream (§7) + the app remain the sole source
+of truth; a lost or stale `RUN_HINT` only affects whether a *display* animates, never recorded
+data. Concretely the firmware rule is: `armed=1` from a pre-run display state arms the **mirror**
+(next beam starts a display-only timer); `armed=0` clears **only** a mirror run, never a physical
+`B1`/`B2` standalone run. A gate with no phone never receives it and mirrors nothing — it uses its
+buttons. Because it is display-only, this opcode is safe to freeze even though **the one rule** ("firmware
+never knows what a run is") stays true for all *data*: `RUN_HINT` is a hint about *pixels*, not runs.
 
 ---
 
@@ -368,7 +386,9 @@ cannot disagree.
   (no OLED/buttons) does nothing standalone; it still **broadcasts its beam events** so a display
   gate can compute the split. Standalone assumes **2 gates** (own + one other).
 - **Arming:** a **button press** arms the local consumer. No wire command, no "mode" — just local
-  UI state on the gate.
+  UI state on the gate. (When a phone *is* connected, the same consumer additionally **mirrors** an
+  app-driven run — armed by `RUN_HINT` §8.2, not a button — so the OLED shows the live run a coach
+  is standing next to. Display-only; the app owns the data.)
 - **Run logic (no `gate_id` needed):** standalone gates are never `ASSIGN_IDS`'d, so ids stay 0.
   The consumer keys on **origin, not id**: its **own** locally-detected edge vs an edge **received
   over ESP-NOW** (distinct code paths). After arming, the first break (either source) **starts**;

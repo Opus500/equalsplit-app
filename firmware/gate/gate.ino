@@ -14,7 +14,7 @@
 //
 // BUMP FW_BUILD every change. __DATE__/__TIME__ auto-update only on a REAL
 // recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate-f2c (mirror-gated + m2 trace)"
+#define FW_BUILD "gate-f2d (mirror via RUN_HINT 0x37)"
 // ============================================================================
 
 #include <Wire.h>
@@ -49,6 +49,7 @@
 #define V2_PING          0x34
 #define V2_GET_STATUS    0x35
 #define V2_SET_PARAM     0x36
+#define V2_RUN_HINT      0x37    // display-only mirror arm/disarm hint (contract §8.2)
 // Replies 0x40-0x4F
 #define V2_PING_REPLY    0x40
 #define V2_STATUS_REPLY  0x41
@@ -249,6 +250,7 @@ const char* saName(SaState s);
 void saGo(SaState s);
 void saOnB1(unsigned long nowMs);
 void saOnB2Release();
+void saOnRunHint(bool armed);
 void pushRecentRun(bool isM2, uint32_t totalMs, uint32_t s1, uint32_t s2);
 void saOnEvent(uint8_t type, bool local, uint32_t us);
 void saService(unsigned long now);
@@ -635,6 +637,10 @@ void v2ExecCommand(const uint8_t* f, uint8_t len, bool fromBle) {
       v2DoSetParam(f, len);
       if (fromBle) v2Rebroadcast(f, len);
       break;
+    case V2_RUN_HINT:
+      if (len >= 3) { uint8_t tgt = f[1]; if (tgt == v2GateId || tgt == GATE_ID_ALL) saOnRunHint(f[2] != 0); }
+      if (fromBle) v2Rebroadcast(f, len);        // relay so the other display gate mirrors too
+      break;
     default: break;
   }
 }
@@ -725,7 +731,7 @@ void saGo(SaState s) {
 void saOnB1(unsigned long nowMs) {
   if ((long)(nowMs - saBtnLockMs) < 0) return;
   switch (saState) {
-    case SA_READY:   saGo(SA_ARMED); break;                    // arm Mode 1
+    case SA_READY:   saMirror = false; saGo(SA_ARMED); break;  // arm Mode 1 (real)
     case SA_ARMED:   saGo(SA_READY); break;                    // cancel arm
     case SA_RUNNING: saMirror = false; saGo(SA_READY); break;  // cancel run / stop mirror
     case SA_M2_HOLD: case SA_M2_RUN1: case SA_M2_RUN2:
@@ -743,22 +749,33 @@ void saOnB2Release() {
   saMirror = false; saIsM2 = true;
   saGo(SA_M2_RUN1);
 }
+
+// RUN_HINT (0x37) — the app telling the gate a run is armed/disarmed, PURELY so
+// the OLED can mirror a live run. Display-only: firmware derives NO run semantics
+// from it (no splits, no validity — those stay in the event stream + app). Armed
+// only from READY, and disarm only ever clears a MIRROR run, never a real B1/B2
+// standalone one. This replaces the old "mirror on any beam during a session"
+// so a stray person walking a gate between reps no longer starts a phantom timer.
+void saOnRunHint(bool armed) {
+  if (armed) {
+    if (saState == SA_READY) {
+      saMirror = true; saIsM2 = false;
+      saTimeoutAtMs = millis() + params.standaloneTimeoutMs;   // self-heal if disarm is lost
+      saGo(SA_ARMED);
+    }
+  } else {
+    if (saMirror && (saState == SA_ARMED || saState == SA_RUNNING || saState == SA_RESULT)) {
+      saMirror = false;
+      saGo(SA_READY);
+    }
+  }
+}
 void saOnEvent(uint8_t type, bool local, uint32_t us) {
   if (type != V2_BEAM_BREAK) return;              // BEAM_CLEAR/others: run-irrelevant
   Serial.printf("[sa] BEAM %s in %s\n", local ? "local" : "recv", saName(saState));
 
-  if (saState == SA_ARMED) {                      // Mode 1 explicit arm
-    saMirror = false; saIsM2 = false;
-    saStartLocal = local; saStartUs = us;
-    saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
-    saGo(SA_RUNNING); return;
-  }
-  // App-mirror: ONLY inside an app session. v2GateId != 0 means the app assigned
-  // us an id via ASSIGN_IDS — that IS the "session armed" signal. A bare gate
-  // (id 0, no phone) never mirrors on a beam; it needs B1/B2. So a random person
-  // walking through a gate with no session gets nothing. Display-only, no save.
-  if (saState == SA_READY && v2GateId != 0) {
-    saMirror = true; saIsM2 = false;
+  if (saState == SA_ARMED) {                      // armed by B1 (real) or RUN_HINT (mirror)
+    saIsM2 = false;                               // saMirror already set by whoever armed
     saStartLocal = local; saStartUs = us;
     saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
     saGo(SA_RUNNING); return;
@@ -800,8 +817,9 @@ void saService(unsigned long now) {
   // (wait) vs READY. A lone gate can't split, so READY needs a peer, not just sync.
   if (saState == SA_NO_GATE || saState == SA_SYNCING || saState == SA_READY) {
     saGo(!peer ? SA_NO_GATE : (!synced ? SA_SYNCING : SA_READY));
-  } else if (saState == SA_ARMED && (!peer || !synced)) {
-    saGo(!peer ? SA_NO_GATE : SA_SYNCING);        // lost readiness before the start
+  } else if (saState == SA_ARMED) {
+    if (!peer || !synced) saGo(!peer ? SA_NO_GATE : SA_SYNCING);            // lost readiness
+    else if (saMirror && (long)(now - saTimeoutAtMs) >= 0) saGo(SA_READY);  // stale mirror-arm
   } else if (saState == SA_RUNNING || saState == SA_M2_RUN1 || saState == SA_M2_RUN2) {
     if ((long)(now - saTimeoutAtMs) >= 0) {
       if (saMirror) saGo(SA_READY);               // mirror: silently drop, no error shown

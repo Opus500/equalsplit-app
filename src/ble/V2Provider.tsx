@@ -29,6 +29,7 @@ import {
   buildGetStatus,
   buildPing,
   buildClearQueue,
+  buildRunHint,
   type V2Frame,
   type V2Run,
 } from './v2';
@@ -241,6 +242,9 @@ export function V2Provider({ children }: { children: ReactNode }) {
       setRunning(null);
       setLastRun(run);
       setEngineState(engine.state);
+      // Tell the gates the run ended so their OLED mirror clears (display-only).
+      const d0 = gateRef.current.device;
+      if (d0) sendV2Frame(d0, buildRunHint(GATE_ID_ALL, false)).catch(() => {});
       pushLog(`v2 run split=${run.splitMs}ms${run.synced ? '' : ' (unsynced — withheld)'}`);
       if (!expectV1Ref.current) return; // Timer path: no v1 comparison
       runToken.current += 1;
@@ -498,8 +502,10 @@ export function V2Provider({ children }: { children: ReactNode }) {
     setRunning(null);
     engineRef.current.arm();
     setEngineState(engineRef.current.state);
+    // Display-only hint so the gates' OLEDs mirror this run (RUN_HINT 0x37).
+    sendFrame(buildRunHint(GATE_ID_ALL, true)).catch(() => {});
     pushLog('armed (v2, Mode 1)');
-  }, [pushLog]);
+  }, [pushLog, sendFrame]);
 
   // Lab/acceptance arm: also arm v1 (arm1) so the gate produces its result to
   // pair against, and enable the LastResult comparison for this run.
@@ -508,20 +514,23 @@ export function V2Provider({ children }: { children: ReactNode }) {
     setRunning(null);
     engineRef.current.arm();
     setEngineState(engineRef.current.state);
+    sendFrame(buildRunHint(GATE_ID_ALL, true)).catch(() => {});
     try {
       await gateRef.current.arm1();
       pushLog('armed (v1 + v2, Mode 1)');
     } catch (e) {
       pushLog(`arm failed: ${String(e)}`);
     }
-  }, [pushLog]);
+  }, [pushLog, sendFrame]);
 
   const resetEngine = useCallback(() => {
     engineRef.current.reset();
     setEngineState(engineRef.current.state);
     setRunning(null);
     pendingV2.current = null;
-  }, []);
+    // Clear any mirror-arm on the gates (display-only).
+    sendFrame(buildRunHint(GATE_ID_ALL, false)).catch(() => {});
+  }, [sendFrame]);
 
   const clearComparisons = useCallback(() => setComparisons([]), []);
 

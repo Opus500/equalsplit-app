@@ -137,6 +137,13 @@ export function buildGetStatus(target: number): Uint8Array {
   return new Uint8Array([V2Cmd.GetStatus, target & 0xff]);
 }
 
+/** RUN_HINT (0x37) — display-only. Tells target gate(s) a run is armed (1) or
+ *  disarmed (0) so their OLED mirrors a live run. Non-authoritative: the gate
+ *  derives no splits/validity from it; all timing stays in the event stream. */
+export function buildRunHint(target: number, armed: boolean): Uint8Array {
+  return new Uint8Array([V2Cmd.RunHint, target & 0xff, armed ? 1 : 0]);
+}
+
 /** CLEAR_QUEUE (0x33) — target gate(s) empty the RAM event ring (session start). */
 export function buildClearQueue(target: number): Uint8Array {
   return new Uint8Array([V2Cmd.ClearQueue, target & 0xff]);

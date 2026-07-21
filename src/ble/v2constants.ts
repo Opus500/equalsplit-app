@@ -33,6 +33,10 @@ export enum V2Cmd {
   ClearQueue = 0x33,
   Ping = 0x34,
   GetStatus = 0x35,
+  SetParam = 0x36,
+  /** RUN_HINT — display-only: tells the gate a run is armed/disarmed so its OLED
+   *  can mirror a live run. The gate derives NO timing/validity from it. */
+  RunHint = 0x37,
 }
 
 /** Replies (gate → phone), 0x40–0x4F. */
