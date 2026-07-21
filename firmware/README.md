@@ -5,12 +5,20 @@ scattered copies under `OneDrive/Documents/Arduino` and `Downloads` are being re
 the "which copy is live?" divergence — do not recreate copies there. Both canonical sketches
 below were verified byte-identical to what is physically flashed before any cleanup.
 
-## Canonical sources (live, flashed)
+## Canonical sources
 
 | Sketch | Role | MAC | Notes |
 |---|---|---|---|
-| `gate1_ble/gate1_ble.ino` | **Gate 1** — start gate, BLE bridge, timekeeper | `B4:BF:E9:32:DA:64` | NimBLE + ESP-NOW. MAC read from eFuse (esp_efuse_mac_get_default) and verified 2026-07. |
-| `gate2_no_ota/gate2_no_ota.ino` | **Gate 2** — finish gate | `30:76:F5:A6:43:BC` | ESP-NOW only; confirmed live by Louis (flashed, Mode-1 split correct). Already OTA-free. |
+| `gate/gate.ino` | **F2 symmetric write-once binary** — one flash for BOTH gates | (feature-detects) | v2-only. Election + standalone consumer + SET_PARAM/NVS + every-gate-broadcasts-own-events. **NOT yet compiled/flashed** — needs a hardware validation pass against contract §18. |
+| `gate1_ble/gate1_ble.ino` | Gate 1 (transition) — start gate, BLE bridge, timekeeper | `B4:BF:E9:32:DA:64` | v1+v2 dual-emit, `FW_BUILD gate1-b8`. Currently flashed. Superseded by `gate/` at freeze. |
+| `gate2_no_ota/gate2_no_ota.ino` | Gate 2 (transition) — finish gate | `30:76:F5:A6:43:BC` | v1+v2 dual-emit, `FW_BUILD gate2-b8`. Currently flashed. Superseded by `gate/` at freeze. |
+
+**F2 (`gate/gate.ino`) is the endgame:** the same binary runs on both units (OLED/buttons
+feature-detected), determines its own time-master role by lowest-MAC election, broadcasts its
+own raw beam events, times a run standalone with no phone (§12.1), and accepts `SET_PARAM` with
+NVS persistence (§8.1). Flash it to both, validate via the app **and** standalone, then freeze
+and drop the two transition sketches. It is uncompiled as written — compile, flash, and work the
+§18 checklist before trusting it on hardware.
 
 The two pair: `gate1_ble` sends to `gate2MAC 30:76:F5:A6:43:BC`; `gate2_no_ota` sends to
 `gate1MAC B4:BF:E9:32:DA:64`. Hardware is symmetric (identical TF-Luna `Serial2 16/17`,
