@@ -6,6 +6,11 @@
 #include <esp_random.h>    // hardware TRNG for the Mode 2 random GO delay
 #include <NimBLEDevice.h>   // Install "NimBLE-Arduino" via Library Manager
 
+// ===== Firmware build marker — printed on boot so every flash is verifiable. =====
+// BUMP FW_BUILD on every firmware change. __DATE__/__TIME__ auto-update only on a
+// REAL recompile, so a stale build cache is caught by an old compile timestamp.
+#define FW_BUILD "gate1-b6 (F1 election, 1s sync)"
+
 // ========== BLE CONTRACT v1 ==========
 #define PROTO_VER 1
 
@@ -658,6 +663,8 @@ void serviceConnParam() {
 // ========== SETUP ==========
 void setup() {
   Serial.begin(115200);
+  delay(150);
+  Serial.printf("\n[boot] EqualSplit %s | compiled %s %s\n", FW_BUILD, __DATE__, __TIME__);
   Serial2.begin(115200, SERIAL_8N1, LUNA_RX, LUNA_TX);
 
   Wire.begin(21, 22);
@@ -1283,7 +1290,7 @@ void v2ApplyPong(const uint8_t* f) {
 void v2ServiceTimeSync(unsigned long nowMs) {
   if (isMaster) return;
   if ((long)(nowMs - lastTsResetMs) >= 10000) { lastTsResetMs = nowMs; tsMinRtt = 0xFFFFFFFFUL; }
-  if ((long)(nowMs - lastTsPingMs) < 500) return;
+  if ((long)(nowMs - lastTsPingMs) < 1000) return;   // 1s cadence (was 500) — eases radio-load brownouts
   lastTsPingMs = nowMs;
   tsSeq++;
   uint8_t f[14];

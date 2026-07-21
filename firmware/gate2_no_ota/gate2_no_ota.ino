@@ -2,6 +2,10 @@
 #include <esp_now.h>
 #include <esp_mac.h>       // esp_efuse_mac_get_default() — factory MAC from eFuse (v2)
 
+// Firmware build marker (see gate1). BUMP on every firmware change; __DATE__/
+// __TIME__ auto-update only on a real recompile, catching a stale build cache.
+#define FW_BUILD "gate2-b6 (F1 election, 1s sync)"
+
 // ========== HARDWARE ==========
 #define LUNA_RX 16
 #define LUNA_TX 17
@@ -152,7 +156,7 @@ void v2ServiceTimeSync(unsigned long nowMs) {
   // Periodically forget the best sample so the offset re-acquires against
   // crystal drift (a few ms/min between two ESP32s).
   if ((long)(nowMs - lastTsResetMs) >= 10000) { lastTsResetMs = nowMs; tsMinRtt = 0xFFFFFFFFUL; }
-  if ((long)(nowMs - lastTsPingMs) < 500) return;
+  if ((long)(nowMs - lastTsPingMs) < 1000) return;   // 1s cadence (was 500) — eases radio-load brownouts
   lastTsPingMs = nowMs;
   tsSeq++;
   uint8_t f[14];
@@ -349,6 +353,8 @@ void legacyGate2Detect(int16_t dist, unsigned long nowUs);
 // ========== SETUP ==========
 void setup() {
   Serial.begin(115200);
+  delay(150);
+  Serial.printf("\n[boot] EqualSplit %s | compiled %s %s\n", FW_BUILD, __DATE__, __TIME__);
   Serial2.begin(115200, SERIAL_8N1, LUNA_RX, LUNA_TX);
   delay(500);  // let the Luna boot before sending config
 
