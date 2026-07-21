@@ -14,7 +14,7 @@
 //
 // BUMP FW_BUILD every change. __DATE__/__TIME__ auto-update only on a REAL
 // recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate-f2a (write-once)"
+#define FW_BUILD "gate-f2b (v1 UI restored)"
 // ============================================================================
 
 #include <Wire.h>
@@ -167,16 +167,40 @@ struct Reb { uint8_t f[7]; unsigned long dueMs; uint8_t left; bool active; };
 Reb rebRing[REB_SLOTS];
 const unsigned long REB_SPACING_MS = 7;   // ~5-10ms so copies don't die together
 
-// ===================== standalone consumer (§12.1) =========================
-enum SaState { SA_NO_GATE, SA_SYNCING, SA_READY, SA_ARMED, SA_RUNNING, SA_RESULT, SA_TIMEOUT };
+// ===================== standalone consumer (§12.1 + Mode 1/2 + mirror) =====
+enum SaState {
+  SA_NO_GATE, SA_SYNCING, SA_READY,
+  SA_ARMED,          // Mode 1 armed (B1)
+  SA_RUNNING,        // Mode 1 running (also used for app-mirror runs)
+  SA_M2_HOLD,        // Mode 2: B2 held, waiting for release-to-GO
+  SA_M2_RUN1,        // Mode 2: GO fired, waiting for the first gate
+  SA_M2_RUN2,        // Mode 2: first gate hit, waiting for the second
+  SA_RESULT,         // result held (saIsM2 selects the layout)
+  SA_TIMEOUT
+};
 SaState saState = SA_SYNCING;
-bool     saStartLocal = false;    // origin of the start edge (local vs received)
-uint32_t saStartUs = 0;           // start instant, shared clock
-uint32_t saSplitMs = 0;           // last computed split
-unsigned long saTimeoutAtMs = 0;  // RUNNING give-up wall time
-unsigned long saShownMs = 0;      // transient TIMEOUT display start
+bool     saMirror = false;        // true = app-driven run mirrored for display only
+bool     saIsM2 = false;          // result layout: two-split (Mode 2) vs one (Mode 1)
+bool     saStartLocal = false;    // origin of the start / first-gate edge
+uint32_t saGoUs = 0;              // Mode 2 GO instant (button release), shared clock
+uint32_t saStartUs = 0;           // Mode 1 start / Mode 2 first-gate instant
+uint32_t saSplitMs = 0;           // Mode 1 total (also Mode 2 total)
+uint32_t saSplit1Ms = 0, saSplit2Ms = 0;  // Mode 2 splits
+unsigned long saTimeoutAtMs = 0;  // run give-up wall time
+unsigned long saShownMs = 0;      // transient RESULT/TIMEOUT display start
+unsigned long saBtnLockMs = 0;    // B1 post-action lockout (restores v1's 500ms feel)
+unsigned long v2B2PressMs = 0;    // when B2 was pressed (for the Mode-2 hold detect)
 unsigned long lastDisplayUpdate = 0;
-char lastRender[24] = "";
+char lastRender[28] = "";
+const unsigned long SA_BTN_LOCK_MS = 500;          // v1 idle-lockout value
+const unsigned long SA_M2_HOLD_MIN_MS = 300;       // min B2 hold before "release to start"
+const unsigned long SA_RESULT_AUTOCLEAR_MS = 4000; // mirror result auto-return
+
+// on-device recent runs (no DB without a phone) — v1's idle history
+struct RunRec { bool isM2; uint32_t totalMs; uint32_t s1Ms; uint32_t s2Ms; };
+#define RECENT_MAX 10
+RunRec recent[RECENT_MAX];
+uint16_t recentCount = 0;   // total pushed; display shows the last few, newest first
 
 // ===================== forward declarations ================================
 uint32_t rd32(const uint8_t* p);
@@ -221,7 +245,9 @@ void v2HandleCommand();
 void v2HandleFrame(const uint8_t* f, uint8_t len);
 void v2StageInbound(const uint8_t* d, int len);
 void v2ProcessInbound();
-void saOnButton();
+void saOnB1(unsigned long nowMs);
+void saOnB2Release();
+void pushRecentRun(bool isM2, uint32_t totalMs, uint32_t s1, uint32_t s2);
 void saOnEvent(uint8_t type, bool local, uint32_t us);
 void saService(unsigned long now);
 void saRender();
@@ -413,17 +439,27 @@ void v2BeamDetect(int16_t dist, unsigned long nowUs) {
 // Physical buttons → BUTTON_PRESS (frozen §7, flags 0). B1 also drives the local
 // standalone consumer (arm/cancel/re-arm); B2 is reserved but still emits.
 void v2ServiceButtons(unsigned long nowMs) {
+  // B1: emit BUTTON_PRESS + Mode-1 arm/cancel (edge-debounced; lockout inside saOnB1).
   bool b1 = (digitalRead(BUTTON1_PIN) == LOW);
   if (b1 && !v2B1Last && (nowMs - v2B1Deb) > 200) {
     v2B1Deb = nowMs;
     v2EmitLocalEvent(V2_BUTTON_PRESS, sharedMicros(), 0);
-    saOnButton();
+    saOnB1(nowMs);
   }
   v2B1Last = b1;
+
+  // B2: emit on press; a >=300ms hold in READY arms Mode 2 (release = GO). The
+  // hold requirement is what stops a stray B2 tap from starting a Mode-2 run.
   bool b2 = (digitalRead(BUTTON2_PIN) == LOW);
-  if (b2 && !v2B2Last && (nowMs - v2B2Deb) > 200) {
-    v2B2Deb = nowMs;
+  if (b2 && !v2B2Last && (nowMs - v2B2Deb) > 200) {   // press edge
+    v2B2Deb = nowMs; v2B2PressMs = nowMs;
     v2EmitLocalEvent(V2_BUTTON_PRESS, sharedMicros(), 0);
+  }
+  if (b2 && saState == SA_READY && (nowMs - v2B2PressMs) >= SA_M2_HOLD_MIN_MS) {
+    saState = SA_M2_HOLD;                              // held long enough: release to start
+  }
+  if (!b2 && v2B2Last && saState == SA_M2_HOLD) {      // release edge -> GO
+    saOnB2Release();
   }
   v2B2Last = b2;
 }
@@ -651,34 +687,87 @@ void v2ProcessInbound() {
   }
 }
 
-// ===================== standalone consumer (§12.1) =========================
-// Origin-keyed: the run is start(one source) -> finish(the OTHER source). Ids are
-// irrelevant (they stay 0 with no phone). All interval math is sdiff32.
-void saOnButton() {
+// ===================== standalone consumer (§12.1 + Mode 1/2 + mirror) =====
+// Origin-keyed: a run is start(one source) -> finish(the OTHER source). Ids are
+// irrelevant (they stay 0 with no phone). All interval math is sdiff32. When a
+// phone is connected, an unarmed gate mirrors the app-driven run for display.
+void pushRecentRun(bool isM2, uint32_t totalMs, uint32_t s1, uint32_t s2) {
+  for (int i = RECENT_MAX - 1; i > 0; i--) recent[i] = recent[i - 1];
+  recent[0].isM2 = isM2; recent[0].totalMs = totalMs; recent[0].s1Ms = s1; recent[0].s2Ms = s2;
+  if (recentCount < 0xFFFF) recentCount++;
+}
+
+// B1: Mode-1 arm / cancel / dismiss. A 500ms post-action lockout (v1's value)
+// means a bounce or a nervous second tap can't cancel a run you just started.
+void saOnB1(unsigned long nowMs) {
+  if ((long)(nowMs - saBtnLockMs) < 0) return;
   switch (saState) {
-    case SA_NO_GATE: case SA_SYNCING: break;      // can't run — ignore
-    case SA_READY:   saState = SA_ARMED; break;
-    case SA_ARMED:   saState = SA_READY; break;   // cancel
-    case SA_RUNNING: saState = SA_READY; break;   // cancel
-    case SA_RESULT:  saState = SA_ARMED; break;   // new run
-    case SA_TIMEOUT: break;
+    case SA_READY:   saState = SA_ARMED; break;                    // arm Mode 1
+    case SA_ARMED:   saState = SA_READY; break;                    // cancel arm
+    case SA_RUNNING: saState = SA_READY; saMirror = false; break;  // cancel run / stop mirror
+    case SA_M2_HOLD: case SA_M2_RUN1: case SA_M2_RUN2:
+                     saState = SA_READY; saMirror = false; break;  // cancel Mode 2
+    case SA_RESULT:  saState = SA_READY; break;                    // dismiss (recent list updates)
+    default: break;                                                // NO_GATE/SYNCING/TIMEOUT: ignore
   }
+  saBtnLockMs = nowMs + SA_BTN_LOCK_MS;
+}
+
+// B2 released after a hold: the Mode-2 manual GO (someone says "go", releases).
+void saOnB2Release() {
+  saGoUs = sharedMicros();
+  saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
+  saMirror = false; saIsM2 = true;
+  saState = SA_M2_RUN1;
 }
 void saOnEvent(uint8_t type, bool local, uint32_t us) {
   if (type != V2_BEAM_BREAK) return;              // BEAM_CLEAR/others: run-irrelevant
+
+  // Mode 1 — explicit standalone arm.
   if (saState == SA_ARMED) {
-    saStartLocal = local;
-    saStartUs = us;
+    saMirror = false; saIsM2 = false;
+    saStartLocal = local; saStartUs = us;
     saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
     saState = SA_RUNNING;
-  } else if (saState == SA_RUNNING) {
-    if (local != saStartLocal) {                  // finish must be the OTHER source
-      int32_t d = sdiff32(us, saStartUs);
-      if (d < 0) d = 0;                           // cross-gate offset noise guard
+    return;
+  }
+  // App-mirror — a phone is driving; follow the stream for display only, no arm.
+  if (saState == SA_READY && bleConnected) {
+    saMirror = true; saIsM2 = false;
+    saStartLocal = local; saStartUs = us;
+    saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
+    saState = SA_RUNNING;
+    return;
+  }
+  if (saState == SA_RUNNING) {                    // Mode 1 / mirror finish
+    if (local != saStartLocal) {
+      int32_t d = sdiff32(us, saStartUs); if (d < 0) d = 0;
       saSplitMs = (uint32_t)(((uint32_t)d + 500) / 1000);
-      saState = SA_RESULT;
-      saShownMs = millis();
-    }                                             // same source mid-run: ignored
+      saIsM2 = false;
+      if (!saMirror) pushRecentRun(false, saSplitMs, 0, 0);
+      saState = SA_RESULT; saShownMs = millis();
+    }
+    return;
+  }
+  if (saState == SA_M2_RUN1) {                    // Mode 2 leg 1: GO -> first gate
+    saStartLocal = local; saStartUs = us;
+    int32_t d = sdiff32(us, saGoUs); if (d < 0) d = 0;
+    saSplit1Ms = (uint32_t)(((uint32_t)d + 500) / 1000);
+    saTimeoutAtMs = millis() + params.standaloneTimeoutMs;
+    saState = SA_M2_RUN2;
+    return;
+  }
+  if (saState == SA_M2_RUN2) {                    // Mode 2 leg 2: the OTHER gate finishes
+    if (local != saStartLocal) {
+      int32_t d2 = sdiff32(us, saStartUs); if (d2 < 0) d2 = 0;
+      saSplit2Ms = (uint32_t)(((uint32_t)d2 + 500) / 1000);
+      int32_t dt = sdiff32(us, saGoUs); if (dt < 0) dt = 0;
+      saSplitMs = (uint32_t)(((uint32_t)dt + 500) / 1000);
+      saIsM2 = true;
+      pushRecentRun(true, saSplitMs, saSplit1Ms, saSplit2Ms);
+      saState = SA_RESULT; saShownMs = millis();
+    }
+    return;
   }
 }
 void saService(unsigned long now) {
@@ -690,27 +779,36 @@ void saService(unsigned long now) {
     saState = !peer ? SA_NO_GATE : (!synced ? SA_SYNCING : SA_READY);
   } else if (saState == SA_ARMED && (!peer || !synced)) {
     saState = !peer ? SA_NO_GATE : SA_SYNCING;    // lost readiness before the start
-  } else if (saState == SA_RUNNING) {
-    if ((long)(now - saTimeoutAtMs) >= 0) { saState = SA_TIMEOUT; saShownMs = now; }
+  } else if (saState == SA_RUNNING || saState == SA_M2_RUN1 || saState == SA_M2_RUN2) {
+    if ((long)(now - saTimeoutAtMs) >= 0) {
+      if (saMirror) saState = SA_READY;           // mirror: silently drop, no error shown
+      else { saState = SA_TIMEOUT; saShownMs = now; }
+    }
+  } else if (saState == SA_RESULT) {
+    if (saMirror && (long)(now - saShownMs) >= (long)SA_RESULT_AUTOCLEAR_MS) saState = SA_READY;
   } else if (saState == SA_TIMEOUT) {
     if ((long)(now - saShownMs) >= 2000) saState = SA_READY;   // re-evaluated next pass
   }
+  // SA_M2_HOLD is left via the B2 release edge (or a B1 cancel) in v2ServiceButtons.
 }
 void saRender() {
-  // redraw key: state + (running: 0.1s bucket) so the OLED isn't thrashed
-  char key[24];
+  // redraw key: state + a value (running bucket / result / recent count) so the
+  // OLED isn't thrashed. Typography/positions are lifted from gate1_ble b8.
+  char key[28];
   switch (saState) {
     case SA_NO_GATE: strcpy(key, "nogate"); break;
     case SA_SYNCING: strcpy(key, "sync"); break;
-    case SA_READY:   strcpy(key, "ready"); break;
+    case SA_READY:   snprintf(key, sizeof(key), "rdy%u", (unsigned)recentCount); break;
     case SA_ARMED:   strcpy(key, "armed"); break;
+    case SA_M2_HOLD: strcpy(key, "m2hold"); break;
     case SA_TIMEOUT: strcpy(key, "tmo"); break;
-    case SA_RESULT:  snprintf(key, sizeof(key), "res%lu", (unsigned long)saSplitMs); break;
-    case SA_RUNNING: {
-      int32_t d = sdiff32(sharedMicros(), saStartUs); if (d < 0) d = 0;
-      snprintf(key, sizeof(key), "run%lu", (unsigned long)((uint32_t)d / 100000));
-      break;
-    }
+    case SA_RESULT:  snprintf(key, sizeof(key), "res%d%lu", saIsM2 ? 2 : 1, (unsigned long)saSplitMs); break;
+    case SA_RUNNING: { int32_t d = sdiff32(sharedMicros(), saStartUs); if (d < 0) d = 0;
+                       snprintf(key, sizeof(key), "run%c%lu", saMirror ? 'm' : 's', (unsigned long)((uint32_t)d / 100000)); break; }
+    case SA_M2_RUN1: { int32_t d = sdiff32(sharedMicros(), saGoUs); if (d < 0) d = 0;
+                       snprintf(key, sizeof(key), "m2a%lu", (unsigned long)((uint32_t)d / 100000)); break; }
+    case SA_M2_RUN2: { int32_t d = sdiff32(sharedMicros(), saGoUs); if (d < 0) d = 0;
+                       snprintf(key, sizeof(key), "m2b%lu", (unsigned long)((uint32_t)d / 100000)); break; }
     default: strcpy(key, "?"); break;
   }
   if (strcmp(key, lastRender) == 0) return;
@@ -719,56 +817,81 @@ void saRender() {
 
   u8g2.clearBuffer();
   u8g2.setFont(u8g2_font_ncenB08_tr);
-  char big[16];
+  char b[40];
   switch (saState) {
-    case SA_NO_GATE:
+    case SA_NO_GATE:                              // connecting screen (gate 1 up before gate 2)
       u8g2.drawStr(0, 10, "STANDALONE");
-      u8g2.setFont(u8g2_font_ncenB14_tr);
-      u8g2.drawStr(0, 34, "NO GATE");
-      u8g2.setFont(u8g2_font_ncenB08_tr);
-      u8g2.drawStr(0, 54, "check 2nd gate");
+      u8g2.setFont(u8g2_font_ncenB14_tr); u8g2.drawStr(0, 34, "NO GATE");
+      u8g2.setFont(u8g2_font_ncenB08_tr); u8g2.drawStr(0, 54, "check 2nd gate");
       break;
     case SA_SYNCING:
       u8g2.drawStr(0, 10, "STANDALONE");
-      u8g2.setFont(u8g2_font_ncenB18_tr);
-      u8g2.drawStr(0, 40, "SYNCING");
+      u8g2.setFont(u8g2_font_ncenB18_tr); u8g2.drawStr(0, 40, "SYNCING");
       break;
-    case SA_READY:
-      u8g2.drawStr(0, 10, "STANDALONE");
-      u8g2.setFont(u8g2_font_ncenB18_tr);
-      u8g2.drawStr(0, 38, "READY");
-      u8g2.setFont(u8g2_font_ncenB08_tr);
-      u8g2.drawStr(0, 56, "B1 = arm");
+    case SA_READY: {                              // v1 idle screen: header + last 3 runs
+      u8g2.drawStr(0, 10, "READY  B1=M1 B2=M2");
+      u8g2.drawHLine(0, 13, 128);
+      int y = 25, shown = 0;
+      for (int i = 0; i < RECENT_MAX && i < (int)recentCount && shown < 3; i++, shown++) {
+        RunRec& r = recent[i];
+        int idx = (int)recentCount - i;
+        if (!r.isM2) { sprintf(b, "%d: %.3fs  M1", idx, r.totalMs / 1000.0); u8g2.drawStr(0, y, b); y += 13; }
+        else { sprintf(b, "%d: Tot:%.3fs M2", idx, r.totalMs / 1000.0); u8g2.drawStr(0, y, b); y += 11;
+               sprintf(b, "   S1:%.2f S2:%.2f", r.s1Ms / 1000.0, r.s2Ms / 1000.0); u8g2.drawStr(0, y, b); y += 11; }
+      }
+      if (recentCount == 0) u8g2.drawStr(15, 38, "No runs yet.");
       break;
-    case SA_ARMED:
-      u8g2.drawStr(0, 10, "ARMED");
-      u8g2.setFont(u8g2_font_ncenB18_tr);
-      u8g2.drawStr(0, 40, "GO!");
-      u8g2.setFont(u8g2_font_ncenB08_tr);
-      u8g2.drawStr(0, 58, "run through a gate");
+    }
+    case SA_ARMED:                                // v1 Mode-1 ACTIVATED
+      u8g2.drawStr(0, 10, "MODE 1");
+      u8g2.setFont(u8g2_font_ncenB14_tr); u8g2.drawStr(5, 38, "ACTIVATED");
+      u8g2.setFont(u8g2_font_ncenB08_tr); u8g2.drawStr(0, 56, "Run through Gate 1");
       break;
-    case SA_RUNNING: {
+    case SA_M2_HOLD:                              // v1 "RELEASE TO START"
+      u8g2.drawStr(0, 10, "MODE 2");
+      u8g2.setFont(u8g2_font_ncenB18_tr); u8g2.drawStr(0, 35, "RELEASE");
+      u8g2.setFont(u8g2_font_ncenB10_tr); u8g2.drawStr(0, 52, "TO START");
+      break;
+    case SA_RUNNING: {                            // v1 drawLiveTimer (%.1fs)
       int32_t d = sdiff32(sharedMicros(), saStartUs); if (d < 0) d = 0;
-      snprintf(big, sizeof(big), "%.2fs", ((uint32_t)d) / 1000000.0);
-      u8g2.drawStr(0, 10, "RUNNING");
-      u8g2.setFont(u8g2_font_ncenB24_tr);
-      u8g2.drawStr(2, 50, big);
+      sprintf(b, "%.1fs", ((uint32_t)d) / 1000000.0);
+      u8g2.drawStr(0, 10, saMirror ? "RUNNING (app)" : "MODE 1 - RUNNING");
+      u8g2.setFont(u8g2_font_ncenB24_tr); u8g2.drawStr(5, 50, b);
+      break;
+    }
+    case SA_M2_RUN1: {
+      int32_t d = sdiff32(sharedMicros(), saGoUs); if (d < 0) d = 0;
+      sprintf(b, "%.1fs", ((uint32_t)d) / 1000000.0);
+      u8g2.drawStr(0, 10, "MODE 2 - TO GATE 1");
+      u8g2.setFont(u8g2_font_ncenB24_tr); u8g2.drawStr(5, 50, b);
+      break;
+    }
+    case SA_M2_RUN2: {
+      int32_t d = sdiff32(sharedMicros(), saGoUs); if (d < 0) d = 0;
+      sprintf(b, "%.1fs", ((uint32_t)d) / 1000000.0);
+      u8g2.drawStr(0, 10, "MODE 2 - TO GATE 2");
+      u8g2.setFont(u8g2_font_ncenB24_tr); u8g2.drawStr(5, 50, b);
       break;
     }
     case SA_RESULT:
-      snprintf(big, sizeof(big), "%.3fs", saSplitMs / 1000.0);
-      u8g2.drawStr(0, 10, "SPLIT");
-      u8g2.setFont(u8g2_font_ncenB24_tr);
-      u8g2.drawStr(2, 44, big);
-      u8g2.setFont(u8g2_font_ncenB08_tr);
-      u8g2.drawStr(0, 60, "B1 = again");
+      if (saIsM2) {                              // v1 Mode-2 multi-split result
+        u8g2.drawStr(0, 10, "MODE 2  RESULT");
+        sprintf(b, "S1: %.3fs", saSplit1Ms / 1000.0); u8g2.drawStr(0, 24, b);
+        sprintf(b, "S2: %.3fs", saSplit2Ms / 1000.0); u8g2.drawStr(0, 38, b);
+        sprintf(b, "Total: %.3fs", saSplitMs / 1000.0); u8g2.drawStr(0, 52, b);
+        if (!saMirror) u8g2.drawStr(0, 63, "Press button to cont.");
+      } else {                                   // v1 Mode-1 result (%.3fs)
+        sprintf(b, "%.3fs", saSplitMs / 1000.0);
+        u8g2.drawStr(0, 10, saMirror ? "RESULT (app)" : "MODE 1  RESULT");
+        u8g2.setFont(u8g2_font_ncenB18_tr); u8g2.drawStr(0, 36, b);
+        u8g2.setFont(u8g2_font_ncenB08_tr);
+        if (!saMirror) u8g2.drawStr(0, 56, "Press button to cont.");
+      }
       break;
     case SA_TIMEOUT:
       u8g2.drawStr(0, 10, "STANDALONE");
-      u8g2.setFont(u8g2_font_ncenB24_tr);
-      u8g2.drawStr(20, 44, "-- --");
-      u8g2.setFont(u8g2_font_ncenB08_tr);
-      u8g2.drawStr(0, 60, "no finish");
+      u8g2.setFont(u8g2_font_ncenB24_tr); u8g2.drawStr(20, 44, "-- --");
+      u8g2.setFont(u8g2_font_ncenB08_tr); u8g2.drawStr(0, 60, "no finish");
       break;
     default: break;
   }
@@ -860,7 +983,7 @@ void setup() {
     u8g2.setFont(u8g2_font_ncenB14_tr);
     u8g2.drawStr(5, 35, "EqualSplit");
     u8g2.sendBuffer();
-    delay(1200);
+    delay(1500);
   }
 
   setLunaFrameRate(250);
