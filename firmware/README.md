@@ -9,16 +9,28 @@ below were verified byte-identical to what is physically flashed before any clea
 
 | Sketch | Role | MAC | Notes |
 |---|---|---|---|
-| `gate/gate.ino` | **F2 symmetric write-once binary** — one flash for BOTH gates | (feature-detects) | v2-only. Election + standalone consumer + SET_PARAM/NVS + every-gate-broadcasts-own-events. **NOT yet compiled/flashed** — needs a hardware validation pass against contract §18. |
-| `gate1_ble/gate1_ble.ino` | Gate 1 (transition) — start gate, BLE bridge, timekeeper | `B4:BF:E9:32:DA:64` | v1+v2 dual-emit, `FW_BUILD gate1-b8`. Currently flashed. Superseded by `gate/` at freeze. |
-| `gate2_no_ota/gate2_no_ota.ino` | Gate 2 (transition) — finish gate | `30:76:F5:A6:43:BC` | v1+v2 dual-emit, `FW_BUILD gate2-b8`. Currently flashed. Superseded by `gate/` at freeze. |
+| `gate/gate.ino` | ✅ **FROZEN write-once binary** — one flash for BOTH gates | (feature-detects) | `FW_BUILD gate-f2-FROZEN-2026-07-21`. v2-only. **This is the only sketch to flash.** |
+| ~~`gate1_ble/gate1_ble.ino`~~ | superseded (transition) | `B4:BF:E9:32:DA:64` | v1+v2 dual-emit, `gate1-b8`. **Droppable** — in git history. |
+| ~~`gate2_no_ota/gate2_no_ota.ino`~~ | superseded (transition) | `30:76:F5:A6:43:BC` | v1+v2 dual-emit, `gate2-b8`. **Droppable** — in git history. |
 
-**F2 (`gate/gate.ino`) is the endgame:** the same binary runs on both units (OLED/buttons
-feature-detected), determines its own time-master role by lowest-MAC election, broadcasts its
-own raw beam events, times a run standalone with no phone (§12.1), and accepts `SET_PARAM` with
-NVS persistence (§8.1). Flash it to both, validate via the app **and** standalone, then freeze
-and drop the two transition sketches. It is uncompiled as written — compile, flash, and work the
-§18 checklist before trusting it on hardware.
+**`gate/gate.ino` is frozen (contract §18 cleared 2026-07-21, on hardware, both gates).** The same
+binary runs on both units (OLED/buttons feature-detected), elects its own time master by lowest
+MAC, broadcasts its own raw beam events, times a run standalone with no phone in Mode 1 (B1) and
+Mode 2 (B2 hold/release), mirrors app-driven runs on the OLED via `RUN_HINT` (§8.2), and accepts
+`SET_PARAM` with NVS persistence (§8.1). A change to this file is a **fleet reflash over USB** —
+treat it as hardware, not software.
+
+**Boot check (manufacturing / field):** every unit prints its build on boot at 115200 —
+```
+[boot] EqualSplit gate-f2-FROZEN-2026-07-21 | compiled <date> <time>
+[boot] display detected|absent
+[boot] MAC XX:XX:XX:XX:XX:XX (efuse err=0)
+```
+If that line is missing or reads anything else, the wrong sketch is flashed. This marker is
+permanent and must never be removed.
+
+The two transition sketches are superseded and **safe to delete** — both are recoverable from git
+history, and nothing flashes from them anymore.
 
 The two pair: `gate1_ble` sends to `gate2MAC 30:76:F5:A6:43:BC`; `gate2_no_ota` sends to
 `gate1MAC B4:BF:E9:32:DA:64`. Hardware is symmetric (identical TF-Luna `Serial2 16/17`,

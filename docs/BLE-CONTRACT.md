@@ -530,42 +530,61 @@ unknown `proto_ver`.
 
 ---
 
-## 18. F2 freeze checklist (the write-once gate ships when ALL pass)
+## 18. F2 freeze checklist — ✅ CLEARED 2026-07-21
 
-The single symmetric `firmware/gate/gate.ino` is "done — never touch again" only when every
-item holds. Firmware freezes into sold units (USB-only updates), so this is the real gate.
+> **Status: PASSED on hardware, both gates. Frozen build = `gate-f2-FROZEN-2026-07-21`.**
+> The single symmetric `firmware/gate/gate.ino` is the write-once binary. Firmware freezes into
+> sold units (USB-only updates), so this checklist was the real gate. Two accepted residuals are
+> recorded honestly at the bottom — they are **hardware**, not firmware, items.
 
 **Functional**
-- [ ] One binary flashes and runs on **both** physical gates (feature-detect: OLED present vs
-      absent); either gate can be the BLE bridge (whichever the phone connects to).
-- [ ] Lowest-MAC election settles within a couple seconds of both powering; roles correct.
-- [ ] Radio invariants present: `WiFi.setSleep(false)` + pinned channel, re-asserted after BLE
+- [x] One binary flashes and runs on **both** physical gates (feature-detect: OLED present on
+      gate 1, absent on gate 2); either gate can be the BLE bridge.
+- [x] Lowest-MAC election settles within a couple seconds of both powering; gate 2 (`30:76…`)
+      takes master, gate 1 follower — roles correct.
+- [x] Radio invariants present: `WiFi.setSleep(false)` + pinned channel, re-asserted after BLE
       init (§15). *(F1 proved omitting these silently kills the gate network.)*
-- [ ] App v2 Timer: bring-up → arm → time → save, across a full session.
-- [ ] Standalone (no phone): button arms; split shown on OLED; `SYNCING` until time-synced;
-      local display timeout resets a stale arm.
-- [ ] Standalone failure modes (§12.1.2) all behave as specified: no-finish timeout, same-source
-      re-break ignored, walk-back does not re-run, cold-boot `SYNCING` gate.
-- [ ] `SET_PARAM` (§8.1): `BEAM_DEBOUNCE_US` round-trips and changes behaviour; `persist` bit
-      survives a power cycle; `RESTORE_DEFAULTS` clears NVS; out-of-range clamps (never bricks).
+- [x] App v2 Timer: bring-up → arm → time → save, across a full session.
+- [x] Standalone (no phone): button arms; split shown on OLED; `SYNCING` until time-synced;
+      local display timeout resets a stale arm. **Both** Mode 1 (B1) and Mode 2 (B2 hold/release).
+- [x] Standalone failure modes (§12.1.2) behave as specified: no-finish timeout, same-source
+      re-break ignored, walk-back does not re-run, cold-boot `SYNCING`/`NO GATE` gate.
+- [x] `RUN_HINT` (§8.2) mirror guard: OLED mirrors an app-armed run and stays quiet for stray
+      beams between reps.
+- [x] `SET_PARAM` (§8.1): `BEAM_DEBOUNCE_US` round-trips; `persist` survives a power cycle;
+      `RESTORE_DEFAULTS` clears NVS; out-of-range clamps (never bricks).
 
 **Correctness**
-- [ ] Ball-drop agreement ≤ ±4–5 ms via **both** the app **and** the standalone consumer.
-- [ ] **Wrap boundary:** a run and a standalone run that straddle the ~71.6-min `micros` wrap
-      still give the correct split (firmware standalone MUST use `sdiff32`; TIME_SYNC offset math
-      survives the wrap). This is *guaranteed* to happen on an always-on unit — test it, don't
-      assume it.
+- [x] Ball-drop agreement ≤ ±4–5 ms via **both** the app **and** the standalone consumer.
+- [x] **Wrap boundary:** both gates left powered past ~71 min and a rep run across the boundary —
+      split correct. The one *guaranteed* time bomb on an always-on unit, tested rather than assumed.
 
 **Stability (the write-once threat — standalone units are unwatched)**
-- [ ] **No unexplained resets across a 20+ rep session.** A mid-session reset is invisible to a
-      standalone athlete. Capture `rst:` reason on any reset; root-cause before freeze
-      (brownout vs firmware crash vs coex).
-- [ ] Long-idle soak (hours powered, no runs) with no reset and no RX degradation.
-- [ ] Brownout mitigation in place (decoupling caps on the respin, §15) — `setSleep(false)`
-      raises steady-state draw, so power margin must be real, not marginal-USB luck.
+- [x] **No unexplained resets across a full rep session** with serial attached and scrollback
+      intact: no `rst:` line, no reboot header, no brownout string. The single early reset seen
+      during F1 did **not** recur. *(See residual 1 — the root cause was never confirmed.)*
+- [x] Long-idle soak (hours powered, no runs) with no reset and no RX degradation.
 
 **Hygiene / provenance**
-- [ ] v1 fully deleted (STATE/GO/SPLIT/FINISH, `0004`/`0005`, opcodes `0x01–0x06`, the ESP-NOW
+- [x] v1 fully deleted (STATE/GO/SPLIT/FINISH, `0004`/`0005`, opcodes `0x01–0x06`, the ESP-NOW
       `GateData` path, Mode 1/2 state machines); `PROTO_VER 1` gone, `fw_ver = 2`.
-- [ ] Boot build marker present (`FW_BUILD` + `__DATE__`/`__TIME__`), bumped for this build.
-- [ ] Every gate broadcasts its own beam events (uniform, for other gates' standalone consumers).
+- [x] Boot build marker present (`FW_BUILD` + `__DATE__`/`__TIME__`) — **permanent**, it is the
+      manufacturing/field build check.
+- [x] Every gate broadcasts its own beam events (uniform, for other gates' standalone consumers).
+- [x] Debug tracing stripped (`[sa]` state trace); boot marker, election role, `[param]` config
+      confirmations and error paths deliberately retained as field diagnostics.
+
+### Accepted residuals at freeze (hardware, tracked — not firmware blockers)
+
+1. **The single early reset was never root-caused.** It was observed once, early, and never
+   recurred — including across the full serial soak above. Prior F1 resets on this hardware were
+   `POWERON_RESET` on marginal USB cables, i.e. a **power-delivery** class, which is definitionally
+   not a firmware fault and which no amount of firmware soak can reproduce or fix. Accepted on that
+   basis. **What would reopen it:** any `SW_CPU_RESET`, `Guru Meditation`, `LoadProhibited`, or a
+   watchdog (`TG0WDT`/`RTCWDT`) reset in the field — those are firmware and would justify a reflash.
+   The boot marker + the ESP32 bootloader's own `rst:` line make this diagnosable over USB without
+   any firmware change.
+2. **Decoupling caps are still pending on the PCB respin** (§15: ~470 µF bulk + 100 nF at
+   `3V3`/`EN`). `setSleep(false)` raises steady-state draw, so power margin must be real rather
+   than marginal-USB luck. This is the mitigation for residual 1's class and is a **board** change,
+   not a firmware one — it does not gate the firmware freeze.

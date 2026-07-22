@@ -14,7 +14,7 @@
 //
 // BUMP FW_BUILD every change. __DATE__/__TIME__ auto-update only on a REAL
 // recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate-f2d (mirror via RUN_HINT 0x37)"
+#define FW_BUILD "gate-f2-FROZEN-2026-07-21"
 // ============================================================================
 
 #include <Wire.h>
@@ -246,7 +246,6 @@ void v2HandleCommand();
 void v2HandleFrame(const uint8_t* f, uint8_t len);
 void v2StageInbound(const uint8_t* d, int len);
 void v2ProcessInbound();
-const char* saName(SaState s);
 void saGo(SaState s);
 void saOnB1(unsigned long nowMs);
 void saOnB2Release();
@@ -709,20 +708,10 @@ void pushRecentRun(bool isM2, uint32_t totalMs, uint32_t s1, uint32_t s2) {
   if (recentCount < 0xFFFF) recentCount++;
 }
 
-// State-transition trace (serial only) — the fastest way to see what the gate is
-// actually doing on the bench. Strip before freeze if flash gets tight.
-const char* saName(SaState s) {
-  switch (s) {
-    case SA_NO_GATE: return "NO_GATE"; case SA_SYNCING: return "SYNCING";
-    case SA_READY: return "READY";     case SA_ARMED: return "ARMED";
-    case SA_RUNNING: return "RUNNING"; case SA_M2_HOLD: return "M2_HOLD";
-    case SA_M2_RUN1: return "M2_RUN1"; case SA_M2_RUN2: return "M2_RUN2";
-    case SA_RESULT: return "RESULT";   case SA_TIMEOUT: return "TIMEOUT"; default: return "?";
-  }
-}
+// Single point of state change for the standalone/mirror consumer. The [sa]
+// serial trace that lived here was stripped at freeze; the boot marker stays.
 void saGo(SaState s) {
   if (s == saState) return;
-  Serial.printf("[sa] %s -> %s\n", saName(saState), saName(s));
   saState = s;
 }
 
@@ -772,7 +761,6 @@ void saOnRunHint(bool armed) {
 }
 void saOnEvent(uint8_t type, bool local, uint32_t us) {
   if (type != V2_BEAM_BREAK) return;              // BEAM_CLEAR/others: run-irrelevant
-  Serial.printf("[sa] BEAM %s in %s\n", local ? "local" : "recv", saName(saState));
 
   if (saState == SA_ARMED) {                      // armed by B1 (real) or RUN_HINT (mirror)
     saIsM2 = false;                               // saMirror already set by whoever armed
@@ -1003,7 +991,6 @@ void serviceConnParam() {
   NimBLEServer* s = NimBLEDevice::getServer();
   if (!s) return;
   s->updateConnParams(pendingConnHandle, 12, 12, 0, 400);   // 15ms, 4s timeout
-  Serial.println(">>> conn-param request sent: 15ms interval (deferred)");
 }
 
 // ===================== setup / loop ========================================
