@@ -132,7 +132,15 @@ export default function TimerV2Screen() {
   const doArm = useCallback(() => {
     setFinishedTags(null);
     setDbg('');
+    setLiveMs(0); // clear the live counter's last frame — no ghost number while armed
     v2.arm();
+  }, [v2]);
+
+  // Cancel lands on idle with no result, where the timer falls back to liveMs —
+  // zero it too, or a cancelled run leaves the same stale frame on screen.
+  const doCancel = useCallback(() => {
+    setLiveMs(0);
+    v2.resetEngine();
   }, [v2]);
 
   const big = result ? fmt(result.splitMs, 3) : fmt(liveMs, isRunning ? 2 : 3);
@@ -199,7 +207,7 @@ export default function TimerV2Screen() {
             kind="go"
           />
         ) : (
-          <Btn label="Cancel" onPress={v2.resetEngine} kind="warn" />
+          <Btn label="Cancel" onPress={doCancel} kind="warn" />
         )}
       </View>
 
