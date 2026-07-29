@@ -30,6 +30,8 @@ import {
   buildPing,
   buildClearQueue,
   buildRunHint,
+  buildSetParam,
+  PARAM_SET_NUMBER,
   type V2Frame,
   type V2Run,
 } from './v2';
@@ -57,6 +59,10 @@ export type GateView = {
   hasDisplay: boolean;
   timeSynced: boolean;
   thresholdCm: number;
+  /** g1+: active radio set (1–3); 0 = f2 firmware without sets. */
+  setNumber: number;
+  /** g1+: a persisted set change awaits a power cycle. */
+  rebootPending: boolean;
 };
 
 export type Comparison = {
@@ -77,6 +83,8 @@ type StatusView = {
   hasDisplay: boolean;
   hasButtons: boolean;
   buzzerWired: boolean;
+  setNumber: number;
+  rebootPending: boolean;
 };
 
 export type V2ContextValue = {
@@ -104,6 +112,9 @@ export type V2ContextValue = {
   resetEngine: () => void;
   clearComparisons: () => void;
   gateToPhoneMs: (gateUs: number) => number | null;
+  /** g1 sets (SETS-G1 §4): persist SET_NUMBER on both gates, confirm via
+   *  STATUS_REPLY reboot_pending, then instruct a power-cycle. */
+  changeSet: (n: number) => Promise<void>;
 };
 
 const V2Context = createContext<V2ContextValue | null>(null);
@@ -176,12 +187,17 @@ export function V2Provider({ children }: { children: ReactNode }) {
         hasDisplay: s?.hasDisplay ?? false,
         timeSynced: s?.timeSynced ?? false,
         thresholdCm: s?.thresholdCm ?? 0,
+        setNumber: s?.setNumber ?? 0,
+        rebootPending: s?.rebootPending ?? false,
       });
     }
     // Any discovered-but-unassigned gates (pre-bring-up).
     for (const mac of Object.keys(discoveredRef.current)) {
       if (seen.has(mac)) continue;
-      out.push({ id: null, mac, role: null, hasDisplay: false, timeSynced: false, thresholdCm: 0 });
+      out.push({
+        id: null, mac, role: null, hasDisplay: false, timeSynced: false,
+        thresholdCm: 0, setNumber: 0, rebootPending: false,
+      });
     }
     out.sort((a, b) => (a.id ?? 99) - (b.id ?? 99));
     setGates(out);
@@ -285,6 +301,8 @@ export function V2Provider({ children }: { children: ReactNode }) {
             hasDisplay: f.caps.hasDisplay,
             hasButtons: f.caps.hasButtons,
             buzzerWired: f.caps.buzzerWired,
+            setNumber: f.caps.setNumber,
+            rebootPending: f.caps.rebootPending,
           };
           engine.setSynced(f.gateId, f.caps.timeSynced);
           rebuildGates();
@@ -538,6 +556,35 @@ export function V2Provider({ children }: { children: ReactNode }) {
     return anchorRef.current ? gateUsToPhoneMs(gateUs, anchorRef.current) : null;
   }, []);
 
+  // g1 set change, closed loop (SETS-G1 §4): SET_PARAM(SET_NUMBER, all gates,
+  // always-persist on the gate side) → fresh GET_STATUS → both gates must show
+  // either reboot_pending (new set persisted) or already-active-on-n. Command
+  // relay is single-shot, so this ack IS the reliability mechanism — a missing
+  // ack means retry, not hope. Apply = power-cycle both gates (reboot-to-apply).
+  const changeSet = useCallback(
+    async (n: number) => {
+      pushLog(`set → ${n}: writing (persist, all gates)…`);
+      try {
+        await sendFrame(buildSetParam(GATE_ID_ALL, PARAM_SET_NUMBER, n, true));
+        await delay(300); // relay + NVS commit
+        statusesRef.current = {};
+        await sendFrame(buildGetStatus(GATE_ID_ALL));
+        const acked = (s: StatusView | undefined) =>
+          !!s && (s.setNumber === n ? !s.rebootPending : s.rebootPending);
+        const ok = await waitFor(
+          () => acked(statusesRef.current[START_ID]) && acked(statusesRef.current[FINISH_ID]),
+          2500,
+        );
+        rebuildGates();
+        if (ok) pushLog(`Set ${n} persisted on BOTH gates — power-cycle both to apply`);
+        else pushLog(`Set ${n}: no ack from both gates — retry (f2 firmware has no sets)`);
+      } catch (e) {
+        pushLog(`set change failed: ${String(e)}`);
+      }
+    },
+    [sendFrame, waitFor, pushLog, rebuildGates],
+  );
+
   const value: V2ContextValue = {
     active,
     retain,
@@ -560,6 +607,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
     resetEngine,
     clearComparisons,
     gateToPhoneMs,
+    changeSet,
   };
 
   return <V2Context.Provider value={value}>{children}</V2Context.Provider>;

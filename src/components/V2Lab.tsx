@@ -47,6 +47,7 @@ export default function V2Lab() {
               {g.role ? ` · ${g.role}` : ''}
               {g.hasDisplay ? ' · OLED' : ''}
               {g.id ? ` · ${g.timeSynced ? 'synced' : 'UNSYNCED'}` : ''}
+              {g.setNumber ? ` · S${g.setNumber}${g.rebootPending ? '→REBOOT' : ''}` : ''}
             </Text>
           </View>
         ))
@@ -64,6 +65,14 @@ export default function V2Lab() {
       <View style={styles.row}>
         <Btn label="Arm run (M1)" onPress={v2.armCompare} disabled={!v2.ready} kind="go" />
         <Btn label="Reset engine" onPress={v2.resetEngine} disabled={!v2.connected} />
+      </View>
+
+      {/* g1 sets (SETS-G1 §4): persist on both gates, then power-cycle both. */}
+      <Text style={styles.section}>radio set (g1) — persists, applies on power-cycle</Text>
+      <View style={styles.row}>
+        <Btn label="Set 1 (ch1)" onPress={() => v2.changeSet(1)} disabled={!v2.ready} />
+        <Btn label="Set 2 (ch6)" onPress={() => v2.changeSet(2)} disabled={!v2.ready} />
+        <Btn label="Set 3 (ch11)" onPress={() => v2.changeSet(3)} disabled={!v2.ready} />
       </View>
       {v2.swapRoles ? (
         <Text style={styles.hint}>role swap pending — tap Re-bring-up to apply</Text>

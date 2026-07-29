@@ -1,10 +1,11 @@
-# g1 — Independent gate sets (channel-per-set)  ·  SPEC FOR ARGUMENT, NOT YET BUILT
+# g1 — Independent gate sets (channel-per-set)
 
-> **Status: proposed.** Argue this line-by-line (like §12.1 standalone), then it gets built in
-> `firmware/gate-g1/gate-g1.ino`. The frozen build `firmware/gate/gate.ino`
-> (`gate-f2-FROZEN-2026-07-21`) is **never edited** and stays the validated single-set fallback.
-> The contract delta (§2 below) is **proposed text** — `docs/BLE-CONTRACT.md` is not touched
-> until this spec is approved.
+> **Status: APPROVED (Louis, 2026-07-21, with the §3 migration amendment) and BUILT —
+> `gate-g1-a1 (channel-per-set)` in `firmware/gate-g1/gate-g1.ino`, plus app support
+> (Lab set-change flow). NOT yet hardware-validated: §8's §18-g1 pass is pending and
+> non-negotiable (full bench day on ch6, not a smoke test).** The frozen build
+> `firmware/gate/gate.ino` (`gate-f2-FROZEN-2026-07-21`) is untouched and stays the
+> validated single-set fallback. The §2 contract delta is applied to `docs/BLE-CONTRACT.md`.
 
 **Requirement.** A few independent 2-gate sets must run in the same radio space without
 cross-talk (election, time-sync, event pairing, standalone all currently bleed across sets on
@@ -67,12 +68,19 @@ compatible reserved-space extension, same philosophy as the reserved param ids.
 (stays 7 bytes — under group-ID it would have had to widen, since bytes 1–6 are all MAC),
 TIME_SYNC payload, all command/reply layouts, GATT, legacy-reserved ranges.
 
-## 3. NVS, boot, and the f2→g1 upgrade
+## 3. NVS, boot, and the f2→g1 upgrade  *(amended per Louis 2026-07-21: migrate, don't discard)*
 
-- `Params` struct gains `setNumber` → **`PARAM_VER` 1→2**. An f2-written blob fails the g1
-  size/CRC check and is discarded → full defaults (Set 1). **Consequence, stated honestly:
-  reflashing f2→g1 silently discards any previously persisted param overrides** (debounce etc.).
-  Rare and re-appliable via the app; documented, not hidden.
+- `Params` gains `setNumber` (`u8`) → **`PARAM_VER` 1→2**. The layout cooperates: `setNumber`
+  lands in what was zero-padding after `rebroadcastN` (`paramsSave` memsets the blob, so v1 pads
+  are deterministically 0), every shared field keeps its offset, and the blob stays 24 bytes —
+  guarded by `static_assert(sizeof(Params)==16 && sizeof(PersistBlob)==24)` so the compiler
+  enforces the assumption the migration relies on.
+- **Migration (one-shot):** `paramsLoad` accepts ver 1 *or* 2 (same magic, same CRC algorithm —
+  a v1 blob's CRC verifies as-stored). A ver-1 blob keeps all shared params (debounce, threshold,
+  standalone timeout, rebroadcast-N), sets `setNumber = 1` explicitly, clamps, then **re-saves as
+  ver 2** so the upgrade happens exactly once. Serial: `[param] migrated f2 (v1) blob`.
+  **Flashing tuned f2 units → g1 preserves their persisted params automatically; nothing to
+  re-apply, no phantom behavior change.** Unknown future versions (>2) still discard → defaults.
 - Boot order (unchanged shape): `paramsLoad()` → clamp → B1-held check (restore) → radio init on
   `channelForSet(setNumber)`. The B1-boot restore therefore takes effect **the same boot** —
   it is the complete no-phone rescue: any gate, any state → Set 1/ch1.

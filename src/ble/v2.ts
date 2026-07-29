@@ -47,6 +47,10 @@ export type V2Caps = {
   hasButtons: boolean;
   buzzerWired: boolean;
   timeSynced: boolean;
+  /** g1+: ACTIVE radio set 1–3; 0 = firmware without sets (f2-FROZEN). */
+  setNumber: number;
+  /** g1+: persisted SET_NUMBER differs from the active set — reboot to apply. */
+  rebootPending: boolean;
 };
 
 export type V2Frame =
@@ -71,6 +75,8 @@ function parseCaps(c: number): V2Caps {
     hasButtons: (c & CAP_HAS_BUTTONS) !== 0,
     buzzerWired: (c & CAP_BUZZER_WIRED) !== 0,
     timeSynced: (c & CAP_TIME_SYNCED) !== 0,
+    setNumber: (c >>> 4) & 0x07,
+    rebootPending: (c & 0x80) !== 0,
   };
 }
 
@@ -143,6 +149,27 @@ export function buildGetStatus(target: number): Uint8Array {
 export function buildRunHint(target: number, armed: boolean): Uint8Array {
   return new Uint8Array([V2Cmd.RunHint, target & 0xff, armed ? 1 : 0]);
 }
+
+/** SET_PARAM (0x36) — one runtime param (§8.1): target, flags(bit0 persist),
+ *  param_id u16, value u32. */
+export function buildSetParam(
+  target: number,
+  paramId: number,
+  value: number,
+  persist: boolean,
+): Uint8Array {
+  const f = new Uint8Array(9);
+  f[0] = V2Cmd.SetParam;
+  f[1] = target & 0xff;
+  f[2] = persist ? 1 : 0;
+  f[3] = paramId & 0xff;
+  f[4] = (paramId >>> 8) & 0xff;
+  putU32(f, 5, value >>> 0);
+  return f;
+}
+
+/** param_id: radio set 1–3 → ch1/6/11 (g1, always-persist, reboot-to-apply). */
+export const PARAM_SET_NUMBER = 0x0009;
 
 /** CLEAR_QUEUE (0x33) — target gate(s) empty the RAM event ring (session start). */
 export function buildClearQueue(target: number): Uint8Array {

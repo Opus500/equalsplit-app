@@ -14,7 +14,7 @@
 //
 // BUMP FW_BUILD every change. __DATE__/__TIME__ auto-update only on a REAL
 // recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate-g1-a0 (fork of f2-FROZEN, no functional changes yet)"
+#define FW_BUILD "gate-g1-a1 (channel-per-set)"
 // ============================================================================
 
 #include <Wire.h>
@@ -29,10 +29,17 @@
 // ESP-NOW peers must share ONE WiFi channel; a broadcast only reaches same-channel
 // gates. Also disable modem-sleep: passive broadcast RX needs the radio awake
 // (contract §15 — load-bearing, F1 proved omitting it silently kills the network).
-#define ESPNOW_CHANNEL 1
+//
+// g1: the channel IS the set (docs/SETS-G1.md). Derived from params.setNumber at
+// BOOT only (reboot-to-apply, contract §8.1 SET_NUMBER): Set 1→ch1, 2→ch6, 3→ch11 —
+// the three mutually non-overlapping 2.4 GHz channels, legal worldwide (why the cap
+// is 3). No runtime channel change ever: channel and peer registration cannot drift.
+uint8_t espnowChannel   = 1;   // set in setup() from params.setNumber
+uint8_t bootedSetNumber = 1;   // the set we actually came up on (STATUS caps bits 4-6)
+static uint8_t setToChannel(uint8_t s) { return s == 2 ? 6 : (s == 3 ? 11 : 1); }
 
 // ===================== v2 wire constants (FROZEN, §5) =======================
-#define V2_FW_VER 2
+#define V2_FW_VER 3   // g1 (channel-per-set). proto_ver stays 2 — no frame format changed.
 // Events 0x01-0x0F
 #define V2_BEAM_BREAK    0x01
 #define V2_BEAM_CLEAR    0x02
@@ -66,6 +73,7 @@
 #define PID_THRESHOLD_CM       0x0003
 #define PID_STANDALONE_TMO_MS  0x0004
 #define PID_EVENT_REBROADCAST  0x0008
+#define PID_SET_NUMBER         0x0009   // g1: radio set 1-3 → ch1/6/11; reboot-to-apply, always-persist
 
 // ===================== GATT (end-state, §3) =================================
 #define UUID_SERVICE  "7E5D0001-9A1B-4C2D-8E3F-1A2B3C4D5E6F"
@@ -114,9 +122,13 @@ uint32_t tsMinRtt = 0xFFFFFFFFUL;
 uint32_t tsSeq = 0;
 unsigned long lastTsPingMs = 0, lastTsResetMs = 0;
 
-// peer presence (for the standalone NO_GATE vs SYNCING distinction, §12.1.1) —
-// stamped whenever ANY frame arrives from another gate. 0 = never heard.
-volatile unsigned long peerLastHeardMs = 0;
+// g1: per-MAC peer tracking (SETS-G1 §5) — keyed on the RADIO-level sender MAC
+// (esp_now_recv_info.src_addr) of every inbound frame, so no payload parsing and
+// no frame change. Feeds both the NO_GATE/SYNCING distinction (§12.1.1: any live
+// peer) and the stray-gate defense (>1 "other" on our channel → refuse to arm).
+#define PEER_SLOTS 4                       // 1 expected partner + room for strays
+uint8_t       peerMacs[PEER_SLOTS][6];
+unsigned long peerLastMs[PEER_SLOTS];      // 0 = empty slot
 const unsigned long PEER_TIMEOUT_MS = 5000;
 
 // ===================== runtime params + NVS persistence (§8.1) =============
@@ -125,12 +137,18 @@ struct Params {
   uint16_t thresholdCm;         // 0x0003 (also settable via SET_THRESHOLD 0x31)
   uint32_t standaloneTimeoutMs; // 0x0004
   uint8_t  rebroadcastN;        // 0x0008 (total sends per event, incl. the first)
+  uint8_t  setNumber;           // 0x0009 (g1) — occupies what was v1 zero-padding, so
+                                //   every shared field keeps its offset (migration, §3)
 };
 Params params;
 Preferences prefs;
 #define PARAM_MAGIC 0x45510001UL      // 'EQ' + rev
-#define PARAM_VER   1
+#define PARAM_VER   2                 // 1 = f2-FROZEN blob (migrated on load, SETS-G1 §3)
 struct PersistBlob { uint32_t magic; uint16_t ver; uint16_t crc; Params p; };
+// The v1→v2 in-place migration relies on this exact layout; if either assert ever
+// fires, the migration in paramsLoad() must be rewritten, not the assert deleted.
+static_assert(sizeof(Params) == 16, "Params layout must match the f2 (v1) blob");
+static_assert(sizeof(PersistBlob) == 24, "PersistBlob layout must match the f2 (v1) blob");
 
 // ===================== beam / button / buzzer emit state ===================
 bool v2LastBeam = false;
@@ -150,6 +168,7 @@ volatile uint8_t v2CmdLen = 0;
 #define V2_RX_SLOTS 8
 uint8_t v2Rx[V2_RX_SLOTS][32];
 uint8_t v2RxLen[V2_RX_SLOTS];
+uint8_t v2RxMac[V2_RX_SLOTS][6];           // g1: radio src_addr, for peer tracking
 volatile uint8_t v2RxHead = 0, v2RxTail = 0;
 
 // ===================== BLE relay ring (drains to app) ======================
@@ -244,8 +263,10 @@ void v2DoSetParam(const uint8_t* f, uint8_t len);
 void v2ExecCommand(const uint8_t* f, uint8_t len, bool fromBle);
 void v2HandleCommand();
 void v2HandleFrame(const uint8_t* f, uint8_t len);
-void v2StageInbound(const uint8_t* d, int len);
+void v2StageInbound(const uint8_t* d, int len, const uint8_t* srcMac);
 void v2ProcessInbound();
+void notePeerMac(const uint8_t* mac, unsigned long now);
+uint8_t otherGateCount(unsigned long now);
 void saGo(SaState s);
 void saOnB1(unsigned long nowMs);
 void saOnB2Release();
@@ -293,6 +314,7 @@ void paramsSetDefaults() {
   params.thresholdCm         = 100;
   params.standaloneTimeoutMs = 30000;
   params.rebroadcastN        = 2;
+  params.setNumber           = 1;      // factory / RESTORE_DEFAULTS → Set 1 (ch1), zero-config
 }
 // Clamp on EVERY apply path — SET_PARAM write AND NVS load — so a structurally
 // valid but garbage persisted value degrades to a boundary, never out of spec.
@@ -301,21 +323,34 @@ void clampParams() {
   params.thresholdCm         = (uint16_t)clampU32(params.thresholdCm, 10, 800);
   params.standaloneTimeoutMs = clampU32(params.standaloneTimeoutMs, 3000, 600000);
   params.rebroadcastN        = (uint8_t)clampU32(params.rebroadcastN, 1, 5);
+  params.setNumber           = (uint8_t)clampU32(params.setNumber, 1, 3);   // garbage → legal channel
 }
 // Arduino core runs nvs_flash_init (with erase-on-error) before setup(), so
 // partition-level self-heal is handled. We add a magic+version+CRC blob so we
 // never trust NVS bytes that aren't provably ours → fall back to defaults.
+// g1: accepts ver 1 (f2-FROZEN) AND ver 2 blobs. Both share magic, CRC algorithm,
+// size, and every shared field offset (setNumber sits in v1's zero-padding — see
+// the static_asserts). A v1 blob is MIGRATED: tuned params kept, setNumber
+// defaulted to 1, then re-saved once as ver 2 so the upgrade is one-shot
+// (SETS-G1 §3, per Louis: don't silently wipe tuned units on reflash).
 void paramsLoad() {
   paramsSetDefaults();
+  bool migrate = false;
   if (!prefs.begin("gate", true)) { return; }   // namespace missing → defaults
   PersistBlob b;
   size_t got = prefs.getBytes("params", &b, sizeof(b));
   prefs.end();
   if (got != sizeof(b)) return;
   uint16_t stored = b.crc; b.crc = 0;
-  if (b.magic != PARAM_MAGIC || b.ver != PARAM_VER || crc16((uint8_t*)&b, sizeof(b)) != stored) return;
+  if (b.magic != PARAM_MAGIC || crc16((uint8_t*)&b, sizeof(b)) != stored) return;
+  if (b.ver != PARAM_VER && b.ver != 1) return; // unknown future version → defaults
   params = b.p;
+  if (b.ver == 1) { params.setNumber = 1; migrate = true; }
   clampParams();
+  if (migrate) {
+    paramsSave();                               // one-shot rewrite as a ver-2 blob
+    Serial.println("[param] migrated f2 (v1) blob — tuned params kept, set=1");
+  }
 }
 void paramsSave() {
   PersistBlob b;
@@ -338,6 +373,7 @@ void applyParam(uint16_t pid, uint32_t val) {
     case PID_THRESHOLD_CM:      params.thresholdCm = (uint16_t)val; break;
     case PID_STANDALONE_TMO_MS: params.standaloneTimeoutMs = val; break;
     case PID_EVENT_REBROADCAST: params.rebroadcastN = (uint8_t)val; break;
+    case PID_SET_NUMBER:        params.setNumber = (uint8_t)val; break;   // takes effect NEXT boot
     default: return;                               // reserved / unknown = no-op
   }
   clampParams();
@@ -372,8 +408,7 @@ bool readLuna(int16_t &dist) {
 // ===================== ESP-NOW callbacks ===================================
 void onDataSent(const wifi_tx_info_t *info, esp_now_send_status_t status) { (void)info; (void)status; }
 void onDataRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-  (void)info;
-  v2StageInbound(data, len);   // v2-only: every inbound frame is a v2 frame
+  v2StageInbound(data, len, info->src_addr);   // src MAC rides along for peer tracking
 }
 
 // ===================== event emit ==========================================
@@ -463,8 +498,8 @@ void v2ServiceButtons(unsigned long nowMs) {
     }
   }
   if (b2 && saState == SA_READY && (nowMs - v2B2PressMs) >= SA_M2_HOLD_MIN_MS) {
-    saGo(SA_M2_HOLD);                                  // held long enough: release to start
-  }
+    if (otherGateCount(nowMs) <= 1) saGo(SA_M2_HOLD);  // held long enough: release to start
+  }                                                    // (stray on channel → refuse, SETS-G1 §5)
   if (!b2 && v2B2Last && saState == SA_M2_HOLD) {      // release edge -> GO
     saOnB2Release();
   }
@@ -510,6 +545,8 @@ void v2SendStatusSelf() {
   uint8_t caps = 0x02;               // bit1 has_buttons (assumed on our units)
   if (has_display) caps |= 0x01;     // bit0 has_display (feature-detected)
   if (timeSynced)  caps |= 0x08;     // bit3 time_synced (bit2 buzzer_wired = 0)
+  caps |= (uint8_t)((bootedSetNumber & 0x07) << 4);        // bits4-6: ACTIVE set (g1+)
+  if (params.setNumber != bootedSetNumber) caps |= 0x80;   // bit7: reboot pending
   f[7] = caps;
   if (bleConnected) notifyEvent(f, 8);
   else esp_now_send(bcastMAC, f, 8);
@@ -600,7 +637,9 @@ void v2DoSetParam(const uint8_t* f, uint8_t len) {
   if (!(tgt == v2GateId || tgt == GATE_ID_ALL)) return;
   if (pid == PID_RESTORE_DEFAULTS) { paramsRestoreDefaults(); return; }
   applyParam(pid, val);
-  if (flags & 0x01) paramsSave();
+  // SET_NUMBER is ALWAYS persisted (contract §8.1): the value only has meaning
+  // across a reboot, so a RAM-only write would be semantically void.
+  if ((flags & 0x01) || pid == PID_SET_NUMBER) paramsSave();
 }
 
 // One executor for both origins. fromBle=true (app write) re-broadcasts targeted
@@ -682,20 +721,45 @@ void v2HandleFrame(const uint8_t* f, uint8_t len) {
   }
 }
 
-void v2StageInbound(const uint8_t* d, int len) {
+void v2StageInbound(const uint8_t* d, int len, const uint8_t* srcMac) {
   if (len < 1 || len > 32) return;
   uint8_t nh = (v2RxHead + 1) % V2_RX_SLOTS;
   if (nh == v2RxTail) return;            // full: drop
   memcpy(v2Rx[v2RxHead], d, len);
+  memcpy(v2RxMac[v2RxHead], srcMac, 6);
   v2RxLen[v2RxHead] = (uint8_t)len;
   v2RxHead = nh;
 }
 void v2ProcessInbound() {
   while (v2RxTail != v2RxHead) {
-    peerLastHeardMs = millis();          // any inbound frame = a peer exists
+    notePeerMac(v2RxMac[v2RxTail], millis());   // any inbound frame = that peer is live
     v2HandleFrame(v2Rx[v2RxTail], v2RxLen[v2RxTail]);
     v2RxTail = (v2RxTail + 1) % V2_RX_SLOTS;
   }
+}
+
+// Refresh (or insert, LRU-evicting) the sender in the peer table. Table reads are
+// loop()-side only; writes happen here in loop() context too (staged, not in the
+// recv callback), so there are no concurrency edges.
+void notePeerMac(const uint8_t* mac, unsigned long now) {
+  int free_ = -1, oldest = 0;
+  for (int i = 0; i < PEER_SLOTS; i++) {
+    if (peerLastMs[i] != 0 && memcmp(peerMacs[i], mac, 6) == 0) { peerLastMs[i] = now ? now : 1; return; }
+    if (peerLastMs[i] == 0) { if (free_ < 0) free_ = i; }
+    else if (peerLastMs[i] < peerLastMs[oldest]) oldest = i;
+  }
+  int s = (free_ >= 0) ? free_ : oldest;
+  memcpy(peerMacs[s], mac, 6);
+  peerLastMs[s] = now ? now : 1;
+}
+
+// How many OTHER gates are live on our channel right now. 1 = a normal 2-gate
+// set; >1 = a stray is present (SETS-G1 §5 — arming is refused).
+uint8_t otherGateCount(unsigned long now) {
+  uint8_t n = 0;
+  for (int i = 0; i < PEER_SLOTS; i++)
+    if (peerLastMs[i] != 0 && (now - peerLastMs[i]) < PEER_TIMEOUT_MS) n++;
+  return n;
 }
 
 // ===================== standalone consumer (§12.1 + Mode 1/2 + mirror) =====
@@ -720,7 +784,9 @@ void saGo(SaState s) {
 void saOnB1(unsigned long nowMs) {
   if ((long)(nowMs - saBtnLockMs) < 0) return;
   switch (saState) {
-    case SA_READY:   saMirror = false; saGo(SA_ARMED); break;  // arm Mode 1 (real)
+    case SA_READY:                                             // arm Mode 1 (real) —
+      if (otherGateCount(nowMs) <= 1) { saMirror = false; saGo(SA_ARMED); }
+      break;                          // >1 other = stray on channel → refuse (screen shows Ng!)
     case SA_ARMED:   saGo(SA_READY); break;                    // cancel arm
     case SA_RUNNING: saMirror = false; saGo(SA_READY); break;  // cancel run / stop mirror
     case SA_M2_HOLD: case SA_M2_RUN1: case SA_M2_RUN2:
@@ -747,7 +813,7 @@ void saOnB2Release() {
 // so a stray person walking a gate between reps no longer starts a phantom timer.
 void saOnRunHint(bool armed) {
   if (armed) {
-    if (saState == SA_READY) {
+    if (saState == SA_READY && otherGateCount(millis()) <= 1) {  // stray → mirror refused too
       saMirror = true; saIsM2 = false;
       saTimeoutAtMs = millis() + params.standaloneTimeoutMs;   // self-heal if disarm is lost
       saGo(SA_ARMED);
@@ -799,7 +865,7 @@ void saOnEvent(uint8_t type, bool local, uint32_t us) {
   }
 }
 void saService(unsigned long now) {
-  bool peer   = (peerLastHeardMs != 0) && ((now - peerLastHeardMs) < PEER_TIMEOUT_MS);
+  bool peer   = otherGateCount(now) >= 1;   // any live partner (strays gate ARMING, not READY)
   bool synced = timeSynced;
   // Pre-run states track peer/sync: NO_GATE (go check the 2nd gate) vs SYNCING
   // (wait) vs READY. A lone gate can't split, so READY needs a peer, not just sync.
@@ -824,10 +890,13 @@ void saRender() {
   // redraw key: state + a value (running bucket / result / recent count) so the
   // OLED isn't thrashed. Typography/positions are lifted from gate1_ble b8.
   char key[28];
+  uint8_t others = otherGateCount(millis());                    // g1: live gate count
+  bool    pend   = (params.setNumber != bootedSetNumber);       // g1: reboot pending
   switch (saState) {
     case SA_NO_GATE: strcpy(key, "nogate"); break;
     case SA_SYNCING: strcpy(key, "sync"); break;
-    case SA_READY:   snprintf(key, sizeof(key), "rdy%u", (unsigned)recentCount); break;
+    case SA_READY:   snprintf(key, sizeof(key), "rdy%u_%u_%u", (unsigned)recentCount,
+                              (unsigned)others, pend ? 1u : 0u); break;
     case SA_ARMED:   strcpy(key, "armed"); break;
     case SA_M2_HOLD: strcpy(key, "m2hold"); break;
     case SA_TIMEOUT: strcpy(key, "tmo"); break;
@@ -848,17 +917,30 @@ void saRender() {
   u8g2.setFont(u8g2_font_ncenB08_tr);
   char b[40];
   switch (saState) {
-    case SA_NO_GATE:                              // connecting screen (gate 1 up before gate 2)
-      u8g2.drawStr(0, 10, "not connected yet");
-      u8g2.setFont(u8g2_font_ncenB14_tr); u8g2.drawStr(0, 34, "NO GATE");
-      u8g2.setFont(u8g2_font_ncenB08_tr); u8g2.drawStr(0, 54, "check 2nd gate");
+    case SA_NO_GATE:                              // connecting screen (gate 1 up before gate 2).
+      u8g2.drawStr(0, 10, "not connected yet");   // Each gate NAMES ITS SET here, so a
+      u8g2.setFont(u8g2_font_ncenB14_tr); u8g2.drawStr(0, 34, "NO GATE");   // mismatched-set
+      u8g2.setFont(u8g2_font_ncenB08_tr);                                   // pair is visible
+      sprintf(b, "check 2nd gate   S%u", (unsigned)bootedSetNumber);        // on the glass.
+      u8g2.drawStr(0, 54, b);
       break;
     case SA_SYNCING:
       u8g2.drawStr(0, 10, "not connected yet");
       u8g2.setFont(u8g2_font_ncenB18_tr); u8g2.drawStr(0, 40, "SYNCING");
+      u8g2.setFont(u8g2_font_ncenB08_tr);
+      sprintf(b, "S%u", (unsigned)bootedSetNumber);
+      u8g2.drawStr(112, 60, b);
       break;
-    case SA_READY: {                              // v1 idle screen: header + last 3 runs
-      u8g2.drawStr(0, 10, "READY  B1=M1 B2=M2");
+    case SA_READY: {                              // v1 idle screen: header + last 3 runs.
+      // g1 header: set + live gate count replace the word READY (the runs list makes
+      // the state unambiguous). total != 2 → "!" (stray or missing partner);
+      // pending set change → reboot instruction instead.
+      if (pend)
+        sprintf(b, "S%u>%u  REBOOT GATES", (unsigned)bootedSetNumber, (unsigned)params.setNumber);
+      else
+        sprintf(b, "S%u %ug%s B1=M1 B2=M2", (unsigned)bootedSetNumber, (unsigned)(others + 1),
+                (others + 1) != 2 ? "!" : " ");
+      u8g2.drawStr(0, 10, b);
       u8g2.drawHLine(0, 13, 128);
       int y = 25, shown = 0;
       for (int i = 0; i < RECENT_MAX && i < (int)recentCount && shown < 3; i++, shown++) {
@@ -1005,24 +1087,16 @@ void setup() {
   Wire.setClock(400000);
   has_display = detectDisplay();
   Serial.printf("[boot] display %s\n", has_display ? "detected" : "absent");
-  if (has_display) {
-    u8g2.begin();
-    u8g2.clearBuffer();
-    u8g2.setFont(u8g2_font_ncenB14_tr);
-    u8g2.drawStr(5, 35, "EqualSplit");
-    u8g2.sendBuffer();
-    delay(1500);
-  }
-
-  setLunaFrameRate(250);
+  if (has_display) u8g2.begin();
 
   pinMode(BUTTON1_PIN, INPUT_PULLUP);
   pinMode(BUTTON2_PIN, INPUT_PULLUP);
   pinMode(BUZZER_PIN, OUTPUT);
   digitalWrite(BUZZER_PIN, LOW);
 
-  // Params: load persisted overrides; a held B1 at boot restores defaults (the
-  // non-BLE recovery path for a phone-less unit, §8.1).
+  // Params BEFORE the splash (g1): the splash shows the set number, and the radio
+  // channel derives from the loaded set. A held B1 at boot restores defaults —
+  // incl. Set 1/ch1 the SAME boot — the non-BLE recovery path (§8.1, SETS-G1 §4).
   paramsLoad();
   if (digitalRead(BUTTON1_PIN) == LOW) {
     Serial.println("[boot] B1 held — restoring default params");
@@ -1037,10 +1111,27 @@ void setup() {
     }
   }
   clampParams();
+  bootedSetNumber = params.setNumber;                 // the set this boot runs on
+  espnowChannel   = setToChannel(bootedSetNumber);    // reboot-to-apply: fixed for this boot
+  Serial.printf("[boot] set %u -> ch %u\n", bootedSetNumber, espnowChannel);
+
+  if (has_display) {
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_ncenB14_tr);
+    u8g2.drawStr(5, 35, "EqualSplit");
+    u8g2.setFont(u8g2_font_ncenB08_tr);
+    char sb[10];
+    sprintf(sb, "SET %u", (unsigned)bootedSetNumber);
+    u8g2.drawStr(48, 55, sb);
+    u8g2.sendBuffer();
+    delay(1500);
+  }
+
+  setLunaFrameRate(250);
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);                                         // radio awake for ESP-NOW RX (§15)
-  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);  // pin the shared channel
+  esp_wifi_set_channel(espnowChannel, WIFI_SECOND_CHAN_NONE);   // pin the SET's channel (g1)
 
   esp_err_t macErr = esp_efuse_mac_get_default(myMac);          // eFuse MAC (valid this early)
   Serial.printf("[boot] MAC %02X:%02X:%02X:%02X:%02X:%02X (efuse err=%d)\n",
@@ -1063,13 +1154,13 @@ void setup() {
 
   esp_now_peer_info_t bpeer = {};
   memcpy(bpeer.peer_addr, bcastMAC, 6);
-  bpeer.channel = ESPNOW_CHANNEL;
+  bpeer.channel = espnowChannel;
   bpeer.encrypt = false;
   if (esp_now_add_peer(&bpeer) != ESP_OK) Serial.println("Failed to add broadcast peer");
 
   setupBLE();                                                   // after ESP-NOW (coex, §10)
   WiFi.setSleep(false);                                         // re-assert: BLE coex can re-enable PS
-  esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_channel(espnowChannel, WIFI_SECOND_CHAN_NONE);
 
   saState = SA_SYNCING;
   Serial.println("[boot] ready");

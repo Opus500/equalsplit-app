@@ -228,7 +228,8 @@ is meaningless forever, since firmware is frozen. Default recommendation: implem
 | `0x0006` | `HEARTBEAT_MS` | ms | `1000` | reserved | election/keepalive cadence |
 | `0x0007` | `TIMESYNC_PING_MS` | ms | `1000` | reserved | follower `TIME_SYNC` ping cadence |
 | `0x0008` | `EVENT_REBROADCAST_N` | count | `2` | **wired (F2)** | times each **event** frame (`0x01–0x0F` only) is sent, **spaced ~5–10 ms**; loss mitigation for a dropped standalone finish frame (§12.1.2); clamp `1…5` |
-| `0x0009–0x00FF` | *reserved* | — | — | — | future sensor / link constants |
+| `0x0009` | `SET_NUMBER` | 1–3 | `1` | **wired (g1)** | radio set → channel `{1→ch1, 2→ch6, 3→ch11}` (`docs/SETS-G1.md`). **Always persisted** — the `persist` flag is ignored for this param, since the value only takes effect at the **next boot** (reboot-to-apply). Clamp `1…3` on write **and** NVS load |
+| `0x000A–0x00FF` | *reserved* | — | — | — | future sensor / link constants |
 | `0x0100–0xFFFF` | *reserved* | — | — | — | future / app-experimental |
 
 `STATUS_REPLY` already reports `threshold_cm` and caps; other params are write-mostly (the app
@@ -290,7 +291,9 @@ reply instead of the Status characteristic.
 [4] battery_pct     (0xFF = not sensed / n/a)
 [5] queue_depth
 [6] fw_ver
-[7] caps            bit0 has_display, bit1 has_buttons, bit2 buzzer_wired, bit3 time_synced
+[7] caps            bit0 has_display, bit1 has_buttons, bit2 buzzer_wired, bit3 time_synced,
+                    bits4-6 set_number (g1+: ACTIVE set 1-3; 0 = firmware without sets, i.e.
+                    f2-FROZEN), bit7 reboot_pending (persisted SET_NUMBER ≠ active set)
 ```
 
 ---
@@ -527,6 +530,10 @@ cut over.
 `proto_ver` / `fw_ver` reported in `STATUS_REPLY` (and legacy `Status` during transition).
 End-state `PROTO_VER = 2`. Bump on any frozen-layout change. The app refuses to interpret an
 unknown `proto_ver`.
+
+Builds: `fw_ver 2` = `gate-f2-FROZEN-2026-07-21` (single-set, ch1). `fw_ver 3` = g1
+(channel-per-set, `docs/SETS-G1.md`). `proto_ver` stays **2** for g1 — no frame format changed;
+g1 only wires reserved space (param `0x0009`, caps bits 4–7).
 
 ---
 
