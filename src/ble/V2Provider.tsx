@@ -258,9 +258,9 @@ export function V2Provider({ children }: { children: ReactNode }) {
       setRunning(null);
       setLastRun(run);
       setEngineState(engine.state);
-      // Tell the gates the run ended so their OLED mirror clears (display-only).
-      const d0 = gateRef.current.device;
-      if (d0) sendV2Frame(d0, buildRunHint(GATE_ID_ALL, false)).catch(() => {});
+      // NO disarm hint here: the gate's mirror is in RESULT showing the split —
+      // the readout for whoever is at the finish gate. Firmware auto-clears a
+      // mirror result after ~4s; arm() clears any leftover before the next rep.
       pushLog(`v2 run split=${run.splitMs}ms${run.synced ? '' : ' (unsynced — withheld)'}`);
       if (!expectV1Ref.current) return; // Timer path: no v1 comparison
       runToken.current += 1;
@@ -520,8 +520,13 @@ export function V2Provider({ children }: { children: ReactNode }) {
     setRunning(null);
     engineRef.current.arm();
     setEngineState(engineRef.current.state);
-    // Display-only hint so the gates' OLEDs mirror this run (RUN_HINT 0x37).
-    sendFrame(buildRunHint(GATE_ID_ALL, true)).catch(() => {});
+    // Display-only mirror hints (RUN_HINT 0x37), clear-then-arm IN ORDER: the
+    // gate only mirror-arms from READY, so a re-arm inside the ~4s mirror-RESULT
+    // window needs the clear first or the arm hint is dropped (rep won't mirror).
+    // The clear can never touch a real B1/B2 standalone run (§8.2).
+    sendFrame(buildRunHint(GATE_ID_ALL, false))
+      .then(() => sendFrame(buildRunHint(GATE_ID_ALL, true)))
+      .catch(() => {});
     pushLog('armed (v2, Mode 1)');
   }, [pushLog, sendFrame]);
 
@@ -532,7 +537,9 @@ export function V2Provider({ children }: { children: ReactNode }) {
     setRunning(null);
     engineRef.current.arm();
     setEngineState(engineRef.current.state);
-    sendFrame(buildRunHint(GATE_ID_ALL, true)).catch(() => {});
+    sendFrame(buildRunHint(GATE_ID_ALL, false)) // clear-then-arm, same as arm()
+      .then(() => sendFrame(buildRunHint(GATE_ID_ALL, true)))
+      .catch(() => {});
     try {
       await gateRef.current.arm1();
       pushLog('armed (v1 + v2, Mode 1)');
