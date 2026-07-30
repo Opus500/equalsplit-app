@@ -13,6 +13,7 @@ import { useV2 } from '../ble/V2Provider';
 import type { V2Run } from '../ble/v2';
 import { addRecentAthlete, getRecentAthletes, getSetting, saveRun, setSetting } from '../db/database';
 import { TagPickerModal, formatTags } from '../components/TagPicker';
+import { SetControl } from '../components/SetControl';
 import { runShareLine, shareText } from '../share';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run-v2';
@@ -150,6 +151,9 @@ export default function TimerV2Screen() {
   return (
     <View style={styles.container}>
       <ConnChip />
+      <View style={styles.setRow}>
+        <SetControl />
+      </View>
       <SessionLine />
 
       {/* Optional tag bar — persists across runs; shared with v1. */}
@@ -246,15 +250,12 @@ function SessionLine() {
   const synced = v2.gates.filter((g) => g.timeSynced).length;
   const total = v2.gates.length;
   const ready = v2.phase === 'ready';
-  // Which SET this session controls (g1) — catches connecting to the wrong
-  // set's bridge at a glance when multiple sets are powered.
-  const setNo = v2.gates.find((g) => g.setNumber > 0)?.setNumber;
+  // (The controlled SET is shown prominently by <SetControl /> above.)
   return (
     <View style={styles.sessionRow}>
       <View style={[styles.sdot, ready ? styles.sdotOn : styles.sdotBusy]} />
       <Text style={styles.sessionText}>
         v2 · {v2.phase === 'partial' ? '1 gate (recovery)' : v2.phase}
-        {setNo ? ` · S${setNo}` : ''}
         {total ? ` · ${synced}/${total} synced` : ''}
         {v2.ping ? ` · ping ${v2.ping.rttMs.toFixed(0)}ms` : ''}
       </Text>
@@ -346,6 +347,7 @@ const styles = StyleSheet.create({
   dotBusy: { backgroundColor: '#f59e0b' },
   chipText: { color: '#cbd5e1', fontSize: 13 },
   chipAction: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
+  setRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 6 },
   sdot: { width: 8, height: 8, borderRadius: 4 },
   sdotOn: { backgroundColor: '#22c55e' },

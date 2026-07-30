@@ -9,6 +9,7 @@
 // flag the app runs this alongside v1 to compare the two splits live (§14).
 
 import { sdiff32 } from './clockSync';
+import { base64ToBytes } from './base64';
 import {
   V2Evt,
   V2Link,
@@ -124,6 +125,27 @@ export function parseV2Frame(b: Uint8Array): V2Frame | null {
     default:
       return null; // v1 frame or reserved/unknown — not ours
   }
+}
+
+/** g1-a3 advertises the ACTIVE set in the SCAN-RESPONSE manufacturer data:
+ *  company id 0xFFFF (LE) + one byte = set (1..3) — i.e. the raw field is
+ *  `FF FF 0N` (SETS-G1 §6a). Reads it from a ble-plx `Device.manufacturerData`
+ *  (base64) DURING a scan, so a phone can be steered to the right set BEFORE
+ *  connecting. Returns null for a non-g1-a3 gate, an unreadable field, or a
+ *  scan report that hasn't carried the scan response yet (use an active,
+ *  allow-duplicates scan so the response arrives — see scanForGatesWithData). */
+export function parseAdvSet(manufacturerDataB64: string | null | undefined): number | null {
+  if (!manufacturerDataB64) return null;
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(manufacturerDataB64);
+  } catch {
+    return null;
+  }
+  if (bytes.length < 3) return null;
+  if (bytes[0] !== 0xff || bytes[1] !== 0xff) return null; // company id 0xFFFF LE
+  const set = bytes[2];
+  return set >= 1 && set <= 3 ? set : null;
 }
 
 // ---------------------------------------------------------------------------

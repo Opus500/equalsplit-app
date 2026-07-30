@@ -35,6 +35,24 @@ export function stopScan(): void {
   manager.stopDeviceScan();
 }
 
+/** Scan variant for the SET PICKER only. Uses allowDuplicates so the scan-response
+ *  manufacturer data (the g1-a3 set byte, which is NOT in the primary advert) is
+ *  captured — the first iOS discovery report for a peripheral can lack it, and a
+ *  later duplicate carries it. Kept SEPARATE from scanForGate so the working
+ *  one-tap/auto-reconnect paths (allowDuplicates:false) are untouched. */
+export function scanForGatesWithData(
+  onFound: (device: Device) => void,
+  onError: (e: Error) => void,
+): void {
+  manager.startDeviceScan([UUID.service], { allowDuplicates: true }, (error, device) => {
+    if (error) {
+      onError(error);
+      return;
+    }
+    if (device) onFound(device);
+  });
+}
+
 /** OS-held gate connections (links the native stack kept that the app forgot).
  *  A timed-out connect can complete natively AFTER ble-plx rejects — the gate
  *  honors that phantom link and stops advertising, so scans find nothing until
