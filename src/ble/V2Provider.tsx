@@ -20,11 +20,13 @@ import {
 } from 'react';
 
 import { useGate } from './GateProvider';
+import { useSettings } from '../settings/SettingsProvider';
 import { Evt } from './constants';
 import { sendV2Frame } from './bleClient';
 import {
   parseV2Frame,
   V2RunEngine,
+  StandaloneObserver,
   buildAssignIds,
   buildGetStatus,
   buildPing,
@@ -35,9 +37,18 @@ import {
   PARAM_RESTORE_DEFAULTS,
   type V2Frame,
   type V2Run,
+  type StandaloneRun,
 } from './v2';
+import {
+  DrillEngine,
+  DRILL_L_DRILL,
+  type DrillConfig,
+  type DrillRun,
+  type DrillState,
+} from './drills';
 import { GATE_ID_ALL } from './v2constants';
 import { buildAnchor, gateUsToPhoneMs, type ClockAnchor, type PingSample } from './clockSync';
+import { saveRun } from '../db/database';
 import type { LastResult } from './events';
 
 const perfNow = () =>
@@ -116,6 +127,19 @@ export type V2ContextValue = {
   resetEngine: () => void;
   clearComparisons: () => void;
   gateToPhoneMs: (gateUs: number) => number | null;
+  // Drills (app-owned parameterized engine; firmware untouched). setDrill keeps
+  // the engine's config current (so start-beam tracking uses the right gates)
+  // BEFORE arming; armDrill arms with the given config; cancelDrill resets.
+  drillState: DrillState;
+  drillRunning: { startUs: number; startAtMs: number } | null;
+  drillProgress: { counted: number; countN: number } | null;
+  lastDrillRun: DrillRun | null;
+  setDrill: (config: DrillConfig) => void;
+  armDrill: (config: DrillConfig) => void;
+  cancelDrill: () => void;
+  /** Most recent reconstructed standalone (B1) run — only produced when the
+   *  logStandalone setting is on. The screen that owns saving reads this. */
+  lastStandaloneRun: StandaloneRun | null;
   /** g1 sets (SETS-G1 §4): persist SET_NUMBER on both gates, confirm via
    *  STATUS_REPLY reboot_pending, then instruct a power-cycle. In RECOVERY
    *  (single gate, no ready session) it acks against however many gates reply. */
@@ -128,7 +152,15 @@ const V2Context = createContext<V2ContextValue | null>(null);
 
 export function V2Provider({ children }: { children: ReactNode }) {
   const gate = useGate();
+  const { logStandalone } = useSettings();
   const engineRef = useRef(new V2RunEngine(START_ID, FINISH_ID));
+  const drillRef = useRef(new DrillEngine(DRILL_L_DRILL));
+  const observerRef = useRef(new StandaloneObserver());
+  // Live mirror of the opt-in flag so the event-stream closure reads it fresh.
+  const logStandaloneRef = useRef(logStandalone);
+  logStandaloneRef.current = logStandalone;
+  // Drops a standalone-observer arm that never completes (stray B1, no run).
+  const saTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [activeCount, setActiveCount] = useState(0);
   const active = activeCount > 0;
@@ -143,6 +175,15 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const [log, setLog] = useState<string[]>([]);
   const [gates, setGates] = useState<GateView[]>([]);
   const [running, setRunning] = useState<{ startUs: number; startAtMs: number } | null>(null);
+  const [drillState, setDrillState] = useState<DrillState>('idle');
+  const [drillRunning, setDrillRunning] = useState<{ startUs: number; startAtMs: number } | null>(
+    null,
+  );
+  const [drillProgress, setDrillProgress] = useState<{ counted: number; countN: number } | null>(
+    null,
+  );
+  const [lastDrillRun, setLastDrillRun] = useState<DrillRun | null>(null);
+  const [lastStandaloneRun, setLastStandaloneRun] = useState<StandaloneRun | null>(null);
 
   // Live mirrors (refs) so the async bring-up reads current values, not stale.
   const discoveredRef = useRef<Record<string, number>>({}); // mac -> lastSeenMs
@@ -278,6 +319,53 @@ export function V2Provider({ children }: { children: ReactNode }) {
       setTimeout(() => pairViaLastResult(token, 0), 450);
     };
 
+    // Drills (app-owned parameterized engine) — same event stream, own state.
+    const drill = drillRef.current;
+    drill.onStart = (startUs, startAtMs) => {
+      setDrillRunning({ startUs, startAtMs });
+      setDrillProgress({ counted: 0, countN: drill.config.countN });
+      setDrillState(drill.state);
+    };
+    drill.onCount = (counted, countN) => setDrillProgress({ counted, countN });
+    drill.onRun = (run) => {
+      setDrillRunning(null);
+      setLastDrillRun(run);
+      setDrillState(drill.state);
+      pushLog(`drill ${run.label}: ${run.splitMs}ms${run.synced ? '' : ' (unsynced — withheld)'}`);
+    };
+
+    // Standalone (B1) observer — passive; only arms on a button press when opted
+    // in and both app engines are idle (see the 'button' case below).
+    const observer = observerRef.current;
+    observer.onRun = (run) => {
+      setLastStandaloneRun(run);
+      if (!run.synced) {
+        pushLog(`standalone run withheld (gates not synced)`);
+        return;
+      }
+      // Saved centrally (not per-screen): a B1 run can happen on any tab. Mode 1,
+      // no tags; rawJson marks the source so it's distinguishable in History.
+      pushLog(`standalone run: ${run.splitMs}ms (gate ${run.startGateId}→${run.finishGateId})`);
+      saveRun({
+        mode: 1,
+        totalMs: run.splitMs,
+        split1Ms: 0,
+        split2Ms: 0,
+        status: 'valid',
+        rawJson: JSON.stringify({
+          engine: 'v2',
+          source: 'standalone',
+          startGateId: run.startGateId,
+          finishGateId: run.finishGateId,
+          startUs: run.startUs,
+          finishUs: run.finishUs,
+          splitMs: run.splitMs,
+          synced: run.synced,
+        }),
+        drillType: 'Standalone',
+      }).catch((e) => pushLog(`standalone save failed: ${String(e)}`));
+    };
+
     const off = gate.subscribe((raw, parsed, atMs) => {
       if (expectV1Ref.current && parsed && parsed.type === Evt.Finish) {
         pairV1(parsed.totalMs, atMs, 'FINISH');
@@ -315,6 +403,8 @@ export function V2Provider({ children }: { children: ReactNode }) {
             rebootPending: f.caps.rebootPending,
           };
           engine.setSynced(f.gateId, f.caps.timeSynced);
+          drill.setSynced(f.gateId, f.caps.timeSynced);
+          observer.setSynced(f.gateId, f.caps.timeSynced);
           rebuildGates();
           break;
         case 'pingReply': {
@@ -329,6 +419,20 @@ export function V2Provider({ children }: { children: ReactNode }) {
           if (f.edge === 'break') {
             engine.onBeamBreak(f.gateId, f.micros, atMs);
             setEngineState(engine.state);
+          }
+          // Drills need BOTH edges (start on a CLEAR); the observer ignores clears.
+          drill.ingest(f, atMs);
+          setDrillState(drill.state);
+          observer.onBeam(f.edge, f.gateId, f.micros, atMs);
+          break;
+        case 'button':
+          // A gate button (B1/B2) was pressed. If opted in AND no app-driven run
+          // is active, observe a standalone Mode-1 run; re-arms on each press and
+          // self-drops after a window if no run completes (stray press).
+          if (logStandaloneRef.current && engine.state === 'idle' && drill.state === 'idle') {
+            observer.arm();
+            if (saTimerRef.current) clearTimeout(saTimerRef.current);
+            saTimerRef.current = setTimeout(() => observer.reset(), 35000);
           }
           break;
         default:
@@ -537,6 +641,14 @@ export function V2Provider({ children }: { children: ReactNode }) {
         engineRef.current.reset();
         setEngineState(engineRef.current.state);
         setRunning(null);
+        // Drill + standalone engines reset on disconnect too (no latched state
+        // survives a link loss); last results are kept for display, like Mode 1.
+        drillRef.current.reset();
+        observerRef.current.reset();
+        if (saTimerRef.current) clearTimeout(saTimerRef.current);
+        setDrillState('idle');
+        setDrillRunning(null);
+        setDrillProgress(null);
         setPhase('idle');
       }
       return;
@@ -570,6 +682,13 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const arm = useCallback(async () => {
     expectV1Ref.current = false;
     setRunning(null);
+    // At most ONE app engine armed at a time: a Mode-1 arm cancels any lingering
+    // drill arm (and the standalone watch), so a forgotten arm can't later fire.
+    observerRef.current.reset();
+    drillRef.current.reset();
+    setDrillState('idle');
+    setDrillRunning(null);
+    setDrillProgress(null);
     engineRef.current.arm();
     setEngineState(engineRef.current.state);
     // Display-only mirror hints (RUN_HINT 0x37), clear-then-arm IN ORDER: the
@@ -587,6 +706,11 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const armCompare = useCallback(async () => {
     expectV1Ref.current = true;
     setRunning(null);
+    observerRef.current.reset();
+    drillRef.current.reset();
+    setDrillState('idle');
+    setDrillRunning(null);
+    setDrillProgress(null);
     engineRef.current.arm();
     setEngineState(engineRef.current.state);
     sendFrame(buildRunHint(GATE_ID_ALL, false)) // clear-then-arm, same as arm()
@@ -608,6 +732,38 @@ export function V2Provider({ children }: { children: ReactNode }) {
     // Clear any mirror-arm on the gates (display-only).
     sendFrame(buildRunHint(GATE_ID_ALL, false)).catch(() => {});
   }, [sendFrame]);
+
+  // ---- drills (app-owned parameterized engine) --------------------------
+  // No gate command: v2 gates emit edges always, so a drill is purely the app-
+  // side engine interpreting them (no RUN_HINT — the gate stays on its idle/
+  // standalone screen; all drill UI is on the phone).
+  const setDrill = useCallback((config: DrillConfig) => {
+    drillRef.current.setConfig(config);
+  }, []);
+
+  const armDrill = useCallback(
+    (config: DrillConfig) => {
+      // Supersede the standalone watch AND any Mode-1 arm (mutual exclusion).
+      observerRef.current.reset();
+      engineRef.current.reset();
+      setEngineState(engineRef.current.state);
+      setRunning(null);
+      drillRef.current.setConfig(config);
+      drillRef.current.arm();
+      setDrillState(drillRef.current.state);
+      setDrillRunning(null);
+      setDrillProgress(null);
+      pushLog(`drill armed: ${config.label} (lockout ${config.lockoutMs}ms)`);
+    },
+    [pushLog],
+  );
+
+  const cancelDrill = useCallback(() => {
+    drillRef.current.reset();
+    setDrillState(drillRef.current.state);
+    setDrillRunning(null);
+    setDrillProgress(null);
+  }, []);
 
   const clearComparisons = useCallback(() => setComparisons([]), []);
 
@@ -690,6 +846,14 @@ export function V2Provider({ children }: { children: ReactNode }) {
     resetEngine,
     clearComparisons,
     gateToPhoneMs,
+    drillState,
+    drillRunning,
+    drillProgress,
+    lastDrillRun,
+    setDrill,
+    armDrill,
+    cancelDrill,
+    lastStandaloneRun,
     changeSet,
     restoreDefaults,
   };

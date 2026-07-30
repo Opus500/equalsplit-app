@@ -307,3 +307,95 @@ export class V2RunEngine {
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Standalone-run observer (APP-OWNED) — logs a gate's own B1 Mode-1 run
+// ---------------------------------------------------------------------------
+
+export type StandaloneRun = {
+  startGateId: number;
+  finishGateId: number;
+  startUs: number;
+  finishUs: number;
+  splitMs: number;
+  synced: boolean;
+  startAtMs: number;
+  finishAtMs: number;
+};
+
+export type StandaloneState = 'idle' | 'armed' | 'running';
+
+/**
+ * Reconstructs a STANDALONE Mode-1 run (B1 pressed on the gate, no app arming)
+ * from the raw event stream, so a gate-run made while the phone is connected can
+ * still be logged. It mirrors the firmware's standalone pairing EXACTLY (gate.ino
+ * `saOnEvent`): the first BEAM_BREAK after the trigger is the start (whichever
+ * gate), the first break from the OTHER gate is the finish, and
+ * `split = round(sdiff32/1000)`. Same gate-clock micros + same rounding, so the
+ * log matches the gate's own OLED result to the millisecond.
+ *
+ * CAVEAT (why the provider keeps this OPT-IN, default OFF): B1 and B2 emit the
+ * SAME BUTTON_PRESS (flags 0), so the app cannot distinguish a Mode-1 arm from a
+ * Mode-2 press — a Mode-2 standalone would be mis-reconstructed as its gate→gate
+ * leg. The provider only ARMS this when both app engines are idle (so it never
+ * shadows an app-driven run) and drops a stale arm after a timeout window.
+ */
+export class StandaloneObserver {
+  state: StandaloneState = 'idle';
+  private synced = new Map<number, boolean>();
+  private startGateId = 0;
+  private startUs = 0;
+  private startAtMs = 0;
+  onRun: ((run: StandaloneRun) => void) | null = null;
+
+  setSynced(gateId: number, synced: boolean): void {
+    this.synced.set(gateId, synced);
+  }
+
+  /** A BUTTON_PRESS arrived and the provider decided to observe. Re-arms on each
+   *  trigger (most recent wins), matching the gate re-arming its own state. */
+  arm(): void {
+    this.state = 'armed';
+  }
+
+  reset(): void {
+    this.state = 'idle';
+  }
+
+  /** Feed one BEAM edge. Returns a completed run if this finished one (also onRun).
+   *  Requires the start and finish to be DISTINCT gate ids, so it self-guards to
+   *  a brought-up session (unassigned gates are both id 0 → never completes). */
+  onBeam(
+    edge: 'break' | 'clear',
+    gateId: number,
+    micros: number,
+    atMs: number,
+  ): StandaloneRun | null {
+    if (edge !== 'break') return null; // clears are run-irrelevant (matches firmware)
+    if (this.state === 'armed') {
+      this.startGateId = gateId;
+      this.startUs = micros;
+      this.startAtMs = atMs;
+      this.state = 'running';
+      return null;
+    }
+    if (this.state === 'running' && gateId !== this.startGateId) {
+      const run: StandaloneRun = {
+        startGateId: this.startGateId,
+        finishGateId: gateId,
+        startUs: this.startUs,
+        finishUs: micros,
+        splitMs: Math.round(sdiff32(micros, this.startUs) / 1000),
+        // Firmware only produces a standalone run when both gates are synced
+        // (SA_READY needs it), so trust that unless a status says otherwise.
+        synced: (this.synced.get(this.startGateId) ?? true) && (this.synced.get(gateId) ?? true),
+        startAtMs: this.startAtMs,
+        finishAtMs: atMs,
+      };
+      this.state = 'idle';
+      this.onRun?.(run);
+      return run;
+    }
+    return null;
+  }
+}

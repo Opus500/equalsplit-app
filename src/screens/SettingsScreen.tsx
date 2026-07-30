@@ -49,6 +49,8 @@ export default function SettingsScreen() {
     setDevMode,
     useV2Engine,
     setUseV2Engine,
+    logStandalone,
+    setLogStandalone,
   } = useSettings();
   const gate = useGate();
   const connected = gate.status === 'connected';
@@ -84,6 +86,24 @@ export default function SettingsScreen() {
         <Text style={styles.note}>
           Off shows clean results only. On reveals the ±X accuracy, clock-sync detail, raw Mode 2
           split values, and the Debug tab. Times are always measured and saved either way.
+        </Text>
+      </Section>
+
+      <Section title="Log gate (standalone) runs">
+        <View style={styles.devRow}>
+          <Text style={styles.devLabel}>Save runs started with the gate&apos;s B1 button</Text>
+          <Switch
+            value={logStandalone}
+            onValueChange={setLogStandalone}
+            trackColor={{ false: '#243042', true: '#1d4ed8' }}
+            thumbColor="#e2e8f0"
+          />
+        </View>
+        <Text style={styles.note}>
+          When on, a Mode-1 run you start on the gate itself (B1) is reconstructed from the event
+          stream and saved to history while the phone is connected — it never touches app-armed
+          runs. Leave off unless you want it: the gate can&apos;t tell the app B1 from B2, so a
+          Mode-2 (reaction) standalone run would be logged as its gate-to-gate leg.
         </Text>
       </Section>
 

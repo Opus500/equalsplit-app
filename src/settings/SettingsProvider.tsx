@@ -49,12 +49,18 @@ type SettingsValue = {
   // Dev-only: run the main Timer on the v2 raw-event engine (Mode-1) instead of
   // the v1 pipeline. Default OFF while v2 is being brought to parity (Stage 2).
   useV2Engine: boolean;
+  // Opt-in (default OFF): reconstruct + log a gate's own B1 standalone Mode-1 run
+  // from the event stream while connected. OFF by default because B1/B2 emit the
+  // same BUTTON_PRESS, so a Mode-2 standalone would be mis-logged — see
+  // StandaloneObserver in v2.ts. Never interferes with app-armed runs.
+  logStandalone: boolean;
   setReactionOffsetMs: (ms: number) => void;
   setMeasuredAudioLatencyMs: (ms: number) => void;
   setCorrectionMode: (m: CorrectionMode) => void;
   addLatencySample: (s: LatencySample) => void;
   setDevMode: (on: boolean) => void;
   setUseV2Engine: (on: boolean) => void;
+  setLogStandalone: (on: boolean) => void;
 };
 
 const SettingsContext = createContext<SettingsValue | null>(null);
@@ -67,6 +73,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   const [latencySamples, setLatencySamples] = useState<LatencySample[]>([]);
   const [devMode, setDev] = useState(false);
   const [useV2Engine, setV2Eng] = useState(false);
+  const [logStandalone, setLogSA] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -77,6 +84,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         if (m === 'fixed' || m === 'synced') setMode(m);
         setDev((await getSetting('dev_mode')) === '1');
         setV2Eng((await getSetting('use_v2_engine')) === '1');
+        setLogSA((await getSetting('log_standalone')) === '1');
       } catch {
         /* keep defaults */
       } finally {
@@ -116,6 +124,11 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     setSetting('use_v2_engine', on ? '1' : '0').catch(() => {});
   }, []);
 
+  const setLogStandalone = useCallback((on: boolean) => {
+    setLogSA(on);
+    setSetting('log_standalone', on ? '1' : '0').catch(() => {});
+  }, []);
+
   return (
     <SettingsContext.Provider
       value={{
@@ -126,12 +139,14 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         latencySamples,
         devMode,
         useV2Engine,
+        logStandalone,
         setReactionOffsetMs,
         setMeasuredAudioLatencyMs,
         setCorrectionMode,
         addLatencySample,
         setDevMode,
         setUseV2Engine,
+        setLogStandalone,
       }}
     >
       {children}

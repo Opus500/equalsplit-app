@@ -262,8 +262,12 @@ g1-scoped):
 a2 (channel var + param wiring + caps bits + membership/per-MAC table + OLED set/count/pending +
 arm-refusal) + a3 (scan-response mfg-data, ~10 lines): estimated **~1–3 KB** code+strings over the
 frozen f2 baseline. From 91%, comfortably inside the headroom we refused to trim at freeze.
-**TODO — record the real number from the a3 compile here** (Louis to report; this is the final g1
-delta line for the record).
+
+**Recorded (a3 compile, Louis 2026-07-30):** total **1,202,724 bytes = 91%**, **~3.5 KB over the
+frozen f2 build**. The whole independent-sets capability (a1→a3: channel-per-set, SET_NUMBER param +
+NVS migration, caps bits, membership filter + per-MAC table, OLED set/count/pending, arm-refusal,
+and the scan-response set byte) cost ~3.5 KB — the headroom we declined to trim at the f2 freeze
+absorbed it with room to spare. This is the final g1 delta line for the record.
 
 ## 8. §18 re-validation — honest scope ("§18-g1")
 
