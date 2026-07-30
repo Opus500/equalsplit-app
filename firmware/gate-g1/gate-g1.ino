@@ -14,7 +14,7 @@
 //
 // BUMP FW_BUILD every change. __DATE__/__TIME__ auto-update only on a REAL
 // recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate-g1-a1 (channel-per-set)"
+#define FW_BUILD "gate-g1-a2 (membership filter)"
 // ============================================================================
 
 #include <Wire.h>
@@ -122,13 +122,21 @@ uint32_t tsMinRtt = 0xFFFFFFFFUL;
 uint32_t tsSeq = 0;
 unsigned long lastTsPingMs = 0, lastTsResetMs = 0;
 
-// g1: per-MAC peer tracking (SETS-G1 §5) — keyed on the RADIO-level sender MAC
-// (esp_now_recv_info.src_addr) of every inbound frame, so no payload parsing and
-// no frame change. Feeds both the NO_GATE/SYNCING distinction (§12.1.1: any live
-// peer) and the stray-gate defense (>1 "other" on our channel → refuse to arm).
-#define PEER_SLOTS 4                       // 1 expected partner + room for strays
+// g1-a2: membership + liveness (SETS-G1 §5b). The a1 bench test proved the
+// channel is a FILTER (~25-40dB), not a wall — at close range the radio delivers
+// FCS-valid frames from the other set's channel, which poisoned the count, the
+// election (noteMac ate leaked heartbeats), and threatened standalone pairing.
+// Fix: heartbeats carry the sender's set ([7], contract §10); receivers classify
+// each MAC and drop every non-heartbeat frame from a non-member sender.
+// TWO CLOCKS, deliberately separate: liveness (count/NO_GATE/refusal) uses the
+// 5s window; classification (member vs foreign) is STICKY for the whole boot —
+// sets can't change without a reboot (reboot-to-apply), so silence carries no
+// classification information. A 6s-silent partner drops from the COUNT but its
+// next frame still passes the FILTER; it can never be misread as foreign.
+#define PEER_SLOTS 6                       // partner + strays + foreign-set gates
 uint8_t       peerMacs[PEER_SLOTS][6];
-unsigned long peerLastMs[PEER_SLOTS];      // 0 = empty slot
+uint8_t       peerSet[PEER_SLOTS];         // classified set (sticky; from heartbeats)
+unsigned long peerLastMs[PEER_SLOTS];      // liveness stamp; 0 = empty slot
 const unsigned long PEER_TIMEOUT_MS = 5000;
 
 // ===================== runtime params + NVS persistence (§8.1) =============
@@ -265,7 +273,9 @@ void v2HandleCommand();
 void v2HandleFrame(const uint8_t* f, uint8_t len);
 void v2StageInbound(const uint8_t* d, int len, const uint8_t* srcMac);
 void v2ProcessInbound();
-void notePeerMac(const uint8_t* mac, unsigned long now);
+int findPeer(const uint8_t* mac);
+void notePeerHeartbeat(const uint8_t* mac, uint8_t set, unsigned long now);
+int8_t peerVerdict(const uint8_t* mac, unsigned long now);
 uint8_t otherGateCount(unsigned long now);
 void saGo(SaState s);
 void saOnB1(unsigned long nowMs);
@@ -521,10 +531,11 @@ void v2ServiceHeartbeat(unsigned long nowMs) {
   unsigned long iv = (v2GateId == 0) ? 1000UL : 5000UL;
   if ((long)(nowMs - lastHeartbeatMs) < (long)iv) return;
   lastHeartbeatMs = nowMs;
-  uint8_t f[7];
+  uint8_t f[8];
   f[0] = V2_HEARTBEAT; memcpy(&f[1], myMac, 6);
-  esp_now_send(bcastMAC, f, 7);
-  notifyEvent(f, 7);
+  f[7] = bootedSetNumber;                  // membership tag (contract §10, g1-a2)
+  esp_now_send(bcastMAC, f, 8);
+  notifyEvent(f, 8);
 }
 
 void v2SendPingReply(uint32_t appMicros) {
@@ -704,9 +715,8 @@ void v2HandleFrame(const uint8_t* f, uint8_t len) {
     return;
   }
   switch (t) {
-    case V2_HEARTBEAT:
-      if (len >= 7) { noteMac(&f[1]); notifyEvent(f, 7); }
-      break;
+    // V2_HEARTBEAT never reaches here — it is consumed by the membership front
+    // door in v2ProcessInbound (classify → same-set only: noteMac + relay).
     case V2_TIME_SYNC:
       if (len >= 14 && f[1] == TS_PONG) { if (!isMaster) v2ApplyPong(f); }
       else if (len >= 10 && f[1] == TS_PING) { if (isMaster) v2SendPong(f); }
@@ -730,35 +740,82 @@ void v2StageInbound(const uint8_t* d, int len, const uint8_t* srcMac) {
   v2RxLen[v2RxHead] = (uint8_t)len;
   v2RxHead = nh;
 }
+// The membership front door (SETS-G1 §5b). Heartbeats are ALWAYS processed —
+// they are the classifier; a foreign heartbeat classifies its sender and STOPS
+// (no election noteMac, no BLE relay, no count). Every other frame is dropped
+// unless its radio-level sender is a classified same-set member. This sits
+// before the standalone consumer, the election, the relay, and the count, so
+// cross-channel leakage cannot reach any of them. Runs loop()-side (frames +
+// src MACs are staged by the recv callback), so no concurrency edges.
 void v2ProcessInbound() {
   while (v2RxTail != v2RxHead) {
-    notePeerMac(v2RxMac[v2RxTail], millis());   // any inbound frame = that peer is live
-    v2HandleFrame(v2Rx[v2RxTail], v2RxLen[v2RxTail]);
+    uint8_t* f   = v2Rx[v2RxTail];
+    uint8_t  len = v2RxLen[v2RxTail];
+    uint8_t* src = v2RxMac[v2RxTail];
+    unsigned long now = millis();
+    if (f[0] == V2_HEARTBEAT && len >= 7) {
+      uint8_t hbSet = (len >= 8) ? f[7] : 1;   // 7-byte (f2) heartbeat = implicit Set 1
+      notePeerHeartbeat(src, hbSet, now);
+      if (hbSet == bootedSetNumber) {          // same set: election + app discovery
+        noteMac(&f[1]);
+        notifyEvent(f, len);
+      }
+    } else if (peerVerdict(src, now) == 1) {
+      v2HandleFrame(f, len);                   // same-set member: full processing
+    }                                          // foreign/unknown sender: dropped
     v2RxTail = (v2RxTail + 1) % V2_RX_SLOTS;
   }
 }
 
-// Refresh (or insert, LRU-evicting) the sender in the peer table. Table reads are
-// loop()-side only; writes happen here in loop() context too (staged, not in the
-// recv callback), so there are no concurrency edges.
-void notePeerMac(const uint8_t* mac, unsigned long now) {
-  int free_ = -1, oldest = 0;
-  for (int i = 0; i < PEER_SLOTS; i++) {
-    if (peerLastMs[i] != 0 && memcmp(peerMacs[i], mac, 6) == 0) { peerLastMs[i] = now ? now : 1; return; }
-    if (peerLastMs[i] == 0) { if (free_ < 0) free_ = i; }
-    else if (peerLastMs[i] < peerLastMs[oldest]) oldest = i;
-  }
-  int s = (free_ >= 0) ? free_ : oldest;
-  memcpy(peerMacs[s], mac, 6);
-  peerLastMs[s] = now ? now : 1;
+int findPeer(const uint8_t* mac) {
+  for (int i = 0; i < PEER_SLOTS; i++)
+    if (peerLastMs[i] != 0 && memcmp(peerMacs[i], mac, 6) == 0) return i;
+  return -1;
 }
 
-// How many OTHER gates are live on our channel right now. 1 = a normal 2-gate
-// set; >1 = a stray is present (SETS-G1 §5 — arming is refused).
+// Classify (insert/update) a sender from its HEARTBEAT — the only frame that
+// creates table entries. Classification is sticky (§5b two-clock rule); only a
+// new heartbeat declaring a different set re-classifies (that gate rebooted).
+void notePeerHeartbeat(const uint8_t* mac, uint8_t set, unsigned long now) {
+  if (now == 0) now = 1;
+  int i = findPeer(mac);
+  if (i >= 0) { peerSet[i] = set; peerLastMs[i] = now; return; }
+  int slot = -1;
+  for (int k = 0; k < PEER_SLOTS && slot < 0; k++)   // empty slot first
+    if (peerLastMs[k] == 0) slot = k;
+  for (int k = 0; k < PEER_SLOTS && slot < 0; k++)   // then stale foreign
+    if (peerSet[k] != bootedSetNumber && (now - peerLastMs[k]) >= PEER_TIMEOUT_MS) slot = k;
+  for (int k = 0; k < PEER_SLOTS && slot < 0; k++)   // then any foreign
+    if (peerSet[k] != bootedSetNumber) slot = k;
+  if (slot < 0) {                                    // all live members: oldest
+    slot = 0;
+    for (int k = 1; k < PEER_SLOTS; k++) if (peerLastMs[k] < peerLastMs[slot]) slot = k;
+  }
+  memcpy(peerMacs[slot], mac, 6);
+  peerSet[slot] = set;
+  peerLastMs[slot] = now;
+}
+
+// Front-door verdict for NON-heartbeat frames: -1 unknown, 0 foreign, 1 member.
+// Unknown senders are dropped by the caller — accepting them would defeat the
+// filter, and the only exposure is the seconds after our own boot, during which
+// the consumer is still NO_GATE/SYNCING (READY needs a live classified member).
+// A member's liveness refreshes on ANY of its frames, not just heartbeats.
+int8_t peerVerdict(const uint8_t* mac, unsigned long now) {
+  int i = findPeer(mac);
+  if (i < 0) return -1;
+  if (peerSet[i] != bootedSetNumber) return 0;
+  peerLastMs[i] = now ? now : 1;
+  return 1;
+}
+
+// How many OTHER same-set gates are live right now. 1 = a normal 2-gate set;
+// >1 = a true same-set stray (arming is refused). Foreign sets never count.
 uint8_t otherGateCount(unsigned long now) {
   uint8_t n = 0;
   for (int i = 0; i < PEER_SLOTS; i++)
-    if (peerLastMs[i] != 0 && (now - peerLastMs[i]) < PEER_TIMEOUT_MS) n++;
+    if (peerLastMs[i] != 0 && peerSet[i] == bootedSetNumber &&
+        (now - peerLastMs[i]) < PEER_TIMEOUT_MS) n++;
   return n;
 }
 

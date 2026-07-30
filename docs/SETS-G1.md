@@ -1,11 +1,12 @@
 # g1 — Independent gate sets (channel-per-set)
 
-> **Status: APPROVED (Louis, 2026-07-21, with the §3 migration amendment) and BUILT —
-> `gate-g1-a1 (channel-per-set)` in `firmware/gate-g1/gate-g1.ino`, plus app support
-> (Lab set-change flow). NOT yet hardware-validated: §8's §18-g1 pass is pending and
-> non-negotiable (full bench day on ch6, not a smoke test).** The frozen build
-> `firmware/gate/gate.ino` (`gate-f2-FROZEN-2026-07-21`) is untouched and stays the
-> validated single-set fallback. The §2 contract delta is applied to `docs/BLE-CONTRACT.md`.
+> **Status: at `gate-g1-a2 (membership filter)` in `firmware/gate-g1/gate-g1.ino`.**
+> a1 passed the two-set DATA isolation test on hardware (2026-07-29) but exposed close-range
+> cross-channel leakage poisoning the peer count and — latently — the election (§5a); a2 adds
+> the set-tagged-heartbeat membership filter (§5b, approved by Louis). §8's §18-g1 pass is
+> pending and non-negotiable (full bench day on ch6, incl. the named election-poisoning check).
+> The frozen build `firmware/gate/gate.ino` (`gate-f2-FROZEN-2026-07-21`) is untouched and
+> stays the validated single-set fallback. The §2 contract delta is applied to BLE-CONTRACT.md.
 
 **Requirement.** A few independent 2-gate sets must run in the same radio space without
 cross-talk (election, time-sync, event pairing, standalone all currently bleed across sets on
@@ -64,9 +65,14 @@ compatible reserved-space extension, same philosophy as the reserved param ids.
 
 **2c. `fw_ver` (§17): g1 reports `fw_ver = 3`.** `proto_ver` stays **2** — no frame format changes.
 
-**Explicitly unchanged:** the 7-byte event frame (incl. `flags` still reserved-0), heartbeat
-(stays 7 bytes — under group-ID it would have had to widen, since bytes 1–6 are all MAC),
-TIME_SYNC payload, all command/reply layouts, GATT, legacy-reserved ranges.
+**2c. `HEARTBEAT` gains the set tag (a2, contract §10):** g1 heartbeats are 8 bytes,
+`[7] = set_number`; a 7-byte heartbeat (f2) reads as implicit Set 1. HEARTBEAT is a link frame —
+payload firmware-internal by contract, same rule as TIME_SYNC — so this is NOT a frozen-frame
+change. It exists because bench testing proved the channel is a filter, not a wall (§5a).
+
+**Explicitly unchanged:** the **7-byte event frame — byte-identical, no group byte, ever**
+(the deliberate line between this and the rejected group-ID design), TIME_SYNC payload,
+all command/reply layouts, GATT, legacy-reserved ranges.
 
 ## 3. NVS, boot, and the f2→g1 upgrade  *(amended per Louis 2026-07-21: migrate, don't discard)*
 
@@ -117,14 +123,51 @@ broadcast/ack/auto-revert handshake state machine, i.e. exactly the moving-parts
 was chosen to avoid. Skipped; B1-boot-restore is the only no-phone path, and it only goes *to*
 Set 1.
 
-## 5. Stray-gate defense (decision 4)
+## 5. Stray-gate defense (decision 4) — REVISED a2: membership, not raw RX
 
-Channel-per-set has no group byte, so a stray gate on the same channel is indistinguishable on
-the wire. The defense is **counting**, and the count comes for free at the radio layer:
+### 5a. Why revised — the a1 bench finding (2026-07-29)
 
-- **Per-MAC peer table** keyed on `esp_now_recv_info.src_addr` (the radio-level sender MAC on
-  *every* inbound frame — no payload parsing, no frame change). 4 slots, LRU, expiry =
-  `PEER_TIMEOUT_MS` (5 s). Replaces the single `peerLastHeardMs`. `otherCount` = live entries.
+The a1 two-set isolation test passed for **data** but exposed the premise flaw: at bench range
+(radios inches apart) the channel is a **filter (~25–40 dB), not a wall** — the receiver
+intermittently demodulates FCS-valid frames from the other set's channel. Everything fed from
+raw RX was contaminated: (1) the peer count fluctuated 2–4 → stray-refusal locked out the
+standalone buttons on phantom peers; (2) **election poisoning (the serious one):** `noteMac`
+consumed leaked foreign heartbeats — the a1 data pass held only because the MAC ordering was
+favorable; a foreign set holding the lowest MAC would silently demote a set's true master and
+kill its time-sync; (3) leaked foreign `BEAM_BREAK`s could false-finish a standalone run
+(origin-keyed = any "received" beam); (4) leaked `ASSIGN_IDS` could re-id the other set;
+(5) the bridge relayed foreign heartbeats to the app ("2/4 connected"). Rejected fixes: RSSI
+(cannot separate near-foreign from far-partner — no threshold works for both), advisory-only
+count (the count was *honest* — audible foreign gates genuinely threaten standalone data),
+group-ID-in-every-frame (reopens the frozen event frame; rejected at spec time and stays
+rejected). At field separation the leakage largely vanishes, but demo day is the close-range case.
+
+### 5b. The a2 design: set-tagged heartbeats + sender-MAC membership filter
+
+- **Heartbeats carry the set** (`[7]`, §2c). Receivers build a **membership table**:
+  MAC → `{set, lastHeardMs}`. The **frozen event frame is untouched** — membership is learned
+  from the one unfrozen link frame and applied to everything else **by radio-level
+  `src_addr`** (already captured per frame; no payload parsing).
+- **Front-door rule:** heartbeats are always processed (they are the classifier; foreign ones
+  classify-and-stop — no election `noteMac`, no relay, no count). Every other frame is
+  **dropped unless its sender is a classified same-set member**. This sits before the
+  standalone consumer, the election, the BLE relay, and the count — all five contamination
+  paths above close at once.
+- **Two clocks (deliberate — do not merge them):** *liveness* (count / NO_GATE / arm-refusal)
+  keeps the 5 s window; *classification* (member vs foreign) is **sticky for the whole boot** —
+  a set cannot change without a reboot (reboot-to-apply), and a rebooted gate re-heartbeats
+  within ~1 s, so silence carries no classification information. A partner silent 6 s drops
+  from the *count* but its next frame still passes the *filter*; it can never be re-treated as
+  foreign. Re-classification happens only via a new heartbeat declaring a different set.
+- **Unknown MACs** (no heartbeat heard yet this boot) are **dropped**: accepting them would
+  defeat the filter, and the only exposure is the few seconds after our own boot — during which
+  the consumer is still in `NO_GATE`/`SYNCING` (READY requires a live classified member), so
+  nothing real is lost. Unknown-sender frames are not tabled; only heartbeats insert entries.
+- **Table:** 6 slots (2 gates + strays), LRU-evict preferring stale-foreign, then foreign,
+  never a live same-set member.
+- **Mixed-era caveat (honest):** the filter protects the gate running it. f2/a1 gates near a
+  foreign set have no filter of their own; full close-range protection = all co-located gates
+  on ≥ a2.
 - **OLED:** set number on the boot splash, `NO GATE`, `SYNCING`, and `READY` screens (`S2`).
   `READY` also shows the live gate count; total ≠ 2 → warning glyph (`S2 3g ⚠`). A pending
   reboot shows `S1→2 REBOOT`. (Exact pixel layout is an implementation detail; the *requirement*
@@ -175,15 +218,24 @@ channel/coex corners we didn't test. So g1 earns its own freeze pass:
   defaults), always-persist SET_NUMBER, RESTORE→Set 1, garbage-set→clamp.
 - Reset soak on g1 (new boot-path code; same accepted power-class residuals as §18).
 
-**New items:**
-- **Isolation:** two sets running reps *simultaneously* side-by-side — zero cross events in the
-  app log, correct standalone splits on both, elections independent.
+**New items (a2 pass conditions per Louis, 2026-07-29):**
+- **Isolation re-run (bench range):** two sets running reps simultaneously — zero cross events
+  in the app log, correct standalone splits on both, and **all four OLEDs sit at `2g` steady,
+  not fluctuating**.
+- **Election-poisoning check (by name):** with both sets powered at bench range, each set
+  elects **its own** master, and **neither set's gates ever print the other set's MAC as the
+  lowest-MAC target in their `[v2] election ->` serial line**. This is the direct regression
+  test for the a1 finding that the data pass was MAC-ordering luck.
+- **Same-set stray:** a third gate deliberately configured to the SAME set → OLEDs show `3g!`,
+  B1/B2/mirror arms refused; power it off → arms restore within ~5 s.
+- **Membership stickiness:** silence a partner >5 s mid-session (block its beam/heartbeat path,
+  not power) — count drops, but on resume its first frame is accepted (no foreign
+  misclassification, no dropped first event).
 - **Set-change flow:** happy path; deliberate missed-write (kill the remote before relay) →
   pending-ack catches it → retry; cycle-one-gate split → visible + heals; post-reboot stray
   rescued over direct BLE.
-- **Stray defense:** third gate powered on-channel → count `3g ⚠`, B1/B2/mirror arms refused;
-  power it off → arms restore within ~5 s.
-- **Mixed f2+g1 pair on Set 1** works as a normal set.
+- **Mixed f2+g1 pair on Set 1** works as a normal set (a2: the f2 gate's 7-byte heartbeats
+  classify as implicit Set 1 — verify the a2 gate counts and pairs with it normally).
 
 **Not reopened:** frame parsing/format (unchanged), `sdiff32`/wrap *arithmetic* (channel-blind —
 the ch6 soak still exercises the wrap window as RF), GATT, RUN_HINT semantics, v1 deletion.

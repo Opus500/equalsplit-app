@@ -57,7 +57,7 @@ export type V2Frame =
   | { kind: 'beam'; edge: 'break' | 'clear'; gateId: number; micros: number; flags: number }
   | { kind: 'buzzer'; gateId: number; micros: number; flags: number }
   | { kind: 'button'; gateId: number; micros: number; flags: number }
-  | { kind: 'heartbeat'; mac: string }
+  | { kind: 'heartbeat'; mac: string; setNumber: number | null }
   | { kind: 'pingReply'; appMicros: number; gateMicros: number }
   | {
       kind: 'status';
@@ -105,7 +105,8 @@ export function parseV2Frame(b: Uint8Array): V2Frame | null {
       return { kind: 'button', gateId: b[1], micros: u32(b, 2), flags: b[6] };
     case V2Link.Heartbeat:
       if (b.length < 7) return null;
-      return { kind: 'heartbeat', mac: macHex(b, 1) };
+      // g1-a2+ heartbeats carry the sender's set in [7] (§10); 7-byte = f2/pre-sets.
+      return { kind: 'heartbeat', mac: macHex(b, 1), setNumber: b.length >= 8 ? b[7] : null };
     case V2Reply.PingReply:
       if (b.length < 9) return null;
       return { kind: 'pingReply', appMicros: u32(b, 1), gateMicros: u32(b, 5) };

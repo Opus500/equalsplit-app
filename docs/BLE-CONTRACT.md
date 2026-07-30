@@ -300,10 +300,19 @@ reply instead of the Status characteristic.
 
 ## 10. Discovery, ID assignment & time sync (link frames)
 
-**`HEARTBEAT` (`0x20`, 7 bytes)** — gate → broadcast; bridge relays to app:
+**`HEARTBEAT` (`0x20`)** — gate → broadcast; bridge relays to app (same-set only, g1-a2+):
 ```
-[0] 0x20   [1..6] sender MAC (6)
+f2:   [0] 0x20   [1..6] sender MAC (6)                          (7 bytes)
+g1+:  [0] 0x20   [1..6] sender MAC (6)   [7] set_number (1-3)   (8 bytes)
 ```
+A 7-byte heartbeat (f2-FROZEN) is read as **implicit Set 1**. HEARTBEAT is a **link frame** —
+its payload is firmware-internal and may evolve (same rule as TIME_SYNC, §5); this byte is the
+membership tag for channel-per-set (SETS-G1 §5a): receivers learn each MAC's set from tagged
+heartbeats and **filter every other frame by sender MAC** against that learned membership.
+**The event frame (§7) stays byte-identical — the set tag lives in the heartbeat ONLY.** That
+is the deliberate line between this design and the rejected group-ID-in-every-frame: frozen
+event frame untouched, no group byte on the wire for data, membership applied at the receiver.
+
 The app collects heartbeats (each unique MAC = a discovered gate) and assigns IDs.
 
 **ID assignment flow (RAM-only, fresh each session):**
