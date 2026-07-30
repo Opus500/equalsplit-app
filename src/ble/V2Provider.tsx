@@ -32,6 +32,7 @@ import {
   buildRunHint,
   buildSetParam,
   PARAM_SET_NUMBER,
+  PARAM_RESTORE_DEFAULTS,
   type V2Frame,
   type V2Run,
 } from './v2';
@@ -113,8 +114,11 @@ export type V2ContextValue = {
   clearComparisons: () => void;
   gateToPhoneMs: (gateUs: number) => number | null;
   /** g1 sets (SETS-G1 §4): persist SET_NUMBER on both gates, confirm via
-   *  STATUS_REPLY reboot_pending, then instruct a power-cycle. */
+   *  STATUS_REPLY reboot_pending, then instruct a power-cycle. In RECOVERY
+   *  (single gate, no ready session) it acks against however many gates reply. */
   changeSet: (n: number) => Promise<void>;
+  /** Recovery: RESTORE_DEFAULTS on all reachable gates (Set 1 on next boot). */
+  restoreDefaults: () => Promise<void>;
 };
 
 const V2Context = createContext<V2ContextValue | null>(null);
@@ -139,6 +143,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
 
   // Live mirrors (refs) so the async bring-up reads current values, not stale.
   const discoveredRef = useRef<Record<string, number>>({}); // mac -> lastSeenMs
+  const hbSetRef = useRef<Record<string, number | null>>({}); // mac -> heartbeat set tag (g1-a2+)
   const statusesRef = useRef<Record<number, StatusView>>({}); // gate_id -> status
   const idToMacRef = useRef<Record<number, string>>({}); // our assignment map
   const anchorRef = useRef<ClockAnchor | null>(null);
@@ -187,16 +192,17 @@ export function V2Provider({ children }: { children: ReactNode }) {
         hasDisplay: s?.hasDisplay ?? false,
         timeSynced: s?.timeSynced ?? false,
         thresholdCm: s?.thresholdCm ?? 0,
-        setNumber: s?.setNumber ?? 0,
+        setNumber: s?.setNumber ?? hbSetRef.current[mac] ?? 0,
         rebootPending: s?.rebootPending ?? false,
       });
     }
-    // Any discovered-but-unassigned gates (pre-bring-up).
+    // Any discovered-but-unassigned gates (pre-bring-up / recovery). The set
+    // comes from the heartbeat tag, so a stranded gate's set shows immediately.
     for (const mac of Object.keys(discoveredRef.current)) {
       if (seen.has(mac)) continue;
       out.push({
         id: null, mac, role: null, hasDisplay: false, timeSynced: false,
-        thresholdCm: 0, setNumber: 0, rebootPending: false,
+        thresholdCm: 0, setNumber: hbSetRef.current[mac] ?? 0, rebootPending: false,
       });
     }
     out.sort((a, b) => (a.id ?? 99) - (b.id ?? 99));
@@ -289,6 +295,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
         case 'heartbeat':
           if (discoveredRef.current[f.mac] === undefined) pushLog(`discovered ${f.mac}`);
           discoveredRef.current[f.mac] = atMs;
+          hbSetRef.current[f.mac] = f.setNumber; // g1-a2 heartbeats claim their set
           rebuildGates();
           break;
         case 'status':
@@ -570,27 +577,51 @@ export function V2Provider({ children }: { children: ReactNode }) {
   // ack means retry, not hope. Apply = power-cycle both gates (reboot-to-apply).
   const changeSet = useCallback(
     async (n: number) => {
+      // Normal session: expect BOTH gates to ack. RECOVERY (no ready session —
+      // e.g. a solitary gate stranded on the wrong set): ack against however
+      // many gates actually reply (>=1). This is the phone path that rescues a
+      // bare gate (no buttons, no display) — see SETS-G1 §4.
+      const expected = phase === 'ready' ? 2 : 1;
       pushLog(`set → ${n}: writing (persist, all gates)…`);
       try {
         await sendFrame(buildSetParam(GATE_ID_ALL, PARAM_SET_NUMBER, n, true));
         await delay(300); // relay + NVS commit
         statusesRef.current = {};
         await sendFrame(buildGetStatus(GATE_ID_ALL));
-        const acked = (s: StatusView | undefined) =>
-          !!s && (s.setNumber === n ? !s.rebootPending : s.rebootPending);
-        const ok = await waitFor(
-          () => acked(statusesRef.current[START_ID]) && acked(statusesRef.current[FINISH_ID]),
-          2500,
-        );
+        const acked = (s: StatusView) => (s.setNumber === n ? !s.rebootPending : s.rebootPending);
+        const ok = await waitFor(() => {
+          const sts = Object.values(statusesRef.current);
+          return sts.length >= expected && sts.every(acked);
+        }, 2500);
         rebuildGates();
-        if (ok) pushLog(`Set ${n} persisted on BOTH gates — power-cycle both to apply`);
-        else pushLog(`Set ${n}: no ack from both gates — retry (f2 firmware has no sets)`);
+        const got = Object.values(statusesRef.current).length;
+        if (ok) pushLog(`Set ${n} persisted on ${got} gate(s) — power-cycle to apply`);
+        else pushLog(`Set ${n}: acked by ${got}/${expected} — retry (f2 firmware has no sets)`);
       } catch (e) {
         pushLog(`set change failed: ${String(e)}`);
       }
     },
-    [sendFrame, waitFor, pushLog, rebuildGates],
+    [phase, sendFrame, waitFor, pushLog, rebuildGates],
   );
+
+  // Recovery: restore ALL params to defaults on every reachable gate — NVS
+  // cleared, Set 1 on next boot. The BLE-side twin of the B1-at-boot escape,
+  // and the only recovery a bare (buttonless) gate has.
+  const restoreDefaults = useCallback(async () => {
+    pushLog('restore defaults: writing (all gates)…');
+    try {
+      await sendFrame(buildSetParam(GATE_ID_ALL, PARAM_RESTORE_DEFAULTS, 0, false));
+      await delay(300);
+      statusesRef.current = {};
+      await sendFrame(buildGetStatus(GATE_ID_ALL));
+      await waitFor(() => Object.keys(statusesRef.current).length >= 1, 2000);
+      rebuildGates();
+      const got = Object.values(statusesRef.current).length;
+      pushLog(`defaults restored on ${got} gate(s) (Set 1 next boot) — power-cycle`);
+    } catch (e) {
+      pushLog(`restore failed: ${String(e)}`);
+    }
+  }, [sendFrame, waitFor, pushLog, rebuildGates]);
 
   const value: V2ContextValue = {
     active,
@@ -615,6 +646,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
     clearComparisons,
     gateToPhoneMs,
     changeSet,
+    restoreDefaults,
   };
 
   return <V2Context.Provider value={value}>{children}</V2Context.Provider>;

@@ -35,10 +35,49 @@ export function stopScan(): void {
   manager.stopDeviceScan();
 }
 
+/** OS-held gate connections (links the native stack kept that the app forgot).
+ *  A timed-out connect can complete natively AFTER ble-plx rejects — the gate
+ *  honors that phantom link and stops advertising, so scans find nothing until
+ *  an app restart. Adopting the held link instead heals the wedge instantly. */
+export async function heldGateConnections(): Promise<Device[]> {
+  try {
+    return await manager.connectedDevices([UUID.service]);
+  } catch {
+    return [];
+  }
+}
+
 export async function connect(device: Device): Promise<Device> {
-  // timeout so a failed (re)connect attempt rejects instead of hanging forever.
-  const connected = await device.connect({ requestMTU: 64, timeout: 10000 });
-  await connected.discoverAllServicesAndCharacteristics();
+  // Adopt first: if the OS already holds this link (phantom from a timed-out
+  // attempt, or a still-live link after a JS-side state loss), connecting again
+  // would fail — just discover and use it.
+  try {
+    if (await device.isConnected()) {
+      await device.discoverAllServicesAndCharacteristics();
+      return device;
+    }
+  } catch {
+    /* fall through to a fresh connect */
+  }
+  try {
+    // timeout so a failed (re)connect attempt rejects instead of hanging forever.
+    const connected = await device.connect({ requestMTU: 64, timeout: 10000 });
+    await connected.discoverAllServicesAndCharacteristics();
+    return await tuneConnection(connected);
+  } catch (e) {
+    // Abort any still-pending native connect so it can't complete later as a
+    // phantom link the gate honors while the app scans in vain (the exact state
+    // that used to require an app restart to clear).
+    try {
+      await device.cancelConnection();
+    } catch {
+      /* not connected — fine */
+    }
+    throw e;
+  }
+}
+
+async function tuneConnection(connected: Device): Promise<Device> {
   // Ask for the fastest connection interval (~11-15ms) so live timing feels tight.
   // Android only: iOS connection parameters are dictated by the peripheral (the
   // gate requests its preferred interval), so this is a no-op there.

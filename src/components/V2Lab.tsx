@@ -67,13 +67,21 @@ export default function V2Lab() {
         <Btn label="Reset engine" onPress={v2.resetEngine} disabled={!v2.connected} />
       </View>
 
-      {/* g1 sets (SETS-G1 §4): persist on both gates, then power-cycle both. */}
+      {/* g1 sets (SETS-G1 §4): persist, then power-cycle. Deliberately usable
+          WITHOUT a ready session — connected-only — so a solitary gate stranded
+          on the wrong set can be rescued over BLE (the bare-gate recovery path). */}
       <Text style={styles.section}>radio set (g1) — persists, applies on power-cycle</Text>
       <View style={styles.row}>
-        <Btn label="Set 1 (ch1)" onPress={() => v2.changeSet(1)} disabled={!v2.ready} />
-        <Btn label="Set 2 (ch6)" onPress={() => v2.changeSet(2)} disabled={!v2.ready} />
-        <Btn label="Set 3 (ch11)" onPress={() => v2.changeSet(3)} disabled={!v2.ready} />
+        <Btn label="Set 1 (ch1)" onPress={() => v2.changeSet(1)} disabled={!v2.connected} />
+        <Btn label="Set 2 (ch6)" onPress={() => v2.changeSet(2)} disabled={!v2.connected} />
+        <Btn label="Set 3 (ch11)" onPress={() => v2.changeSet(3)} disabled={!v2.connected} />
       </View>
+      <View style={styles.row}>
+        <Btn label="Restore defaults (recovery)" onPress={v2.restoreDefaults} disabled={!v2.connected} />
+      </View>
+      {v2.connected && !v2.ready ? (
+        <Text style={styles.hint}>recovery mode — commands go to whichever gates reply</Text>
+      ) : null}
       {v2.swapRoles ? (
         <Text style={styles.hint}>role swap pending — tap Re-bring-up to apply</Text>
       ) : null}

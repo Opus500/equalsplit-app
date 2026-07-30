@@ -171,6 +171,8 @@ export function buildSetParam(
 
 /** param_id: radio set 1–3 → ch1/6/11 (g1, always-persist, reboot-to-apply). */
 export const PARAM_SET_NUMBER = 0x0009;
+/** param_id 0: restore ALL params to defaults, clearing NVS (Set 1 on next boot). */
+export const PARAM_RESTORE_DEFAULTS = 0x0000;
 
 /** CLEAR_QUEUE (0x33) — target gate(s) empty the RAM event ring (session start). */
 export function buildClearQueue(target: number): Uint8Array {

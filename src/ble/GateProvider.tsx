@@ -16,6 +16,7 @@ import type { Device, Subscription } from 'react-native-ble-plx';
 
 import {
   connect,
+  heldGateConnections,
   manager,
   monitorEvents,
   monitorStatus,
@@ -275,7 +276,10 @@ export function GateProvider({ children }: { children: ReactNode }) {
     setStatus('scanning');
     scanForGate(
       (d) => setDevices((prev) => (prev[d.id] ? prev : { ...prev, [d.id]: d })),
-      () => setStatus('idle'),
+      () => {
+        stopScan(); // release the native scanner on error, or later scans wedge
+        setStatus('idle');
+      },
     );
     scanTimer.current = setTimeout(() => {
       stopScan();
@@ -284,9 +288,17 @@ export function GateProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // One-tap: scan and auto-connect to the first gate that advertises the service.
+  // Adopts an OS-held connection FIRST: after a timed-out connect the native
+  // stack can complete the link late — the gate honors it and stops advertising,
+  // so a scan would find nothing (the "needs an app restart" wedge).
   const quickConnect = useCallback(async () => {
     if (!(await ensureAndroidPermissions())) return;
     setStatus('scanning');
+    const held = await heldGateConnections();
+    if (held.length) {
+      connectTo(held[0]);
+      return;
+    }
     let claimed = false;
     scanForGate(
       (d) => {
@@ -294,7 +306,10 @@ export function GateProvider({ children }: { children: ReactNode }) {
         claimed = true;
         connectTo(d);
       },
-      () => setStatus('idle'),
+      () => {
+        stopScan(); // make sure the native scanner is really released on error
+        setStatus('idle');
+      },
     );
     scanTimer.current = setTimeout(() => {
       if (!claimed) {

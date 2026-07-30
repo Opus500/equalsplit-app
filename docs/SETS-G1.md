@@ -118,7 +118,17 @@ Works with or without a full session bring-up — `target 0xFF` matches unassign
   their set number** (§5) — the mismatch is visible on the glass; cycling the second gate heals it.
 - *Post-reboot split (missed write + premature cycle):* app connects to the stray **directly over
   BLE** (channel-agnostic) and re-issues `SET_PARAM` to the connected gate — no relay needed.
-- *No phone at all:* hold B1 at boot → defaults → Set 1. Both gates restored → paired on ch1.
+  **AMENDED 2026-07-29 — this path was aspirational until the app grew RECOVERY MODE.** Louis
+  found the hole: the Lab's set controls were gated on a *ready* session (two gates + synced), so
+  a solitary stranded gate — reachable at the firmware layer, which has **no** peer/set/sync
+  gating on BLE commands — had no working phone path. Fixed app-side (unfrozen): the set buttons
+  + a `RESTORE_DEFAULTS` button work whenever *connected*, acking against however many gates
+  reply (≥1); discovery shows each gate's heartbeat-claimed set, so a stray is diagnosable the
+  moment the phone connects. **This is the ONLY recovery a bare (buttonless, displayless) gate
+  has** — without it, a bare gate stranded on the wrong set was a dead end, which is why recovery
+  mode is a demo/ship prerequisite even though it never touches firmware.
+- *No phone at all:* hold B1 at boot → defaults → Set 1 (display gates only — a bare gate needs
+  the phone path above). Both gates restored → paired on ch1.
 
 **No-phone set *changing*** (decision 2): confirmed **not trivial** — it would need its own
 broadcast/ack/auto-revert handshake state machine, i.e. exactly the moving-parts reboot-to-apply
@@ -263,6 +273,18 @@ permanent field diagnostics (same set kept at the f2 freeze).
 
 ## 9. Deferred (documented, not built)
 
+- **Auto-revert-on-lonely (RECONSIDERED and REJECTED, 2026-07-29):** "a gate alone on its
+  channel for a long period reverts to Set 1" was re-examined when the BLE rescue looked broken.
+  Verdict: it creates a worse failure than it fixes. A gate is legitimately alone all the time
+  (powered first at setup, bench-tested, charging-checked); a partner dying mid-session leaves a
+  survivor that would revert and **manufacture** a split pair for the next session; a deliberate
+  Set-2 pair would silently migrate to Set 1 and collide with its owner's other pair — the exact
+  interference sets exist to prevent, now spontaneous. And it fails its own use case: a window
+  long enough to be safe (~30 min) is too slow to rescue a live session. A refined variant
+  (revert only if NO same-set partner was heard since boot, applied at next power-cycle) fixes
+  the mid-session case but not spontaneous drift, and adds frozen complexity for a hole the app
+  recovery mode (§4) already closes. Sets are sticky by design; the phone is the repair tool —
+  which is coherent, because a bare gate needs the phone even to *diagnose*.
 - **Multi-set from one phone (CONFIRMED OPEN, 2026-07-29 — app-only, no firmware hook needed):**
   one phone can hold BLE connections to multiple sets' bridges and pick which to control. BLE is
   channel-agnostic and per-gate; commands/relays ride each bridge's own channel; the a2
