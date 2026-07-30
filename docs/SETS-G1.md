@@ -3,8 +3,10 @@
 > **Status: at `gate-g1-a2 (membership filter)` in `firmware/gate-g1/gate-g1.ino`.**
 > a1 passed the two-set DATA isolation test on hardware (2026-07-29) but exposed close-range
 > cross-channel leakage poisoning the peer count and — latently — the election (§5a); a2 adds
-> the set-tagged-heartbeat membership filter (§5b, approved by Louis). §8's §18-g1 pass is
-> pending and non-negotiable (full bench day on ch6, incl. the named election-poisoning check).
+> the set-tagged-heartbeat membership filter (§5b, approved by Louis). **§8 correctness/
+> isolation matrix CLEARED on hardware 2026-07-29 (all four gates a2, incl. the named
+> election-poisoning check); stability soak on ch6 + ch11 smoke OUTSTANDING — no freeze until
+> they pass.**
 > The frozen build `firmware/gate/gate.ino` (`gate-f2-FROZEN-2026-07-21`) is untouched and
 > stays the validated single-set fallback. The §2 contract delta is applied to BLE-CONTRACT.md.
 
@@ -207,35 +209,43 @@ and standalone is unchanged, but the RF envelope is new.** BLE+ESP-NOW coexisten
 *observed* on ch1; the F1 modem-sleep failure taught us that this stack fails silently in
 channel/coex corners we didn't test. So g1 earns its own freeze pass:
 
-**Re-run (≈⅔ of §18):**
-- Election settle + roles and TIME_SYNC convergence — **on ch6 and ch11**, not just ch1.
-- Radio invariants (setSleep + now-variable channel pin, re-assert after BLE init) — all channels.
-- App session (bring-up→arm→time→save) and both standalone modes — full pass on **ch6**, smoke on
-  ch1 + ch11.
-- Ball-drop agreement — on ch6, spot-check ch11.
-- **20+ rep soak and long-idle soak — once, on ch6** (the moved coex envelope is the point).
-- SET_PARAM/NVS suite — re-run including the PARAM_VER 1→2 migration (f2 blob → discarded →
-  defaults), always-persist SET_NUMBER, RESTORE→Set 1, garbage-set→clamp.
-- Reset soak on g1 (new boot-path code; same accepted power-class residuals as §18).
+**Status 2026-07-29 (all four gates on a2): correctness/isolation matrix CLEARED on hardware;
+stability items OUTSTANDING — g1 does NOT freeze until they pass.**
 
-**New items (a2 pass conditions per Louis, 2026-07-29):**
-- **Isolation re-run (bench range):** two sets running reps simultaneously — zero cross events
-  in the app log, correct standalone splits on both, and **all four OLEDs sit at `2g` steady,
-  not fluctuating**.
-- **Election-poisoning check (by name):** with both sets powered at bench range, each set
-  elects **its own** master, and **neither set's gates ever print the other set's MAC as the
-  lowest-MAC target in their `[v2] election ->` serial line**. This is the direct regression
-  test for the a1 finding that the data pass was MAC-ordering luck.
-- **Same-set stray:** a third gate deliberately configured to the SAME set → OLEDs show `3g!`,
-  B1/B2/mirror arms refused; power it off → arms restore within ~5 s.
-- **Membership stickiness:** silence a partner >5 s mid-session (block its beam/heartbeat path,
-  not power) — count drops, but on resume its first frame is accepted (no foreign
-  misclassification, no dropped first event).
-- **Set-change flow:** happy path; deliberate missed-write (kill the remote before relay) →
-  pending-ack catches it → retry; cycle-one-gate split → visible + heals; post-reboot stray
-  rescued over direct BLE.
-- **Mixed f2+g1 pair on Set 1** works as a normal set (a2: the f2 gate's 7-byte heartbeats
-  classify as implicit Set 1 — verify the a2 gate counts and pairs with it normally).
+**Cleared ✓ (2026-07-29, bench, all four gates a2):**
+- [x] **Isolation re-run (bench range):** two sets running reps simultaneously — zero cross
+      events, correct splits on both, **all four OLEDs steady at `2g`, no fluctuation**.
+- [x] **Election-poisoning check:** each set elects its own master; neither set's gates ever
+      print the other set's MAC in their `[v2] election ->` line. The a1 landmine is closed
+      structurally (foreign heartbeats classify-and-stop, never reach `noteMac`).
+- [x] **Simultaneous isolation both directions** (phone on Set 1 + Set 2 standalone, and
+      reversed) — each set's log contains only its own events.
+- [x] **Same-set stray:** third gate on the same set → `3g!` + arms refused → restores ~5 s
+      after power-off.
+- [x] **Membership stickiness:** partner silenced >5 s — count drops, first frame back accepted,
+      no foreign misclassification.
+- [x] **Mixed f2+a2 pair on Set 1** pairs and times correctly (7-byte heartbeat = implicit Set 1).
+- [x] **Set-change flow** incl. the deliberately-missed-write case (app catches the missing ack,
+      says retry).
+- [x] Election settle + TS convergence, app session, both standalone modes on **ch1 + ch6**
+      (exercised throughout the above).
+
+**OUTSTANDING before the freeze marker (the moved-coex-envelope soak, same standard as f2):**
+- [ ] **20+ rep continuous session on ch6, serial attached, scrollback intact — zero `rst:`
+      lines, no reboot header, no brownout string.** Every long-duration hour this stack has run
+      was on ch1; F1 proved this stack fails silently in unobserved radio corners.
+- [ ] **Long-idle soak on ch6** (hours powered, no runs) — no reset, no RX degradation.
+- [ ] **ch11/Set 3 smoke** (~10 min): pair on Set 3 → boot line `set 3 -> ch 11`, election, one
+      standalone rep, one app rep. ch11 has never been exercised at all.
+- [ ] **Ball-drop spot-check on ch6** (fold into the soak session) — "splits correct" is weaker
+      evidence than the ±4–5 ms agreement standard.
+- [ ] **Wrap-across-soak** (free: let the soak span >71.6 min, one rep across the boundary —
+      arithmetic unchanged from f2, but it rides along at zero cost).
+- [ ] **B1-at-boot → Set 1** restore check (~1 min).
+- SET_PARAM/NVS suite: always-persist SET_NUMBER + missed-write retry covered by the set-change
+  tests above; the v1→v2 **migration** ran implicitly at first a1/a2 boot on any unit that had a
+  persisted f2 blob (code-verified + static_asserts; explicit serial-line verification optional —
+  reflash one unit f2 → persist a param → reflash a2 → look for `[param] migrated`).
 
 **Not reopened:** frame parsing/format (unchanged), `sdiff32`/wrap *arithmetic* (channel-blind —
 the ch6 soak still exercises the wrap window as RF), GATT, RUN_HINT semantics, v1 deletion.
@@ -244,8 +254,22 @@ the ch6 soak still exercises the wrap window as RF), GATT, RUN_HINT semantics, v
 `FROZEN` marker only after §18-g1 clears; `gate-f2-FROZEN-2026-07-21` remains flashable
 throughout and is the rollback if g1 misbehaves in the field.
 
+**Freeze sequencing (f2c lesson):** run the outstanding soak on the **a2 binary as already
+flashed** — no reflash first. If clean, the freeze is a marker-only rename
+(`gate-g1-FROZEN-<date>`) + a ~15-minute smoke of the renamed build; the bytes that soaked are,
+minus one string, the bytes that freeze. There is nothing to strip: g1 added no debug traces —
+the boot marker, `[boot] set n -> ch m`, election role line, and `[param]` confirmations are all
+permanent field diagnostics (same set kept at the f2 freeze).
+
 ## 9. Deferred (documented, not built)
 
+- **Multi-set from one phone (CONFIRMED OPEN, 2026-07-29 — app-only, no firmware hook needed):**
+  one phone can hold BLE connections to multiple sets' bridges and pick which to control. BLE is
+  channel-agnostic and per-gate; commands/relays ride each bridge's own channel; the a2
+  membership filter makes each BLE connection a clean per-set pipe (and closed the leaked-
+  ASSIGN_IDS hazard that would have made this messy pre-a2); `STATUS_REPLY` caps bits 4–6 label
+  which set a connected bridge belongs to. Needed app work: per-set clock anchors + session
+  state (today's providers are single-device). Freezing g1 shuts nothing here.
 - **>3 sets:** group-ID layered on channels; reopens the frozen frame + app parser. Known cost.
 - **No-phone set changing:** needs its own handshake machinery; B1-boot→Set 1 is the only
   no-phone path.
