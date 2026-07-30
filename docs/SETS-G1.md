@@ -1,12 +1,16 @@
 # g1 — Independent gate sets (channel-per-set)
 
-> **Status: at `gate-g1-a2 (membership filter)` in `firmware/gate-g1/gate-g1.ino`.**
-> a1 passed the two-set DATA isolation test on hardware (2026-07-29) but exposed close-range
-> cross-channel leakage poisoning the peer count and — latently — the election (§5a); a2 adds
-> the set-tagged-heartbeat membership filter (§5b, approved by Louis). **§8 correctness/
-> isolation matrix CLEARED on hardware 2026-07-29 (all four gates a2, incl. the named
-> election-poisoning check); stability soak on ch6 + ch11 smoke OUTSTANDING — no freeze until
-> they pass.**
+> **Status: at `gate-g1-a3 (set in adv mfg-data)` — the FREEZE CANDIDATE, pending the ch6 soak.**
+> a1 passed the two-set DATA isolation test (2026-07-29) but exposed close-range cross-channel
+> leakage poisoning the peer count and — latently — the election (§5a); a2 added the set-tagged-
+> heartbeat membership filter (§5b), whose correctness/isolation matrix CLEARED on hardware
+> (all four gates, incl. the named election-poisoning check). **a3 adds ONE thing (§6a): the
+> active set in the BLE scan-response manufacturer data, so a dashboard can enumerate which sets
+> are powered WITHOUT connecting — the last capability the freeze would otherwise foreclose.**
+> a3 is discovery-only (GATT + connected data path byte-identical to a2), so the §8 correctness
+> matrix stands — but the **soak runs on a3, not a2** (the f2c rule; advertising is live during
+> the standalone/idle stretches, so it isn't orthogonal). **Stability soak on ch6 + long-idle +
+> wrap + ch11 smoke + B1-restore OUTSTANDING — no freeze until they pass on a3.**
 > The frozen build `firmware/gate/gate.ino` (`gate-f2-FROZEN-2026-07-21`) is untouched and
 > stays the validated single-set fallback. The §2 contract delta is applied to BLE-CONTRACT.md.
 
@@ -233,11 +237,33 @@ rejected). At field separation the leakage largely vanishes, but demo day is the
   `SET_NUMBER` is an unknown-param no-op on f2 (by §8.1 rules), and f2's caps bits read
   "no sets" — both graceful.
 
+### 6a. Set number in the BLE advertisement (a3, `docs` — the pre-freeze capability)
+
+**Only the advertisement can enumerate powered sets without connecting.** Post-connect labeling
+(`STATUS_REPLY` caps bits 4–6, the heartbeat tag) requires an established connection first, so a
+"which of my sets are alive?" pre-flight / dashboard-lobby view is impossible to add after freeze.
+a3 adds it, and nothing else. Wire form (consumed by a future dashboard; not a frozen-f2 change —
+g1-scoped):
+
+- **Scan response**, manufacturer-specific data: `company_id = 0xFFFF` (unregistered/test) LE,
+  then **1 payload byte = active set (1–3)**. So the raw mfg-data field is `FF FF 0S`. A BLE
+  scanner (or `device.manufacturerData` in ble-plx, base64) reads byte[2] as the set.
+- The **ADV packet is unchanged** — still just Flags + the 128-bit service UUID, so the app's
+  scan-by-service-UUID is untouched. The **device name stays `EqualSplit-Gate`** (kept explicitly
+  in the scan response alongside the mfg-data). Set is runtime (from `bootedSetNumber`), written in
+  `setupBLE()` which runs after params load.
+- **Discovery-only:** GATT services/characteristics and the entire connected data path are
+  byte-identical to a2. This does not touch any §8 correctness/isolation/membership/set-change
+  item — but the soak still moves to a3 (§8), because advertising is *active* whenever a gate is
+  unconnected (standalone + idle), so the a3 code genuinely runs during those soak stretches.
+
 ## 7. Flash cost
 
-Channel variable + param wiring + caps bits + per-MAC table + OLED set/count/pending lines +
-arm-refusal: **~1–2 KB** code+strings. From 91%, comfortably inside the headroom we deliberately
-refused to trim at freeze. (Verify the number on the first g1 compile and record it here.)
+a2 (channel var + param wiring + caps bits + membership/per-MAC table + OLED set/count/pending +
+arm-refusal) + a3 (scan-response mfg-data, ~10 lines): estimated **~1–3 KB** code+strings over the
+frozen f2 baseline. From 91%, comfortably inside the headroom we refused to trim at freeze.
+**TODO — record the real number from the a3 compile here** (Louis to report; this is the final g1
+delta line for the record).
 
 ## 8. §18 re-validation — honest scope ("§18-g1")
 

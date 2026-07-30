@@ -14,7 +14,7 @@
 //
 // BUMP FW_BUILD every change. __DATE__/__TIME__ auto-update only on a REAL
 // recompile, so a stale build cache is caught by an old compile timestamp.
-#define FW_BUILD "gate-g1-a2 (membership filter)"
+#define FW_BUILD "gate-g1-a3 (set in adv mfg-data)"
 // ============================================================================
 
 #include <Wire.h>
@@ -1115,10 +1115,24 @@ void setupBLE() {
   chEvent = svc->createCharacteristic(UUID_EVENT, NIMBLE_PROPERTY::NOTIFY);
   svc->start();
   NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-  adv->addServiceUUID(UUID_SERVICE);   // app scans by service UUID, not name
+  adv->addServiceUUID(UUID_SERVICE);   // ADV packet — app still scans by service UUID (unchanged)
+
+  // g1-a3: carry the ACTIVE set in the SCAN RESPONSE as manufacturer data, so a
+  // dashboard can enumerate WHICH SETS ARE POWERED without connecting to any gate
+  // — the one capability that must exist before freeze (post-connect labeling via
+  // STATUS_REPLY caps can never enumerate without first connecting). The human
+  // name is unchanged; the set rides as company id 0xFFFF (unregistered/test) + a
+  // single byte = bootedSetNumber. Set here because bootedSetNumber is known
+  // before setupBLE() runs. GATT and the connected data path are untouched.
+  NimBLEAdvertisementData scanData;
+  scanData.setName("EqualSplit-Gate");                  // keep the name in the scan response
+  uint8_t mfg[3] = { 0xFF, 0xFF, bootedSetNumber };     // [0..1] company id 0xFFFF LE, [2] set
+  scanData.setManufacturerData(mfg, sizeof(mfg));
+  adv->setScanResponseData(scanData);
   adv->enableScanResponse(true);
+
   NimBLEDevice::startAdvertising();
-  Serial.println("BLE advertising as EqualSplit-Gate");
+  Serial.printf("BLE advertising as EqualSplit-Gate (set %u in mfg-data)\n", bootedSetNumber);
 }
 
 // Fire the deferred 15ms conn-interval request once, after the link settles.
