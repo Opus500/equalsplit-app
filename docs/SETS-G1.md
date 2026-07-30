@@ -130,6 +130,33 @@ Works with or without a full session bring-up — `target 0xFF` matches unassign
 - *No phone at all:* hold B1 at boot → defaults → Set 1 (display gates only — a bare gate needs
   the phone path above). Both gates restored → paired on ch1.
 
+### 4a. App robustness — order-independence & disconnect detection (2026-07-29, app-only)
+
+Bench testing the recovery flow surfaced three app-side latching bugs. All fixed in the app
+(no firmware change); together they remove the "works only if you power/connect in the right
+order" fragility that would be a demo landmine.
+
+- **`partial` phase (was a false `error`):** connecting with <2 live gates (single-gate
+  recovery, or the second gate not yet powered) is a legitimate state, not an error. The Timer
+  now shows "1 gate (recovery)" and the set number; bring-up parks in `partial` and pulls status
+  for the recovery UI instead of dead-ending in `error`.
+- **Auto re-assembly (kills order-dependence):** bring-up latched the gate set once and never
+  re-evaluated. Now (a) only gates whose heartbeat was heard in the last **12 s** count as live —
+  a discovered-then-powered-off gate can't be assigned an id as a corpse, and with 3 gates ever
+  seen a dead one can't out-sort a live one; (b) a discovery-change effect re-runs bring-up
+  automatically when a second live gate appears while `partial`. Power gates in any order, connect
+  whenever — the session assembles itself when two live same-set gates exist.
+- **Disconnect detection ≠ reconnect (the B finding):** a power-pulled gate sends no disconnect
+  packet, and the native `onDeviceDisconnected` event proved unreliable for it — the app kept
+  running against a dead link. Fixed with a **4 s liveness watchdog** that queries the native
+  connection *state* (not an event) plus characteristic-monitor errors, both routed through one
+  idempotent drop handler. The event is now an optimization; the poll is the guarantee.
+- **Sticky bridge + visible set:** with multiple sets powered every gate advertises the same
+  service, so a fresh one-tap connect could land on the *other* set's bridge. quickConnect now
+  prefers the last-connected gate, and the Timer shows the controlled set (`S1`/`S2`) so a wrong
+  landing is visible at a glance. (Deliberate set-switching from one phone remains the deferred
+  multi-set feature, §9.)
+
 **No-phone set *changing*** (decision 2): confirmed **not trivial** — it would need its own
 broadcast/ack/auto-revert handshake state machine, i.e. exactly the moving-parts reboot-to-apply
 was chosen to avoid. Skipped; B1-boot-restore is the only no-phone path, and it only goes *to*

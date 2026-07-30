@@ -51,7 +51,10 @@ function macStrToBytes(mac: string): Uint8Array {
   return Uint8Array.from(mac.split(':').map((h) => parseInt(h, 16)));
 }
 
-export type V2Phase = 'idle' | 'discovering' | 'assigning' | 'syncing' | 'ready' | 'error';
+// 'partial' = connected with FEWER than two live gates — a legitimate state
+// (single-gate recovery, or waiting for the second gate to power on), NOT an
+// error. Bring-up re-runs automatically when another gate appears.
+export type V2Phase = 'idle' | 'discovering' | 'assigning' | 'syncing' | 'ready' | 'partial' | 'error';
 
 export type GateView = {
   id: number | null;
@@ -411,22 +414,38 @@ export function V2Provider({ children }: { children: ReactNode }) {
     }
   }, [pushLog]);
 
+  // Only gates HEARD RECENTLY count. Heartbeats arrive every 1-5s, so a gate
+  // silent >12s is stale — without this, a gate discovered once and then powered
+  // off still "exists" and bring-up can assign an id to a corpse (or, with 3+
+  // gates ever seen, pick a dead one over a live one by MAC order).
+  const liveMacs = useCallback(() => {
+    const now = perfNow();
+    return Object.keys(discoveredRef.current).filter((m) => now - discoveredRef.current[m] < 12000);
+  }, []);
+
   // ---- automatic bring-up ----------------------------------------------
   const runBringUp = useCallback(async () => {
     if (bringUpInFlight.current) return;
     if (!gateRef.current.device) return;
     bringUpInFlight.current = true;
     try {
-      // 1) discovery
+      // 1) discovery — LIVE gates only
       setPhase('discovering');
       statusesRef.current = {};
       idToMacRef.current = {};
-      const haveTwo = await waitFor(() => Object.keys(discoveredRef.current).length >= 2, 6000);
-      const macs = Object.keys(discoveredRef.current).sort();
+      const haveTwo = await waitFor(() => liveMacs().length >= 2, 6000);
+      const macs = liveMacs().sort();
       if (!haveTwo || macs.length < 2) {
-        pushLog(`bring-up: only ${macs.length} gate(s) discovered`);
-        setPhase('error');
+        // Not an error: single-gate recovery / second gate not powered yet.
+        // Pull whatever status we can for the recovery UI; the discovery
+        // effect re-runs bring-up automatically when another gate appears.
+        pushLog(`bring-up: ${macs.length} gate(s) live — partial (recovery available)`);
+        await requestStatus();
+        setPhase('partial');
         return;
+      }
+      if (macs.length > 2) {
+        pushLog(`${macs.length} gates live on this set — timing uses ${macs[0]} & ${macs[1]}`);
       }
 
       // 2) provisional assign (distinct ids so caps become correlatable)
@@ -498,14 +517,26 @@ export function V2Provider({ children }: { children: ReactNode }) {
       bringUpInFlight.current = false;
       rebuildGates();
     }
-  }, [assign, requestStatus, sendFrame, pingSync, waitFor, pushLog, rebuildGates]);
+  }, [assign, requestStatus, sendFrame, pingSync, waitFor, pushLog, rebuildGates, liveMacs]);
 
-  // Auto bring-up once per connection while active; reset on disconnect.
+  // Auto bring-up once per connection while active; FULL reset on disconnect —
+  // every latch cleared (discovery, sets, statuses, ids, clock anchor, engine),
+  // so a reconnect rebuilds from live truth instead of stale state.
   const connected = gate.status === 'connected';
   useEffect(() => {
     if (!active || !connected) {
       if (!connected) {
         broughtUpForConn.current = false;
+        discoveredRef.current = {};
+        hbSetRef.current = {};
+        statusesRef.current = {};
+        idToMacRef.current = {};
+        anchorRef.current = null;
+        setPing(null);
+        setGates([]);
+        engineRef.current.reset();
+        setEngineState(engineRef.current.state);
+        setRunning(null);
         setPhase('idle');
       }
       return;
@@ -514,6 +545,20 @@ export function V2Provider({ children }: { children: ReactNode }) {
     broughtUpForConn.current = true;
     runBringUp();
   }, [active, connected, runBringUp]);
+
+  // Re-assembly: whenever discovery changes (gates list rebuilds on every
+  // heartbeat) and we're sitting in 'partial'/'error' with two live gates now
+  // visible, re-run bring-up. Kills the order-dependence: power gates in any
+  // order, connect whenever — the session assembles itself when possible.
+  useEffect(() => {
+    if (!active || !connected) return;
+    if (phase !== 'partial' && phase !== 'error') return;
+    if (bringUpInFlight.current) return;
+    if (liveMacs().length >= 2) {
+      pushLog('second gate appeared — re-running bring-up');
+      runBringUp();
+    }
+  }, [gates, phase, active, connected, runBringUp, liveMacs, pushLog]);
 
   const bringUp = useCallback(async () => {
     broughtUpForConn.current = true; // we are driving it explicitly

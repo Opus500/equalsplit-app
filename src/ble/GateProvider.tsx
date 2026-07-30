@@ -14,6 +14,7 @@ import {
 import { PermissionsAndroid, Platform } from 'react-native';
 import type { Device, Subscription } from 'react-native-ble-plx';
 
+import { getSetting, setSetting } from '../db/database';
 import {
   connect,
   heldGateConnections,
@@ -149,6 +150,36 @@ export function GateProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => () => cleanupConnection(), [cleanupConnection]);
 
+  // One drop-handling per connection, callable from EVERY detection path: the
+  // native disconnect event, the liveness watchdog, and monitor errors. Power
+  // loss sends no disconnect packet, and the native event alone proved
+  // unreliable on a pulled gate — the app kept "running" against a dead link.
+  const droppedRef = useRef(false);
+  const handleDrop = useCallback(() => {
+    if (droppedRef.current) return;
+    droppedRef.current = true;
+    cleanupConnection();
+    setDevice(null);
+    setGateStatus(null);
+    if (intentionalRef.current) {
+      setStatus('idle');
+      return;
+    }
+    attemptReconnectRef.current();
+  }, [cleanupConnection]);
+
+  // Ask the native stack directly (state query, NOT an event) whether the link
+  // is really up; drop if not. Called on a timer and on any monitor error.
+  const verifyLink = useCallback(async () => {
+    const d = deviceRef.current;
+    if (!d || droppedRef.current) return;
+    try {
+      if (!(await d.isConnected())) handleDrop();
+    } catch {
+      handleDrop();
+    }
+  }, [handleDrop]);
+
   // Wire up a freshly-connected device: monitors, reads, and a disconnect handler
   // that auto-reconnects unless the user asked to disconnect. Reused on both the
   // initial connect and every reconnect so state always resyncs.
@@ -156,19 +187,14 @@ export function GateProvider({ children }: { children: ReactNode }) {
     (d: Device) => {
       cleanupConnection();
       gateBusy = false; // fresh connection: assume idle until an event says otherwise
+      droppedRef.current = false;
       deviceRef.current = d;
       setDevice(d);
       setStatus('connected');
+      setSetting('last_gate_id', d.id).catch(() => {}); // sticky bridge (see quickConnect)
 
       disconnectSub.current = manager.onDeviceDisconnected(d.id, () => {
-        cleanupConnection();
-        setDevice(null);
-        setGateStatus(null);
-        if (intentionalRef.current) {
-          setStatus('idle');
-          return;
-        }
-        attemptReconnectRef.current();
+        handleDrop();
       });
 
       // Resync on (re)connect: re-read Status + LastResult (reliable reads).
@@ -196,7 +222,7 @@ export function GateProvider({ children }: { children: ReactNode }) {
             }
             listeners.current.forEach((l) => l(raw, parsed, atMs));
           },
-          () => {},
+          () => verifyLink(), // monitor errored: check the link is really alive
         ),
       );
       subs.current.push(
@@ -214,12 +240,23 @@ export function GateProvider({ children }: { children: ReactNode }) {
               }
             }
           },
-          () => {},
+          () => verifyLink(), // monitor errored: check the link is really alive
         ),
       );
     },
-    [cleanupConnection],
+    [cleanupConnection, handleDrop, verifyLink],
   );
+
+  // Liveness watchdog: while 'connected', poll the native connection state every
+  // 4s. Catches power-pulled gates whose disconnect event never arrives — the
+  // event is an optimization, the poll is the guarantee.
+  useEffect(() => {
+    if (status !== 'connected') return undefined;
+    const t = setInterval(() => {
+      verifyLink();
+    }, 4000);
+    return () => clearInterval(t);
+  }, [status, verifyLink]);
 
   // Retry reconnecting to the last device with backoff until it succeeds or the
   // user cancels (disconnect). Each attempt fails fast via the connect timeout.
@@ -299,12 +336,33 @@ export function GateProvider({ children }: { children: ReactNode }) {
       connectTo(held[0]);
       return;
     }
+    // Sticky bridge: with multiple SETS powered, every gate advertises the same
+    // service — first-found could be the OTHER set's bridge, and the session
+    // would then (correctly, per the membership filter) show only that set.
+    // Prefer the last-connected gate for a short window before settling.
+    const storedId = await getSetting('last_gate_id').catch(() => null);
+    let firstSeen: Device | null = null;
     let claimed = false;
+    const claim = (d: Device) => {
+      if (claimed) return;
+      claimed = true;
+      connectTo(d);
+    };
     scanForGate(
       (d) => {
         if (claimed) return;
-        claimed = true;
-        connectTo(d);
+        if (storedId && d.id === storedId) {
+          claim(d); // our usual bridge answered — take it immediately
+          return;
+        }
+        if (!firstSeen) {
+          firstSeen = d;
+          // no remembered bridge: take the first answer now; otherwise give the
+          // remembered one a moment to answer before settling for another set's gate
+          setTimeout(() => {
+            if (!claimed && firstSeen) claim(firstSeen);
+          }, storedId ? 1200 : 0);
+        }
       },
       () => {
         stopScan(); // make sure the native scanner is really released on error

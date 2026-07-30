@@ -230,6 +230,8 @@ function hintFor(
   hasResult: boolean,
 ): string {
   if (!connected) return 'Not connected — tap Connect above.';
+  if (phase === 'partial')
+    return 'Only one gate found — power the other gate (it will join automatically), or use Debug → v2 Lab for recovery.';
   if (phase !== 'ready') return `Setting up gates… (${phase})`;
   if (engineState === 'armed') return 'Waiting for the first beam break…';
   if (engineState === 'running') return 'Running — cross the finish gate.';
@@ -244,11 +246,15 @@ function SessionLine() {
   const synced = v2.gates.filter((g) => g.timeSynced).length;
   const total = v2.gates.length;
   const ready = v2.phase === 'ready';
+  // Which SET this session controls (g1) — catches connecting to the wrong
+  // set's bridge at a glance when multiple sets are powered.
+  const setNo = v2.gates.find((g) => g.setNumber > 0)?.setNumber;
   return (
     <View style={styles.sessionRow}>
       <View style={[styles.sdot, ready ? styles.sdotOn : styles.sdotBusy]} />
       <Text style={styles.sessionText}>
-        v2 · {v2.phase}
+        v2 · {v2.phase === 'partial' ? '1 gate (recovery)' : v2.phase}
+        {setNo ? ` · S${setNo}` : ''}
         {total ? ` · ${synced}/${total} synced` : ''}
         {v2.ping ? ` · ping ${v2.ping.rttMs.toFixed(0)}ms` : ''}
       </Text>
