@@ -22,33 +22,29 @@ import {
   View,
 } from 'react-native';
 
-import {
-  createAthlete,
-  listAthletes,
-  setAthleteArchived,
-  updateAthlete,
-  type Athlete,
-} from '../db/database';
+import { createAthlete, setAthleteArchived, updateAthlete, type Athlete } from '../db/database';
 import { foldName } from '../db/migrations';
 import { disambiguate, runCountLabel } from '../roster/labels';
+import { useRoster } from '../roster/RosterProvider';
 
 export default function RosterScreen() {
-  const [all, setAll] = useState<Athlete[]>([]);
+  // The provider is the single source: the strip and pickers read the same list,
+  // so an edit here can't leave them showing a stale roster.
+  const roster = useRoster();
+  const all = roster.athletes;
   const [showArchived, setShowArchived] = useState(false);
   const [editing, setEditing] = useState<Athlete | null>(null);
   const [creating, setCreating] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      setAll(await listAthletes({ includeArchived: true }));
-    } catch {
-      setAll([]);
-    }
-  }, []);
+  const load = useCallback(() => roster.refresh(), [roster]);
 
+  // Pick up roster changes made elsewhere (e.g. quick-add from a picker).
   useEffect(() => {
     load();
-  }, [load]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const inQueue = useMemo(() => new Set(roster.queue.athleteIds), [roster.queue.athleteIds]);
 
   const active = useMemo(() => all.filter((a) => a.archived_at == null), [all]);
   const archived = useMemo(() => all.filter((a) => a.archived_at != null), [all]);
@@ -93,6 +89,7 @@ export default function RosterScreen() {
         <Text style={styles.summaryText}>
           {active.length} athlete{active.length === 1 ? '' : 's'}
           {archived.length ? ` · ${archived.length} archived` : ''}
+          {inQueue.size ? ` · ${inQueue.size} in today's lineup` : ''}
         </Text>
         {archived.length ? (
           <View style={styles.switchRow}>
@@ -126,6 +123,7 @@ export default function RosterScreen() {
         renderItem={({ item }) => {
           const isArchived = item.archived_at != null;
           const detail = details.get(item.id);
+          const queued = inQueue.has(item.id);
           return (
             <Pressable
               onPress={() => setEditing(item)}
@@ -140,6 +138,25 @@ export default function RosterScreen() {
                   {[detail, runCountLabel(item.run_count)].filter(Boolean).join(' · ')}
                 </Text>
               </View>
+              {/* Today's lineup. Archived athletes can't be added — they're out of
+                  rotation by definition; the queue skips them anyway. */}
+              {!isArchived ? (
+                <Pressable
+                  onPress={() =>
+                    queued ? roster.removeAthleteFromQueue(item.id) : roster.addAthleteToQueue(item.id)
+                  }
+                  hitSlop={8}
+                  style={({ pressed }) => [
+                    styles.queueBtn,
+                    queued && styles.queueBtnOn,
+                    pressed && styles.dim,
+                  ]}
+                >
+                  <Text style={[styles.queueBtnText, queued && styles.queueBtnTextOn]}>
+                    {queued ? '✓ lineup' : '+ lineup'}
+                  </Text>
+                </Pressable>
+              ) : null}
               <Text style={styles.chev}>›</Text>
             </Pressable>
           );
@@ -318,6 +335,17 @@ const styles = StyleSheet.create({
   name: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
   archTag: { color: '#b4541f', fontSize: 11, fontWeight: '700' },
   sub: { color: '#64748b', fontSize: 12, marginTop: 3 },
+  queueBtn: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: '#243042',
+    marginRight: 6,
+  },
+  queueBtnOn: { backgroundColor: '#14532d', borderColor: '#16a34a' },
+  queueBtnText: { color: '#64748b', fontSize: 11, fontWeight: '700' },
+  queueBtnTextOn: { color: '#86efac' },
   chev: { color: '#475569', fontSize: 22 },
   backdrop: {
     flex: 1,

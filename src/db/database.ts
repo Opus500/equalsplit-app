@@ -323,18 +323,32 @@ export async function getRuns(sessionId: string): Promise<RunRow[]> {
 
 /**
  * The one place run→athlete display is decided, so History, share text, and the
- * timer can't disagree:
- *   linked → the athlete record's CURRENT name (renames apply retroactively)
- *   unlinked but tagged → the legacy free text, flagged so the UI can grey it
- *   neither → Unassigned
+ * timer can't disagree.
+ *
+ * `athlete_id` ALONE decides which world a row is in — the rule never weighs the
+ * link against the text, so a row can't be half-linked:
+ *   athlete_id set  → linked. The record's CURRENT name (renames are retroactive).
+ *   athlete_id null → the legacy free text, flagged so the UI can grey it.
+ *   neither         → Unassigned.
+ *
+ * Linking a legacy row REPLACES its text (see updateRunAthlete), so the old tag
+ * is destroyed at that moment. What remains in athlete_name afterwards is a
+ * denormalized snapshot of the record, never a competing value — and it is never
+ * read for display while linked, only by a pre-roster build after a rollback.
  */
 export function resolvedAthlete(r: RunRow): {
   name: string | null;
   legacy: boolean;
   archived: boolean;
 } {
-  if (r.athlete_id && r.athlete_display_name) {
-    return { name: r.athlete_display_name, legacy: false, archived: r.athlete_archived_at != null };
+  if (r.athlete_id) {
+    return {
+      // The snapshot is a fallback ONLY for a dangling id (athletes are never
+      // deleted, so this shouldn't occur) — the row is still linked, not legacy.
+      name: r.athlete_display_name ?? r.athlete_name?.trim() ?? null,
+      legacy: false,
+      archived: r.athlete_archived_at != null,
+    };
   }
   const legacyName = r.athlete_name?.trim() || null;
   return { name: legacyName, legacy: legacyName != null, archived: false };

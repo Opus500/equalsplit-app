@@ -14,7 +14,7 @@ import V2Lab from '../components/V2Lab';
 type LogLine = { id: string; text: string; kind: 'evt' | 'status' };
 let logSeq = 0;
 
-export default function DebugScreen() {
+export default function DebugScreen({ onBack }: { onBack?: () => void }) {
   const gate = useGate();
   const [view, setView] = useState<'diag' | 'v2'>('diag');
   const [logs, setLogs] = useState<LogLine[]>([]);
@@ -56,6 +56,11 @@ export default function DebugScreen() {
 
   return (
     <View style={styles.container}>
+      {onBack ? (
+        <Pressable onPress={onBack} hitSlop={10} style={styles.backRow}>
+          <Text style={styles.backText}>‹  Settings</Text>
+        </Pressable>
+      ) : null}
       <Text style={styles.title}>Diagnostics</Text>
       <Text style={styles.subtitle}>
         adapter {gate.adapterOn ? 'on' : 'off'} · {gate.status}
@@ -180,6 +185,8 @@ function Btn({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  backRow: { paddingBottom: 6 },
+  backText: { color: '#60a5fa', fontSize: 15, fontWeight: '700' },
   title: { color: '#fff', fontSize: 22, fontWeight: '800' },
   subtitle: { color: '#8b98a9', marginTop: 4, marginBottom: 10 },
   cards: { flexDirection: 'row', gap: 10, marginBottom: 6 },

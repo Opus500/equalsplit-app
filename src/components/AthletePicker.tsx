@@ -24,6 +24,7 @@ import {
 
 import { createAthlete, listAthletes, type Athlete } from '../db/database';
 import { disambiguate, runCountLabel } from '../roster/labels';
+import { useRoster } from '../roster/RosterProvider';
 import { foldName } from '../db/migrations';
 
 export function AthletePickerModal({
@@ -41,6 +42,7 @@ export function AthletePickerModal({
   onClose: () => void;
   onPick: (athleteId: string | null) => void;
 }) {
+  const roster = useRoster();
   const [all, setAll] = useState<Athlete[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
@@ -97,6 +99,10 @@ export function AthletePickerModal({
     setAdding(true);
     try {
       const a = await createAthlete(name);
+      // Refresh the provider BEFORE handing the id back: the strip resolves an
+      // athlete through the provider's index, so picking someone it hasn't
+      // loaded yet would read as "no athlete".
+      await roster.refresh();
       onPick(a.id);
       onClose();
     } catch {
@@ -104,7 +110,7 @@ export function AthletePickerModal({
     } finally {
       setAdding(false);
     }
-  }, [newName, adding, onPick, onClose]);
+  }, [newName, adding, onPick, onClose, roster]);
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>

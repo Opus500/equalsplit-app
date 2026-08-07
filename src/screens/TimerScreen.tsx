@@ -17,14 +17,10 @@ import { useGate } from '../ble/GateProvider';
 import { useSettings } from '../settings/SettingsProvider';
 import { Evt, GateState, STATE_NAME } from '../ble/constants';
 import type { LastResult } from '../ble/events';
-import {
-  addRecentAthlete,
-  getRecentAthletes,
-  getSetting,
-  saveRun,
-  setSetting,
-} from '../db/database';
+import { getSetting, saveRun, setSetting } from '../db/database';
 import { TagPickerModal, formatTags } from '../components/TagPicker';
+import { UpNextStrip } from '../components/UpNextStrip';
+import { useRoster } from '../roster/RosterProvider';
 import { runShareLine, shareText } from '../share';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run';
@@ -66,6 +62,7 @@ export default function TimerScreen() {
   const { subscribe, gateStatus, status, readStatusNow, readLastResultNow, gateToPhoneMs } = gate;
   const { reactionOffsetMs, setMeasuredAudioLatencyMs, correctionMode, addLatencySample, devMode } =
     useSettings();
+  const roster = useRoster();
 
   const marks = useAudioPlayer(require('../../assets/sounds/marks.wav'));
   const set = useAudioPlayer(require('../../assets/sounds/set.wav'));
@@ -80,13 +77,10 @@ export default function TimerScreen() {
   const [result, setResult] = useState<Result | null>(null);
   const [gateState, setGateState] = useState<GateState | null>(null);
   const [dbg, setDbg] = useState('');
-  // Optional run tags. The current athlete/drill PERSIST across runs (until
-  // changed/cleared) so timing several runs needs no re-selecting; they're saved
-  // to settings so they also survive an app restart. finishedTags freezes what was
-  // attached to the just-finished run for the result display.
-  const [athlete, setAthlete] = useState('');
+  // Attribution comes from the roster queue (the strip); only the drill label is
+  // still a free-text tag here. finishedTags freezes what was attached to the
+  // just-finished run for the result display.
   const [drill, setDrill] = useState('');
-  const [recents, setRecents] = useState<string[]>([]);
   const [tagOpen, setTagOpen] = useState(false);
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
   // Correction actually applied to the shown result (per run).
@@ -118,11 +112,15 @@ export default function TimerScreen() {
   const offsetRef = useRef(reactionOffsetMs); // latest fixed offset, fallback at save time
   const correctionModeRef = useRef(correctionMode);
   const clockSyncRef = useRef(gate.clockSync); // latest sync (for ±X at finish)
-  const athleteRef = useRef(athlete); // latest tags, read by saveRun without re-creating it
+  // Whoever the strip says is up, read by saveRun without re-creating it. The
+  // finish handler is a useCallback with a deliberately tiny dep list (it is
+  // wired into the event stream), so the roster is reached through a ref rather
+  // than a dependency — same pattern as the tag refs it replaces.
+  const currentAthleteRef = useRef(roster.currentAthlete);
+  currentAthleteRef.current = roster.currentAthlete;
+  const rosterRef = useRef(roster);
+  rosterRef.current = roster;
   const drillRef = useRef(drill);
-  useEffect(() => {
-    athleteRef.current = athlete;
-  }, [athlete]);
   useEffect(() => {
     drillRef.current = drill;
   }, [drill]);
@@ -136,24 +134,20 @@ export default function TimerScreen() {
     clockSyncRef.current = gate.clockSync;
   }, [gate.clockSync]);
 
-  // Hydrate the persisted current tags + recent athletes once.
+  // Hydrate the persisted drill label once (the athlete lives in the queue).
   useEffect(() => {
     (async () => {
       try {
-        setAthlete((await getSetting('current_athlete')) ?? '');
         setDrill((await getSetting('current_drill')) ?? '');
-        setRecents(await getRecentAthletes());
       } catch {
         /* defaults */
       }
     })();
   }, []);
 
-  // Persist the current tags so they survive an app restart (and across runs).
-  const applyTags = useCallback((name: string, dr: string) => {
-    setAthlete(name);
+  // Persist the drill label so it survives an app restart (and across runs).
+  const applyTags = useCallback((_name: string, dr: string) => {
     setDrill(dr);
-    setSetting('current_athlete', name).catch(() => {});
     setSetting('current_drill', dr).catch(() => {});
   }, []);
 
@@ -354,9 +348,9 @@ export default function TimerScreen() {
         minRttMs: cs?.minRttMs ?? null,
         offsetSpreadMs: cs?.offsetSpreadMs ?? null,
       });
-      const tagName = athleteRef.current.trim();
+      const who = currentAthleteRef.current;
       const tagDrill = drillRef.current.trim();
-      setFinishedTags({ name: tagName, drill: tagDrill });
+      setFinishedTags({ name: who?.display_name ?? '', drill: tagDrill });
       saveRun({
         mode: r.mode,
         totalMs: r.totalMs, // RAW authoritative (gate clock)
@@ -365,14 +359,15 @@ export default function TimerScreen() {
         reactionOffsetMs: correction,
         rawJson,
         status: early || implausible ? 'suspect' : r.flags & 0x01 ? 'valid' : 'invalid',
-        athleteName: tagName,
+        athleteId: who?.id ?? null, // null = Unassigned; assignable later in History
         drillType: tagDrill,
       })
         .then(() => {
           console.log('[saveRun] ok');
-          if (tagName) addRecentAthlete(tagName).then(setRecents).catch(() => {});
           const shown = r.mode === 2 ? Math.max(0, r.totalMs - correction) : r.totalMs;
           setDbg(`finish(${src}) ${fmt(shown, 3)}s · saved ✓`);
+          // Advance only once the run is COMMITTED (see TimerV2Screen).
+          rosterRef.current.completeRun();
         })
         .catch((e) => {
           console.warn('[saveRun] FAILED', e);
@@ -559,22 +554,21 @@ export default function TimerScreen() {
     ? fmt(result.totalMs, 3)
     : fmt(liveMs, runState === 'running' ? 2 : 3);
 
-  const currentTags = formatTags(athlete, drill);
   const finishedTagStr = finishedTags ? formatTags(finishedTags.name, finishedTags.drill) : '';
 
   return (
     <View style={styles.container}>
       <ConnChip />
 
-      {/* Compact, optional tag bar. Persists across runs; tap to set, ✕ to clear. */}
+      {/* Who this run is for + who follows. Tap to jump to anyone. */}
+      <UpNextStrip />
+
+      {/* Drill label only — the athlete comes from the roster strip above. */}
       <Pressable style={styles.tagBar} onPress={() => setTagOpen(true)}>
-        <Text
-          style={[styles.tagBarText, !currentTags && styles.tagBarPlaceholder]}
-          numberOfLines={1}
-        >
-          {currentTags || '＋  Athlete / drill (optional)'}
+        <Text style={[styles.tagBarText, !drill && styles.tagBarPlaceholder]} numberOfLines={1}>
+          {drill || '＋  Drill (optional)'}
         </Text>
-        {athlete || drill ? (
+        {drill ? (
           <Pressable onPress={() => applyTags('', '')} hitSlop={8}>
             <Text style={styles.tagClear}>✕</Text>
           </Pressable>
@@ -672,11 +666,13 @@ export default function TimerScreen() {
         </Row>
       </View>
 
+      {/* Drill only — athlete selection lives in the strip's roster picker. */}
       <TagPickerModal
         visible={tagOpen}
-        initialName={athlete}
+        title="Drill"
+        initialName=""
         initialDrill={drill}
-        recents={recents}
+        recents={[]}
         onClose={() => setTagOpen(false)}
         onSubmit={applyTags}
       />

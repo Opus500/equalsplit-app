@@ -11,9 +11,11 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { useGate } from '../ble/GateProvider';
 import { useV2 } from '../ble/V2Provider';
 import type { V2Run } from '../ble/v2';
-import { addRecentAthlete, getRecentAthletes, getSetting, saveRun, setSetting } from '../db/database';
+import { getSetting, saveRun, setSetting } from '../db/database';
 import { TagPickerModal, formatTags } from '../components/TagPicker';
 import { SetControl } from '../components/SetControl';
+import { UpNextStrip } from '../components/UpNextStrip';
+import { useRoster } from '../roster/RosterProvider';
 import { runShareLine, shareText } from '../share';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run-v2';
@@ -31,42 +33,37 @@ export default function TimerV2Screen() {
     return v2.release;
   }, [v2.retain, v2.release]);
 
+  const roster = useRoster();
   const [liveMs, setLiveMs] = useState(0);
   const [dbg, setDbg] = useState('');
-  const [athlete, setAthlete] = useState('');
   const [drill, setDrill] = useState('');
-  const [recents, setRecents] = useState<string[]>([]);
   const [tagOpen, setTagOpen] = useState(false);
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
 
-  const athleteRef = useRef(athlete);
+  // Attribution comes from the roster queue now, not a free-text tag. Held in a
+  // ref so the save effect reads whoever was up at the moment the run landed.
+  const currentAthleteRef = useRef(roster.currentAthlete);
+  currentAthleteRef.current = roster.currentAthlete;
   const drillRef = useRef(drill);
   const t0Ref = useRef(0);
   const savedRef = useRef<V2Run | null>(null);
   useEffect(() => {
-    athleteRef.current = athlete;
-  }, [athlete]);
-  useEffect(() => {
     drillRef.current = drill;
   }, [drill]);
 
-  // Hydrate persisted current tags + recents (shared with the v1 Timer).
+  // Hydrate the persisted drill tag (shared with the v1 Timer).
   useEffect(() => {
     (async () => {
       try {
-        setAthlete((await getSetting('current_athlete')) ?? '');
         setDrill((await getSetting('current_drill')) ?? '');
-        setRecents(await getRecentAthletes());
       } catch {
         /* defaults */
       }
     })();
   }, []);
 
-  const applyTags = useCallback((name: string, dr: string) => {
-    setAthlete(name);
+  const applyTags = useCallback((_name: string, dr: string) => {
     setDrill(dr);
-    setSetting('current_athlete', name).catch(() => {});
     setSetting('current_drill', dr).catch(() => {});
   }, []);
 
@@ -91,9 +88,9 @@ export default function TimerV2Screen() {
       setDbg('gates not time-synced — result withheld (not saved)');
       return;
     }
-    const name = athleteRef.current.trim();
+    const who = currentAthleteRef.current;
     const dr = drillRef.current.trim();
-    setFinishedTags({ name, drill: dr });
+    setFinishedTags({ name: who?.display_name ?? '', drill: dr });
     saveRun({
       mode: 1,
       totalMs: run.splitMs, // RAW gate-clock interval (g1→g2)
@@ -107,15 +104,18 @@ export default function TimerV2Screen() {
         synced: run.synced,
       }),
       status: 'valid',
-      athleteName: name,
+      athleteId: who?.id ?? null, // null = Unassigned; assignable later in History
       drillType: dr,
     })
       .then(() => {
-        if (name) addRecentAthlete(name).then(setRecents).catch(() => {});
         setDbg(`saved ${fmt(run.splitMs, 3)}s ✓`);
+        // Advance only after the run is COMMITTED. When the discard window lands
+        // this call moves to the point the window closes, so a discarded run
+        // leaves the cursor untouched.
+        roster.completeRun();
       })
       .catch((e) => setDbg(`SAVE FAILED: ${String(e)}`));
-  }, [v2.lastRun]);
+  }, [v2.lastRun, roster]);
 
   // Keep awake while armed or running.
   useEffect(() => {
@@ -145,7 +145,6 @@ export default function TimerV2Screen() {
   }, [v2]);
 
   const big = result ? fmt(result.splitMs, 3) : fmt(liveMs, isRunning ? 2 : 3);
-  const currentTags = formatTags(athlete, drill);
   const finishedTagStr = finishedTags ? formatTags(finishedTags.name, finishedTags.drill) : '';
 
   return (
@@ -156,15 +155,15 @@ export default function TimerV2Screen() {
       </View>
       <SessionLine />
 
-      {/* Optional tag bar — persists across runs; shared with v1. */}
+      {/* Who this run is for + who follows. Tap to jump to anyone. */}
+      <UpNextStrip />
+
+      {/* Drill label only — the athlete comes from the roster queue above. */}
       <Pressable style={styles.tagBar} onPress={() => setTagOpen(true)}>
-        <Text
-          style={[styles.tagBarText, !currentTags && styles.tagBarPlaceholder]}
-          numberOfLines={1}
-        >
-          {currentTags || '＋  Athlete / drill (optional)'}
+        <Text style={[styles.tagBarText, !drill && styles.tagBarPlaceholder]} numberOfLines={1}>
+          {drill || '＋  Drill (optional)'}
         </Text>
-        {athlete || drill ? (
+        {drill ? (
           <Pressable onPress={() => applyTags('', '')} hitSlop={8}>
             <Text style={styles.tagClear}>✕</Text>
           </Pressable>
@@ -215,11 +214,13 @@ export default function TimerV2Screen() {
         )}
       </View>
 
+      {/* Drill only — athlete selection lives in the strip's roster picker. */}
       <TagPickerModal
         visible={tagOpen}
-        initialName={athlete}
+        title="Drill"
+        initialName=""
         initialDrill={drill}
-        recents={recents}
+        recents={[]}
         onClose={() => setTagOpen(false)}
         onSubmit={applyTags}
       />

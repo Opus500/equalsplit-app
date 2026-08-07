@@ -37,7 +37,7 @@ function stats(values: number[]): Stats | null {
 const pick = (s: LatencySample[], key: 'beepLatency' | 'bleOneway' | 'audioGap'): number[] =>
   s.map((x) => x[key]).filter((v): v is number => v != null);
 
-export default function SettingsScreen() {
+export default function SettingsScreen({ onOpenDebug }: { onOpenDebug?: () => void }) {
   const {
     reactionOffsetMs,
     measuredAudioLatencyMs,
@@ -85,8 +85,16 @@ export default function SettingsScreen() {
         </View>
         <Text style={styles.note}>
           Off shows clean results only. On reveals the ±X accuracy, clock-sync detail, raw Mode 2
-          split values, and the Debug tab. Times are always measured and saved either way.
+          split values, and Diagnostics below. Times are always measured and saved either way.
         </Text>
+        {devMode && onOpenDebug ? (
+          <Pressable
+            onPress={onOpenDebug}
+            style={({ pressed }) => [styles.debugBtn, pressed && styles.dim]}
+          >
+            <Text style={styles.debugBtnText}>Diagnostics &amp; v2 Lab  ›</Text>
+          </Pressable>
+        ) : null}
       </Section>
 
       <Section title="Log gate (standalone) runs">
@@ -349,6 +357,16 @@ const styles = StyleSheet.create({
   },
   measuredText: { color: '#94a3b8', fontSize: 13, flex: 1 },
   link: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
+  debugBtn: {
+    marginTop: 12,
+    backgroundColor: '#0b0e13',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#243042',
+  },
+  debugBtnText: { color: '#60a5fa', fontWeight: '700', fontSize: 14 },
   note: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 8 },
   dim: { opacity: 0.5 },
   toggleRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },

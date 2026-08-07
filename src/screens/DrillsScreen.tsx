@@ -23,9 +23,11 @@ import {
   LOCKOUT_BOUNDS,
   type DrillConfig,
 } from '../ble/drills';
-import { addRecentAthlete, getRecentAthletes, getSetting, saveRun, setSetting } from '../db/database';
+import { getSetting, saveRun, setSetting } from '../db/database';
 import { TagPickerModal, formatTags } from '../components/TagPicker';
 import { SetControl } from '../components/SetControl';
+import { UpNextStrip } from '../components/UpNextStrip';
+import { useRoster } from '../roster/RosterProvider';
 import { runShareLine, shareText } from '../share';
 
 const KEEP_AWAKE_TAG = 'equalsplit-drill';
@@ -50,36 +52,23 @@ export default function DrillsScreen() {
   const [lockoutMs, setLockoutMs] = useState<number>(base.lockoutMs);
   const config: DrillConfig = useMemo(() => ({ ...base, lockoutMs }), [base, lockoutMs]);
 
+  const roster = useRoster();
   const [liveMs, setLiveMs] = useState(0);
   const [dbg, setDbg] = useState('');
-  const [athlete, setAthlete] = useState('');
   const [drillTag, setDrillTag] = useState(base.label);
-  const [recents, setRecents] = useState<string[]>([]);
   const [tagOpen, setTagOpen] = useState(false);
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
 
-  const athleteRef = useRef(athlete);
+  // Attribution comes from the roster queue; ref so the save effect reads
+  // whoever was up at the moment the rep landed.
+  const currentAthleteRef = useRef(roster.currentAthlete);
+  currentAthleteRef.current = roster.currentAthlete;
   const drillTagRef = useRef(drillTag);
   const t0Ref = useRef(0);
   const savedRef = useRef<unknown>(null);
   useEffect(() => {
-    athleteRef.current = athlete;
-  }, [athlete]);
-  useEffect(() => {
     drillTagRef.current = drillTag;
   }, [drillTag]);
-
-  // Hydrate athlete (shared with the Timer) + recents once.
-  useEffect(() => {
-    (async () => {
-      try {
-        setAthlete((await getSetting('current_athlete')) ?? '');
-        setRecents(await getRecentAthletes());
-      } catch {
-        /* defaults */
-      }
-    })();
-  }, []);
 
   // On drill switch: load the persisted (tuned) lockout for that drill, and reset
   // the drill-label tag to the new drill's name.
@@ -113,10 +102,8 @@ export default function DrillsScreen() {
     [base.key],
   );
 
-  const applyName = useCallback((name: string, dr: string) => {
-    setAthlete(name);
+  const applyName = useCallback((_name: string, dr: string) => {
     setDrillTag(dr);
-    setSetting('current_athlete', name).catch(() => {});
   }, []);
 
   // Live running timer: t0 = start CLEAR mapped to phone time (fallback: arrival).
@@ -139,9 +126,9 @@ export default function DrillsScreen() {
       setDbg('gates not time-synced — result withheld (not saved)');
       return;
     }
-    const name = athleteRef.current.trim();
+    const who = currentAthleteRef.current;
     const dr = drillTagRef.current.trim() || run.label;
-    setFinishedTags({ name, drill: dr });
+    setFinishedTags({ name: who?.display_name ?? '', drill: dr });
     saveRun({
       mode: DRILL_MODE,
       totalMs: run.splitMs, // raw gate-clock interval
@@ -159,15 +146,16 @@ export default function DrillsScreen() {
         synced: run.synced,
       }),
       status: 'valid',
-      athleteName: name,
+      athleteId: who?.id ?? null, // null = Unassigned; assignable later in History
       drillType: dr,
     })
       .then(() => {
-        if (name) addRecentAthlete(name).then(setRecents).catch(() => {});
         setDbg(`saved ${fmt(run.splitMs, 3)}s ✓`);
+        // Advance only once the rep is COMMITTED (see TimerV2Screen).
+        roster.completeRun();
       })
       .catch((e) => setDbg(`SAVE FAILED: ${String(e)}`));
-  }, [v2.lastDrillRun]);
+  }, [v2.lastDrillRun, roster]);
 
   // Keep awake while a drill is armed/set/running.
   useEffect(() => {
@@ -209,6 +197,9 @@ export default function DrillsScreen() {
       </View>
       <SessionLine />
 
+      {/* Who this rep is for + who follows. Tap to jump to anyone. */}
+      <UpNextStrip />
+
       {/* Drill picker */}
       <View style={styles.pickRow}>
         {DRILLS.map((d) => (
@@ -248,10 +239,10 @@ export default function DrillsScreen() {
         </View>
       </View>
 
-      {/* Athlete tag (drill label prefilled; edit per rep if you like). */}
+      {/* Drill label only — the athlete comes from the roster strip above. */}
       <Pressable style={styles.tagBar} onPress={() => setTagOpen(true)}>
-        <Text style={[styles.tagBarText, !athlete && styles.tagBarPlaceholder]} numberOfLines={1}>
-          {formatTags(athlete, drillTag) || '＋  Athlete (optional)'}
+        <Text style={[styles.tagBarText, !drillTag && styles.tagBarPlaceholder]} numberOfLines={1}>
+          {drillTag || '＋  Drill label'}
         </Text>
         <Text style={styles.tagSet}>Tag</Text>
       </Pressable>
@@ -295,10 +286,10 @@ export default function DrillsScreen() {
 
       <TagPickerModal
         visible={tagOpen}
-        title={`${base.label} — tag`}
-        initialName={athlete}
+        title={`${base.label} — drill label`}
+        initialName=""
         initialDrill={drillTag}
-        recents={recents}
+        recents={[]}
         onClose={() => setTagOpen(false)}
         onSubmit={applyName}
       />

@@ -345,6 +345,11 @@ export function V2Provider({ children }: { children: ReactNode }) {
       }
       // Saved centrally (not per-screen): a B1 run can happen on any tab. Mode 1,
       // no tags; rawJson marks the source so it's distinguishable in History.
+      //
+      // Deliberately UNASSIGNED, and deliberately does NOT advance the queue:
+      // nobody was driving the phone during a B1 run, so the current athlete may
+      // be twenty minutes stale. A plausible wrong name is worse than a blank —
+      // a blank prompts a fix in History, a wrong name never gets questioned.
       pushLog(`standalone run: ${run.splitMs}ms (gate ${run.startGateId}→${run.finishGateId})`);
       saveRun({
         mode: 1,

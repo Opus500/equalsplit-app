@@ -9,6 +9,7 @@ import { StatusBar } from 'expo-status-bar';
 import { GateProvider } from './src/ble/GateProvider';
 import { V2Provider } from './src/ble/V2Provider';
 import { SettingsProvider, useSettings } from './src/settings/SettingsProvider';
+import { RosterProvider } from './src/roster/RosterProvider';
 import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
 import TimerV2Screen from './src/screens/TimerV2Screen';
@@ -27,11 +28,13 @@ export default function App() {
 
   return (
     <SettingsProvider>
-      <GateProvider>
-        <V2Provider>
-          <AppShell />
-        </V2Provider>
-      </GateProvider>
+      <RosterProvider>
+        <GateProvider>
+          <V2Provider>
+            <AppShell />
+          </V2Provider>
+        </GateProvider>
+      </RosterProvider>
     </SettingsProvider>
   );
 }
@@ -41,9 +44,9 @@ function AppShell() {
   const { devMode, useV2Engine } = useSettings();
   const [tab, setTab] = useState<Tab>('timer');
 
-  // If dev mode is turned off while on the Debug tab, fall back to Timer.
+  // If dev mode is turned off while on Debug, fall back to where it's reached from.
   useEffect(() => {
-    if (!devMode && tab === 'debug') setTab('timer');
+    if (!devMode && tab === 'debug') setTab('settings');
   }, [devMode, tab]);
 
   return (
@@ -71,12 +74,14 @@ function AppShell() {
         )}
         {tab === 'settings' && (
           <View style={styles.fill}>
-            <SettingsScreen />
+            <SettingsScreen onOpenDebug={devMode ? () => setTab('debug') : undefined} />
           </View>
         )}
+        {/* Debug is a dev tool, not a primary object — reached THROUGH Settings
+            rather than owning a permanent tab slot. */}
         {tab === 'debug' && devMode && (
           <View style={styles.fill}>
-            <DebugScreen />
+            <DebugScreen onBack={() => setTab('settings')} />
           </View>
         )}
       </View>
@@ -86,10 +91,11 @@ function AppShell() {
         <TabButton label="Drills" active={tab === 'drills'} onPress={() => setTab('drills')} />
         <TabButton label="Roster" active={tab === 'roster'} onPress={() => setTab('roster')} />
         <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
-        <TabButton label="Settings" active={tab === 'settings'} onPress={() => setTab('settings')} />
-        {devMode && (
-          <TabButton label="Debug" active={tab === 'debug'} onPress={() => setTab('debug')} />
-        )}
+        <TabButton
+          label="Settings"
+          active={tab === 'settings' || tab === 'debug'}
+          onPress={() => setTab('settings')}
+        />
       </View>
     </View>
   );
