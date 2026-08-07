@@ -24,7 +24,7 @@ import {
   type DrillConfig,
 } from '../ble/drills';
 import { getSetting, saveRun, setSetting } from '../db/database';
-import { TagPickerModal, formatTags } from '../components/TagPicker';
+import { formatTags } from '../components/TagPicker';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
 import { useRoster } from '../roster/RosterProvider';
@@ -55,25 +55,16 @@ export default function DrillsScreen() {
   const roster = useRoster();
   const [liveMs, setLiveMs] = useState(0);
   const [dbg, setDbg] = useState('');
-  const [drillTag, setDrillTag] = useState(base.label);
-  const [tagOpen, setTagOpen] = useState(false);
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
 
   // Attribution comes from the roster queue; ref so the save effect reads
   // whoever was up at the moment the rep landed.
   const currentAthleteRef = useRef(roster.currentAthlete);
   currentAthleteRef.current = roster.currentAthlete;
-  const drillTagRef = useRef(drillTag);
   const t0Ref = useRef(0);
   const savedRef = useRef<unknown>(null);
+  // On drill switch: load the persisted (tuned) lockout for that drill.
   useEffect(() => {
-    drillTagRef.current = drillTag;
-  }, [drillTag]);
-
-  // On drill switch: load the persisted (tuned) lockout for that drill, and reset
-  // the drill-label tag to the new drill's name.
-  useEffect(() => {
-    setDrillTag(base.label);
     (async () => {
       try {
         const v = await getSetting(lockoutKey(base.key));
@@ -102,10 +93,6 @@ export default function DrillsScreen() {
     [base.key],
   );
 
-  const applyName = useCallback((_name: string, dr: string) => {
-    setDrillTag(dr);
-  }, []);
-
   // Live running timer: t0 = start CLEAR mapped to phone time (fallback: arrival).
   useEffect(() => {
     if (!v2.drillRunning) return undefined;
@@ -127,7 +114,9 @@ export default function DrillsScreen() {
       return;
     }
     const who = currentAthleteRef.current;
-    const dr = drillTagRef.current.trim() || run.label;
+    // The drill IS the engine's, always — a free-text override here would mint
+    // manual drill records for engine runs and split them out of the graphs.
+    const dr = run.label;
     setFinishedTags({ name: who?.display_name ?? '', drill: dr });
     saveRun({
       mode: DRILL_MODE,
@@ -239,14 +228,6 @@ export default function DrillsScreen() {
         </View>
       </View>
 
-      {/* Drill label only — the athlete comes from the roster strip above. */}
-      <Pressable style={styles.tagBar} onPress={() => setTagOpen(true)}>
-        <Text style={[styles.tagBarText, !drillTag && styles.tagBarPlaceholder]} numberOfLines={1}>
-          {drillTag || '＋  Drill label'}
-        </Text>
-        <Text style={styles.tagSet}>Tag</Text>
-      </Pressable>
-
       <View style={styles.stage}>
         <Text style={styles.phase}>{phaseLine(v2.drillState)}</Text>
         <Text style={[styles.timer, result ? styles.timerDone : null]}>{big}</Text>
@@ -283,16 +264,6 @@ export default function DrillsScreen() {
           <Btn label="Cancel" onPress={doCancel} kind="warn" />
         )}
       </View>
-
-      <TagPickerModal
-        visible={tagOpen}
-        title={`${base.label} — drill label`}
-        initialName=""
-        initialDrill={drillTag}
-        recents={[]}
-        onClose={() => setTagOpen(false)}
-        onSubmit={applyName}
-      />
     </ScrollView>
   );
 }

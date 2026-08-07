@@ -17,8 +17,16 @@ import { useGate } from '../ble/GateProvider';
 import { useSettings } from '../settings/SettingsProvider';
 import { Evt, GateState, STATE_NAME } from '../ble/constants';
 import type { LastResult } from '../ble/events';
-import { getSetting, saveRun, setSetting } from '../db/database';
-import { TagPickerModal, formatTags } from '../components/TagPicker';
+import {
+  findOrCreateDrill,
+  getSetting,
+  listDrills,
+  saveRun,
+  setSetting,
+  type Drill,
+} from '../db/database';
+import { formatTags } from '../components/TagPicker';
+import { DrillPickerModal } from '../components/DrillPicker';
 import { UpNextStrip } from '../components/UpNextStrip';
 import { useRoster } from '../roster/RosterProvider';
 import { runShareLine, shareText } from '../share';
@@ -80,7 +88,7 @@ export default function TimerScreen() {
   // Attribution comes from the roster queue (the strip); only the drill label is
   // still a free-text tag here. finishedTags freezes what was attached to the
   // just-finished run for the result display.
-  const [drill, setDrill] = useState('');
+  const [drill, setDrill] = useState<Drill | null>(null);
   const [tagOpen, setTagOpen] = useState(false);
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
   // Correction actually applied to the shown result (per run).
@@ -134,21 +142,36 @@ export default function TimerScreen() {
     clockSyncRef.current = gate.clockSync;
   }, [gate.clockSync]);
 
-  // Hydrate the persisted drill label once (the athlete lives in the queue).
+  // Hydrate the persisted drill once (the athlete lives in the queue). The id is
+  // stored, not the label, so a rename can't leave this pointing at a stale name
+  // that would fork a new record on the next save.
   useEffect(() => {
     (async () => {
       try {
-        setDrill((await getSetting('current_drill')) ?? '');
+        const id = await getSetting('current_drill_id');
+        if (id) {
+          const all = await listDrills({ kind: 'all' });
+          setDrill(all.find((d) => d.id === id) ?? null);
+        } else {
+          const legacy = await getSetting('current_drill');
+          if (legacy) {
+            const d = await findOrCreateDrill(legacy);
+            if (d) {
+              setDrill(d);
+              setSetting('current_drill_id', d.id).catch(() => {});
+            }
+          }
+        }
       } catch {
         /* defaults */
       }
     })();
   }, []);
 
-  // Persist the drill label so it survives an app restart (and across runs).
-  const applyTags = useCallback((_name: string, dr: string) => {
-    setDrill(dr);
-    setSetting('current_drill', dr).catch(() => {});
+  // Persist the drill so it survives an app restart (and across runs).
+  const applyDrill = useCallback((d: Drill | null) => {
+    setDrill(d);
+    setSetting('current_drill_id', d?.id ?? '').catch(() => {});
   }, []);
 
   // Audio: preload + warm up the output pipeline so the first real cue is low-latency.
@@ -349,8 +372,8 @@ export default function TimerScreen() {
         offsetSpreadMs: cs?.offsetSpreadMs ?? null,
       });
       const who = currentAthleteRef.current;
-      const tagDrill = drillRef.current.trim();
-      setFinishedTags({ name: who?.display_name ?? '', drill: tagDrill });
+      const tagDrill = drillRef.current;
+      setFinishedTags({ name: who?.display_name ?? '', drill: tagDrill?.name ?? '' });
       saveRun({
         mode: r.mode,
         totalMs: r.totalMs, // RAW authoritative (gate clock)
@@ -360,7 +383,7 @@ export default function TimerScreen() {
         rawJson,
         status: early || implausible ? 'suspect' : r.flags & 0x01 ? 'valid' : 'invalid',
         athleteId: who?.id ?? null, // null = Unassigned; assignable later in History
-        drillType: tagDrill,
+        drillId: tagDrill?.id ?? null,
       })
         .then(() => {
           console.log('[saveRun] ok');
@@ -566,10 +589,10 @@ export default function TimerScreen() {
       {/* Drill label only — the athlete comes from the roster strip above. */}
       <Pressable style={styles.tagBar} onPress={() => setTagOpen(true)}>
         <Text style={[styles.tagBarText, !drill && styles.tagBarPlaceholder]} numberOfLines={1}>
-          {drill || '＋  Drill (optional)'}
+          {drill?.name || '＋  Drill (optional)'}
         </Text>
         {drill ? (
-          <Pressable onPress={() => applyTags('', '')} hitSlop={8}>
+          <Pressable onPress={() => applyDrill(null)} hitSlop={8}>
             <Text style={styles.tagClear}>✕</Text>
           </Pressable>
         ) : (
@@ -666,15 +689,13 @@ export default function TimerScreen() {
         </Row>
       </View>
 
-      {/* Drill only — athlete selection lives in the strip's roster picker. */}
-      <TagPickerModal
+      {/* Drill records (kind='manual'): the timer never offers L Drill /
+          Shuttle Run, which is what the trimmed list actually means now. */}
+      <DrillPickerModal
         visible={tagOpen}
-        title="Drill"
-        initialName=""
-        initialDrill={drill}
-        recents={[]}
+        currentId={drill?.id ?? null}
         onClose={() => setTagOpen(false)}
-        onSubmit={applyTags}
+        onPick={applyDrill}
       />
     </View>
   );

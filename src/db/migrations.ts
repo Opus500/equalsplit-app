@@ -10,7 +10,26 @@
 // Ordering rule: ensureSchema() is idempotent and runs on every launch; the
 // one-time DATA backfill is gated on schema_version and runs in a transaction.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
+
+/**
+ * Drill labels owned by the Drills engine (src/ble/drills.ts DRILLS[].label) and
+ * the standalone observer. Duplicated as literals because this module must stay
+ * import-free — keep in sync if an engine drill is added. They are marked
+ * kind='engine' so the timer's picker can exclude them: a Mode-1 run is never
+ * "L Drill", and mixing them would undo the point of trimming that list.
+ */
+export const ENGINE_DRILL_LABELS = ['L Drill', 'Shuttle Run', 'Standalone'];
+
+/** Seeded vocabulary for the timer's drill picker (kind='manual'). */
+export const SEED_DRILL_LABELS = ['10m', '20m', '30m', '40yd dash'];
+
+/** Which picker a drill belongs to. Engine drills are written by the Drills
+ *  screen / standalone observer and must not clutter the timer's list. */
+export function drillKindFor(name: string): 'engine' | 'manual' {
+  const key = foldName(name);
+  return ENGINE_DRILL_LABELS.some((l) => foldName(l) === key) ? 'engine' : 'manual';
+}
 
 /** Values SQLite can bind. Matches expo-sqlite's SQLiteBindValue minus blobs. */
 export type BindValue = string | number | null | boolean;
@@ -90,12 +109,58 @@ export type MigrationReport = {
   merges: MergedGroup[];
   /** runs still unlinked after the backfill (legitimately Unassigned) */
   runsUnassignedAfter: number;
+  // --- v3: drills ---
+  drillsCreated: number;
+  drillRunsLinked: number;
+  drillMerges: MergedGroup[];
+  runsWithoutDrillAfter: number;
 };
 
 function chunk<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
+}
+
+export type NameGroup = {
+  /** exact spelling (trimmed) -> how often used, and when last used */
+  spellings: Map<string, { count: number; lastAt: number }>;
+  firstAt: number;
+  lastAt: number;
+  rowIds: string[];
+};
+
+/**
+ * Fold rows of {id, name, at} into one group per canonical name. Shared by the
+ * athlete and drill backfills so both get identical, already-verified folding
+ * (NFC + case) and identical canonical-spelling selection.
+ * Rows MUST be ordered by `at` ascending.
+ */
+export function groupByFoldedName(
+  rows: { id: string; name: string | null; at: number }[],
+): Map<string, NameGroup> {
+  const groups = new Map<string, NameGroup>();
+  for (const r of rows) {
+    const name = (r.name ?? '').trim();
+    if (!name) continue;
+    const key = foldName(name);
+    let g = groups.get(key);
+    if (!g) {
+      g = { spellings: new Map(), firstAt: r.at, lastAt: r.at, rowIds: [] };
+      groups.set(key, g);
+    }
+    const s = g.spellings.get(name);
+    if (s) {
+      s.count += 1;
+      if (r.at > s.lastAt) s.lastAt = r.at;
+    } else {
+      g.spellings.set(name, { count: 1, lastAt: r.at });
+    }
+    g.rowIds.push(r.id);
+    if (r.at < g.firstAt) g.firstAt = r.at;
+    if (r.at > g.lastAt) g.lastAt = r.at;
+  }
+  return groups;
 }
 
 async function tableColumns(db: MigrationDb, table: string): Promise<string[]> {
@@ -170,6 +235,21 @@ export async function ensureSchema(db: MigrationDb): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_athletes_archived ON athletes(archived_at);
 
+    -- Drills (schema v3). Records, not free text, for the same reason athletes
+    -- are: "30m"/"30M"/"30 m" would split one drill into three series in the
+    -- progression graph, which is the one place grouping has to be right.
+    -- No archive: a drill is not a person. Clutter is handled by ordering the
+    -- picker on last_used_at, so a one-off sinks on its own.
+    CREATE TABLE IF NOT EXISTS drills (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'manual',
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      synced INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_drills_used ON drills(last_used_at);
+
     -- Named lineups built ahead of practice. Loading one COPIES its order into
     -- the live queue (settings), so editing the day's queue never mutates it.
     CREATE TABLE IF NOT EXISTS queue_templates (
@@ -201,6 +281,12 @@ export async function ensureSchema(db: MigrationDb): Promise<void> {
     await db.execAsync('ALTER TABLE runs ADD COLUMN athlete_id TEXT');
   }
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_runs_athlete ON runs(athlete_id)');
+  // v3: the drill link. drill_type stays as the frozen snapshot, exactly as
+  // athlete_name does — same rollback-safety property.
+  if (!runCols.includes('drill_id')) {
+    await db.execAsync('ALTER TABLE runs ADD COLUMN drill_id TEXT');
+  }
+  await db.execAsync('CREATE INDEX IF NOT EXISTS idx_runs_drill ON runs(drill_id)');
 
   const sessionCols = await tableColumns(db, 'sessions');
   if (!sessionCols.includes('custom_name')) {
@@ -229,32 +315,9 @@ async function backfillRoster(db: MigrationDb): Promise<{
       ORDER BY created_at ASC, rowid ASC`,
   );
 
-  type Group = {
-    /** exact spelling (trimmed) -> how often it was used, and when last used */
-    spellings: Map<string, { count: number; lastAt: number }>;
-    firstAt: number;
-    runIds: string[];
-  };
-  const groups = new Map<string, Group>();
-  for (const r of rows) {
-    const name = (r.athlete_name ?? '').trim();
-    if (!name) continue;
-    const key = foldName(name);
-    let g = groups.get(key);
-    if (!g) {
-      g = { spellings: new Map(), firstAt: r.created_at, runIds: [] };
-      groups.set(key, g);
-    }
-    const s = g.spellings.get(name);
-    if (s) {
-      s.count += 1;
-      if (r.created_at > s.lastAt) s.lastAt = r.created_at;
-    } else {
-      g.spellings.set(name, { count: 1, lastAt: r.created_at });
-    }
-    g.runIds.push(r.id);
-    if (r.created_at < g.firstAt) g.firstAt = r.created_at;
-  }
+  const groups = groupByFoldedName(
+    rows.map((r) => ({ id: r.id, name: r.athlete_name, at: r.created_at })),
+  );
 
   // Existing athlete records (a partially-applied migration, or records the user
   // already created) — match on the folded name so we never double-create.
@@ -283,14 +346,14 @@ async function backfillRoster(db: MigrationDb): Promise<{
       athletesCreated += 1;
     }
     // Chunked: SQLite caps bound variables per statement (999 by default).
-    for (const part of chunk(g.runIds, 200)) {
+    for (const part of chunk(g.rowIds, 200)) {
       const placeholders = part.map(() => '?').join(',');
       await db.runAsync(`UPDATE runs SET athlete_id = ? WHERE id IN (${placeholders})`, [id, ...part]);
       runsLinked += part.length;
     }
     if (g.spellings.size > 1) {
       const variants = [...g.spellings.entries()].map(([s, v]) => `${s} ×${v.count}`);
-      merges.push({ display, variants, runs: g.runIds.length });
+      merges.push({ display, variants, runs: g.rowIds.length });
     }
   }
 
@@ -331,6 +394,80 @@ async function backfillRoster(db: MigrationDb): Promise<{
 }
 
 /**
+ * v3: turn distinct free-text drill labels into drill records and relink runs.
+ *
+ * Reuses the athlete backfill's folding and canonical-spelling rules verbatim
+ * (groupByFoldedName + canonicalSpelling), because "30m" vs "30M" splitting one
+ * drill into two series is the same defect as two records for one athlete — and
+ * it lands directly on the progression graph, whose entire value is grouping.
+ *
+ * `drill_type` is LEFT IN PLACE as a frozen snapshot, exactly like athlete_name.
+ */
+async function backfillDrills(db: MigrationDb): Promise<{
+  drillsCreated: number;
+  drillRunsLinked: number;
+  drillMerges: MergedGroup[];
+}> {
+  const rows = await db.getAllAsync<{ id: string; drill_type: string; created_at: number }>(
+    `SELECT id, drill_type, created_at FROM runs
+      WHERE drill_id IS NULL AND drill_type IS NOT NULL AND TRIM(drill_type) <> ''
+      ORDER BY created_at ASC, rowid ASC`,
+  );
+  const groups = groupByFoldedName(
+    rows.map((r) => ({ id: r.id, name: r.drill_type, at: r.created_at })),
+  );
+
+  const existing = await db.getAllAsync<{ id: string; name: string }>('SELECT id, name FROM drills');
+  const byKey = new Map<string, string>();
+  for (const d of existing) byKey.set(foldName(d.name), d.id);
+
+  const engineKeys = new Set(ENGINE_DRILL_LABELS.map(foldName));
+  let drillsCreated = 0;
+  let drillRunsLinked = 0;
+  const drillMerges: MergedGroup[] = [];
+
+  for (const [key, g] of groups) {
+    const name = canonicalSpelling(g.spellings);
+    let id = byKey.get(key);
+    if (!id) {
+      id = newId();
+      await db.runAsync(
+        'INSERT INTO drills (id, name, kind, created_at, last_used_at, synced) VALUES (?, ?, ?, ?, ?, 0)',
+        [id, name, engineKeys.has(key) ? 'engine' : 'manual', g.firstAt, g.lastAt],
+      );
+      byKey.set(key, id);
+      drillsCreated += 1;
+    }
+    for (const part of chunk(g.rowIds, 200)) {
+      const placeholders = part.map(() => '?').join(',');
+      await db.runAsync(`UPDATE runs SET drill_id = ? WHERE id IN (${placeholders})`, [id, ...part]);
+      drillRunsLinked += part.length;
+    }
+    if (g.spellings.size > 1) {
+      const variants = [...g.spellings.entries()].map(([s, v]) => `${s} ×${v.count}`);
+      drillMerges.push({ display: name, variants, runs: g.rowIds.length });
+    }
+  }
+
+  // Seed the timer's vocabulary. Seeded-but-unused drills are harmless: the
+  // picker orders on last_used_at, so anything never used sinks by itself.
+  const now = Date.now();
+  for (const label of SEED_DRILL_LABELS) {
+    const key = foldName(label);
+    if (byKey.has(key)) continue;
+    const id = newId();
+    await db.runAsync(
+      'INSERT INTO drills (id, name, kind, created_at, last_used_at, synced) VALUES (?, ?, ?, ?, NULL, 0)',
+      [id, label, 'manual', now],
+    );
+    byKey.set(key, id);
+    drillsCreated += 1;
+  }
+
+  return { drillsCreated, drillRunsLinked, drillMerges };
+}
+
+/**
  * Bring the database to SCHEMA_VERSION. Safe to call on every launch.
  *
  * The version gate is the critical correctness property: initDb() runs at every
@@ -348,6 +485,16 @@ export async function runMigrations(db: MigrationDb): Promise<MigrationReport> {
   const runsTotal = totalRow?.c ?? 0;
   const runsWithLegacyTag = legacyRow?.c ?? 0;
 
+  const tallies = async () => {
+    const unassigned = await db.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM runs WHERE athlete_id IS NULL',
+    );
+    const undrilled = await db.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM runs WHERE drill_id IS NULL',
+    );
+    return { runsUnassignedAfter: unassigned?.c ?? 0, runsWithoutDrillAfter: undrilled?.c ?? 0 };
+  };
+
   const base: MigrationReport = {
     fromVersion,
     toVersion: fromVersion,
@@ -359,22 +506,29 @@ export async function runMigrations(db: MigrationDb): Promise<MigrationReport> {
     seededFromRecents: 0,
     merges: [],
     runsUnassignedAfter: 0,
+    drillsCreated: 0,
+    drillRunsLinked: 0,
+    drillMerges: [],
+    runsWithoutDrillAfter: 0,
   };
 
-  if (fromVersion >= SCHEMA_VERSION) {
-    const unassigned = await db.getFirstAsync<{ c: number }>(
-      'SELECT COUNT(*) AS c FROM runs WHERE athlete_id IS NULL',
-    );
-    return { ...base, runsUnassignedAfter: unassigned?.c ?? 0 };
-  }
+  if (fromVersion >= SCHEMA_VERSION) return { ...base, ...(await tallies()) };
 
+  // STEPWISE, each step gated on its own version: a database already at v2 runs
+  // ONLY the drill backfill. Re-running the athlete step would resurrect links
+  // the coach had deliberately cleared — the same hazard the version gate exists
+  // to prevent, which is why the steps are separately gated rather than "if not
+  // current, run everything".
+  //
   // Explicit BEGIN/COMMIT rather than a driver-specific transaction helper, so
   // the identical code path works under expo-sqlite and node:sqlite. A crash
   // mid-backfill rolls back whole — never a half-linked roster.
   await db.execAsync('BEGIN IMMEDIATE');
-  let result;
+  let roster = { athletesCreated: 0, runsLinked: 0, seededFromRecents: 0, merges: [] as MergedGroup[] };
+  let drills = { drillsCreated: 0, drillRunsLinked: 0, drillMerges: [] as MergedGroup[] };
   try {
-    result = await backfillRoster(db);
+    if (fromVersion < 2) roster = await backfillRoster(db);
+    if (fromVersion < 3) drills = await backfillDrills(db);
     await setVersion(db, SCHEMA_VERSION);
     await db.execAsync('COMMIT');
   } catch (e) {
@@ -382,15 +536,12 @@ export async function runMigrations(db: MigrationDb): Promise<MigrationReport> {
     throw e;
   }
 
-  const unassigned = await db.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(*) AS c FROM runs WHERE athlete_id IS NULL',
-  );
-
   return {
     ...base,
     toVersion: SCHEMA_VERSION,
     ranBackfill: true,
-    ...result,
-    runsUnassignedAfter: unassigned?.c ?? 0,
+    ...roster,
+    ...drills,
+    ...(await tallies()),
   };
 }

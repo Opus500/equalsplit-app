@@ -107,6 +107,33 @@ most-recent-non-uppercase) — check before the UI is built on top.
 
 The `MODULE_TYPELESS_PACKAGE_JSON` warning from Node is cosmetic (TS reparsed as ESM).
 
+## 4b. Drills are records too (schema v3)
+
+Same reasoning as athletes, and the progression graph is what forces it: grouping by free
+text splits `30m` / `30M` / `30 m ` into separate series, which is precisely the feature whose
+value *is* the grouping. `drills` (id, name, kind, created_at, last_used_at); `runs.drill_id`
+alongside the frozen `drill_type` snapshot. The v3 backfill reuses the athlete folding and
+`canonicalSpelling` verbatim.
+
+**No archive — drills are not people.** Clutter is handled by ordering the picker on
+`last_used_at`, so a drill tried once ("sled push") sinks below what's in rotation and falls
+behind "More…" on its own. `deleteDrillIfUnused` is the only removal and refuses when any run
+references it, so it can never orphan a run.
+
+**`kind` scopes the vocabulary.** `engine` drills (`L Drill`, `Shuttle Run`, `Standalone`) are
+written by the Drills screen and standalone observer; the timers' picker shows `manual` only, so
+a Mode-1 run is never offered "L Drill". History uses `all` because re-tagging may target either.
+This is what the "trim the timer list" request means now: seeded with 10m/20m/30m/40yd, plus
+whatever labels real runs actually carry.
+
+**Linking is central, not per-call-site.** `saveRun` resolves `drill_id` from the label itself
+(get-or-create, folded). All four write paths — v1 timer, v2 timer, Drills engine, standalone
+observer — link automatically, and a fifth added later cannot forget and silently drop its runs
+out of the graphs.
+
+The Drills screen no longer offers a free-text label override: the drill *is* the engine's, and
+an override would mint `manual` records for engine runs and split them out of their own series.
+
 ## 5. Decisions of record
 
 | Decision | Call |

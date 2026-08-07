@@ -24,6 +24,7 @@ import {
   getRuns,
   getSessions,
   resolvedAthlete,
+  resolvedDrill,
   setSessionName,
   updateRunAthlete,
   updateRunDrill,
@@ -31,8 +32,9 @@ import {
   type SessionRow,
 } from '../db/database';
 import { useSettings } from '../settings/SettingsProvider';
-import { DRILL_PRESETS, formatTags } from '../components/TagPicker';
+import { formatTags } from '../components/TagPicker';
 import { AthletePickerModal } from '../components/AthletePicker';
+import { DrillPickerModal } from '../components/DrillPicker';
 import { runShareLine, sessionShareText, shareText } from '../share';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
@@ -68,6 +70,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   const [athleteFilter, setAthleteFilter] = useState<string | null>(null);
   const [editing, setEditing] = useState<RunRow | null>(null);
   const [picking, setPicking] = useState(false);
+  const [pickingDrill, setPickingDrill] = useState(false);
   const [renaming, setRenaming] = useState(false);
 
   const loadSessions = useCallback(async () => {
@@ -110,11 +113,11 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   );
 
   const setDrill = useCallback(
-    async (drill: string | null) => {
+    async (drillId: string | null) => {
       if (!editing) return;
-      await updateRunDrill(editing.id, drill);
+      await updateRunDrill(editing.id, drillId);
       await refreshRuns();
-      setEditing((cur) => (cur ? { ...cur, drill_type: drill } : cur));
+      setEditing((cur) => (cur ? { ...cur, drill_id: drillId } : cur));
     },
     [editing, refreshRuns],
   );
@@ -160,13 +163,15 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
     // Average only when the visible valid runs are actually comparable: one drill
     // type AND one mode. Otherwise an average mixes incomparable runs, so omit it.
     const validShown = shown.filter((r) => r.status === 'valid');
-    const drillSet = new Set(validShown.map((r) => (r.drill_type ?? '').trim()));
+    // Group by drill RECORD: '30m' vs '30M' must not read as two drills.
+    const drillSet = new Set(validShown.map((r) => r.drill_id ?? (r.drill_type ?? '').trim()));
     const modeSet = new Set(validShown.map((r) => r.mode));
     const comparable = validShown.length > 0 && drillSet.size === 1 && modeSet.size === 1;
     const avg = comparable
       ? validShown.reduce((a, r) => a + totalOf(r), 0) / validShown.length
       : null;
-    const avgLabel = `Avg${[...drillSet][0] ? ` · ${[...drillSet][0]}` : ` · M${[...modeSet][0]}`}`;
+    const avgDrill = comparable ? resolvedDrill(validShown[0]).name : null;
+    const avgLabel = `Avg${avgDrill ? ` · ${avgDrill}` : ` · M${[...modeSet][0]}`}`;
 
     return (
       <View style={styles.container}>
@@ -195,7 +200,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                       .sort((a, b) => a.run_index - b.run_index)
                       .map((r) => ({
                         athleteName: resolvedAthlete(r).name,
-                        drillType: r.drill_type,
+                        drillType: resolvedDrill(r).name,
                         totalMs: r.total_ms,
                       })),
                   ),
@@ -234,7 +239,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           renderItem={({ item }) => {
             const meta = parseMeta(item);
             const who = resolvedAthlete(item);
-            const tags = formatTags(who.name, item.drill_type);
+            const tags = formatTags(who.name, resolvedDrill(item).name);
             return (
               <Pressable style={styles.runRow} onPress={() => setEditing(item)}>
                 <View style={styles.runLeft}>
@@ -284,7 +289,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                 <Pressable
                   onPress={() =>
                     shareText(
-                      runShareLine(resolvedAthlete(item).name, item.drill_type, item.total_ms),
+                      runShareLine(resolvedAthlete(item).name, resolvedDrill(item).name, item.total_ms),
                     )
                   }
                   hitSlop={8}
@@ -304,7 +309,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           run={editing}
           onClose={() => setEditing(null)}
           onOpenPicker={() => setPicking(true)}
-          onSetDrill={setDrill}
+          onOpenDrillPicker={() => setPickingDrill(true)}
         />
 
         {/* Reassignment (a stated requirement, not a follow-up): pick the record,
@@ -315,6 +320,17 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           title={editing ? `Athlete for run #${editing.display_index}` : 'Choose athlete'}
           onClose={() => setPicking(false)}
           onPick={reassign}
+        />
+
+        {/* 'all' here, unlike the timers: re-tagging a run may legitimately
+            target an engine drill (L Drill / Shuttle Run). */}
+        <DrillPickerModal
+          visible={pickingDrill}
+          currentId={editing?.drill_id ?? null}
+          kind="all"
+          title={editing ? `Drill for run #${editing.display_index}` : 'Choose drill'}
+          onClose={() => setPickingDrill(false)}
+          onPick={(d) => setDrill(d?.id ?? null)}
         />
 
         <RenameModal
@@ -361,16 +377,16 @@ function RunEditModal({
   run,
   onClose,
   onOpenPicker,
-  onSetDrill,
+  onOpenDrillPicker,
 }: {
   run: RunRow | null;
   onClose: () => void;
   onOpenPicker: () => void;
-  onSetDrill: (drill: string | null) => void;
+  onOpenDrillPicker: () => void;
 }) {
   if (!run) return null;
   const who = resolvedAthlete(run);
-  const drill = (run.drill_type ?? '').trim();
+  const drill = resolvedDrill(run);
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <Pressable style={styles.rmBackdrop} onPress={onClose}>
@@ -395,23 +411,19 @@ function RunEditModal({
           {who.archived ? <Text style={styles.legacyNote}>This athlete is archived.</Text> : null}
 
           <Text style={[styles.editLabel, { marginTop: 16 }]}>Drill</Text>
-          <View style={styles.chipWrap}>
-            {DRILL_PRESETS.map((p) => (
-              <Pressable
-                key={p}
-                onPress={() => onSetDrill(drill === p ? null : p)}
-                style={({ pressed }) => [
-                  styles.fchip,
-                  drill === p && styles.fchipActive,
-                  pressed && { opacity: 0.6 },
-                ]}
-              >
-                <Text style={[styles.fchipText, drill === p && styles.fchipTextActive]}>{p}</Text>
-              </Pressable>
-            ))}
-          </View>
-          {drill && !DRILL_PRESETS.includes(drill) ? (
-            <Text style={styles.customDrill}>current: {drill}</Text>
+          <Pressable
+            onPress={onOpenDrillPicker}
+            style={({ pressed }) => [styles.athleteBtn, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={[styles.athleteName, !drill.name && styles.athleteNone]} numberOfLines={1}>
+              {drill.name ?? 'No drill'}
+            </Text>
+            <Text style={styles.athleteChange}>Change ›</Text>
+          </Pressable>
+          {drill.legacy ? (
+            <Text style={styles.legacyNote}>
+              Old free-text label, not linked to a drill record. Pick one to link it.
+            </Text>
           ) : null}
 
           <Pressable

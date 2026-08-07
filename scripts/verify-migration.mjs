@@ -60,6 +60,14 @@ function snapshot(db, label) {
     : null;
   const version =
     db.prepare("SELECT value FROM settings WHERE key='schema_version'").get()?.value ?? '0';
+  const drills = has(db, 'drills') ? count(db, 'SELECT COUNT(*) AS c FROM drills') : null;
+  const drillLinked = (() => {
+    try {
+      return count(db, 'SELECT COUNT(*) AS c FROM runs WHERE drill_id IS NOT NULL');
+    } catch {
+      return null;
+    }
+  })();
 
   console.log(`\n--- ${label} ---`);
   console.log(`schema_version      : ${version}`);
@@ -67,6 +75,8 @@ function snapshot(db, label) {
   console.log(`runs w/ legacy tag  : ${tagged}`);
   console.log(`athletes table      : ${athletes === null ? '(does not exist)' : athletes}`);
   console.log(`runs linked by id   : ${linked === null ? '(no athlete_id column)' : linked}`);
+  console.log(`drills table        : ${drills === null ? '(does not exist)' : drills}`);
+  console.log(`runs linked to drill: ${drillLinked === null ? '(no drill_id column)' : drillLinked}`);
 
   // distinct folded names = the number of athletes the backfill SHOULD produce
   if (tagged > 0) {
@@ -127,9 +137,9 @@ function buildDemo(file) {
   const rows = [
     ['r1', 1, 4210, 1000, 'Jayden', '30m'],
     ['r2', 2, 4180, 2000, 'Jayden', '30m'],
-    ['r3', 3, 4300, 3000, '  jayden  ', '30m'], // padded + lowercased
+    ['r3', 3, 4300, 3000, '  jayden  ', '30M'], // padded name + SHOUTED drill
     ['r4', 4, 4260, 4000, 'JAYDEN', '30m'], // most RECENT, least FREQUENT
-    ['r5', 5, 5010, 5000, JOSE_COMPOSED, '30m'],
+    ['r5', 5, 5010, 5000, JOSE_COMPOSED, ' 30m '], // padded drill -> same drill
     ['r6', 6, 4990, 6000, JOSE_DECOMPOSED, '30m'], // identical on screen
     ['r7', 7, 5100, 7000, JOSE_COMPOSED, '30m'], // -> composed is most frequent
     ['r8', 8, 5050, 8000, JOSE_SHOUTED, '30m'], // most RECENT, least FREQUENT
@@ -205,20 +215,75 @@ for (const a of db
   );
 }
 
+if (report.drillMerges.length) {
+  console.log('\n--- DRILL MERGES (case/padding variants folded into one drill) ---');
+  for (const m of report.drillMerges) {
+    console.log(`  "${m.display}"  <=  ${m.variants.map((v) => JSON.stringify(v)).join(', ')}  (${m.runs} runs)`);
+  }
+}
+
+console.log('\n--- DRILLS AFTER MIGRATION ---');
+for (const d of db
+  .prepare(
+    `SELECT d.name, d.kind, d.last_used_at,
+            (SELECT COUNT(*) FROM runs r WHERE r.drill_id = d.id) AS runs
+       FROM drills d ORDER BY d.last_used_at IS NULL, d.last_used_at DESC`,
+  )
+  .all()) {
+  console.log(
+    `  ${d.name.padEnd(14)} runs=${String(d.runs).padEnd(3)} kind=${d.kind.padEnd(7)}${d.last_used_at ? '' : ' (never used — sinks in the picker)'}`,
+  );
+}
+
 // Idempotency: initDb() runs at every app launch, so a second pass MUST be inert.
 const second = await runMigrations(adapt(db));
 console.log('\n--- IDEMPOTENCY CHECK (second run, as on next app launch) ---');
 console.log(
-  `  ranBackfill=${second.ranBackfill} (expect false)  athletesCreated=${second.athletesCreated} (expect 0)  runsLinked=${second.runsLinked} (expect 0)`,
+  `  ranBackfill=${second.ranBackfill} (expect false)  athletesCreated=${second.athletesCreated} (expect 0)  runsLinked=${second.runsLinked} (expect 0)  drillsCreated=${second.drillsCreated} (expect 0)`,
+);
+
+// The upgrade path this device will ACTUALLY take: it is already at v2, so only
+// the drill step may run. Re-running the athlete step would resurrect links the
+// coach had deliberately cleared — the exact hazard the version gate exists for.
+console.log('\n--- v2 -> v3 UPGRADE PATH (what an already-migrated phone does) ---');
+db.exec("UPDATE settings SET value='2' WHERE key='schema_version'");
+db.exec('DELETE FROM drills');
+db.exec('UPDATE runs SET drill_id = NULL');
+const athletesBeforeStep = db.prepare('SELECT COUNT(*) AS c FROM athletes').get().c;
+const linksBeforeStep = db.prepare(
+  'SELECT COUNT(*) AS c FROM runs WHERE athlete_id IS NOT NULL',
+).get().c;
+const upgrade = await runMigrations(adapt(db));
+const athletesAfterStep = db.prepare('SELECT COUNT(*) AS c FROM athletes').get().c;
+const linksAfterStep = db.prepare(
+  'SELECT COUNT(*) AS c FROM runs WHERE athlete_id IS NOT NULL',
+).get().c;
+console.log(
+  `  athletesCreated=${upgrade.athletesCreated} (expect 0)  drillsCreated=${upgrade.drillsCreated} (expect >0)  drillRunsLinked=${upgrade.drillRunsLinked}`,
+);
+console.log(
+  `  athletes ${athletesBeforeStep} -> ${athletesAfterStep} (unchanged)   athlete links ${linksBeforeStep} -> ${linksAfterStep} (unchanged)`,
 );
 
 const athletesAfter = db.prepare('SELECT COUNT(*) AS c FROM athletes').get().c;
 const stillTagged = before.tagged;
 const linkedAfter = after.linked;
+const drillTagged = count(
+  db,
+  "SELECT COUNT(*) AS c FROM runs WHERE drill_type IS NOT NULL AND TRIM(drill_type) <> ''",
+);
+const drillLinkedAfter = count(db, 'SELECT COUNT(*) AS c FROM runs WHERE drill_id IS NOT NULL');
 
 const problems = [];
-if (second.ranBackfill || second.athletesCreated || second.runsLinked)
+if (second.ranBackfill || second.athletesCreated || second.runsLinked || second.drillsCreated)
   problems.push('second run was NOT inert — the version gate is broken');
+if (upgrade.athletesCreated !== 0 || athletesAfterStep !== athletesBeforeStep)
+  problems.push('v2->v3 re-ran the ATHLETE backfill — steps are not separately gated');
+if (linksAfterStep !== linksBeforeStep)
+  problems.push('v2->v3 altered existing athlete links');
+if (upgrade.drillsCreated === 0) problems.push('v2->v3 did not create drills');
+if (drillLinkedAfter !== drillTagged)
+  problems.push(`drill-linked ${drillLinkedAfter} != ${drillTagged} runs that had a drill label`);
 if (linkedAfter !== stillTagged)
   problems.push(`linked ${linkedAfter} != ${stillTagged} runs that had a tag`);
 if (after.runsTotal !== before.runsTotal)
