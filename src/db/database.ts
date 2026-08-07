@@ -10,6 +10,8 @@
 
 import * as SQLite from 'expo-sqlite';
 
+import { runMigrations, type BindValue, type MigrationDb } from './migrations';
+
 export const DEFAULT_REACTION_OFFSET_MS = 150;
 
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -19,55 +21,32 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
   return dbPromise;
 }
 
+// Adapter onto the dependency-free migration layer (migrations.ts). Written out
+// explicitly rather than passing the SQLiteDatabase straight through, because
+// expo's methods are overloaded (array form + variadic) and the narrow interface
+// is what lets the SAME migration code run under node:sqlite in
+// scripts/verify-migration.mjs — i.e. rehearsed on a copy of the real database.
+function migrationAdapter(db: SQLite.SQLiteDatabase): MigrationDb {
+  return {
+    execAsync: (sql: string) => db.execAsync(sql),
+    getAllAsync: <T,>(sql: string, params: BindValue[] = []) => db.getAllAsync<T>(sql, params),
+    getFirstAsync: <T,>(sql: string, params: BindValue[] = []) => db.getFirstAsync<T>(sql, params),
+    runAsync: (sql: string, params: BindValue[] = []) => db.runAsync(sql, params),
+  };
+}
+
+// Schema + one-time data migrations all live in migrations.ts now (single source
+// of truth, and runnable outside the app). Safe to call on every launch.
 export async function initDb(): Promise<void> {
   const db = await getDb();
-  await db.execAsync(`
-    PRAGMA journal_mode = WAL;
-    CREATE TABLE IF NOT EXISTS sessions (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL,
-      created_at INTEGER NOT NULL,
-      custom_name TEXT,
-      synced INTEGER NOT NULL DEFAULT 0
+  const report = await runMigrations(migrationAdapter(db));
+  if (report.ranBackfill) {
+    console.log(
+      `[db] migrated v${report.fromVersion}→v${report.toVersion}: ` +
+        `${report.athletesCreated} athletes created, ${report.runsLinked} runs linked, ` +
+        `${report.seededFromRecents} seeded, ${report.merges.length} name merges, ` +
+        `${report.runsUnassignedAfter} unassigned`,
     );
-    CREATE TABLE IF NOT EXISTS runs (
-      id TEXT PRIMARY KEY NOT NULL,
-      session_id TEXT NOT NULL,
-      mode INTEGER NOT NULL,
-      run_index INTEGER NOT NULL,
-      started_at INTEGER NOT NULL,
-      total_ms INTEGER NOT NULL,
-      split1_ms INTEGER NOT NULL,
-      split2_ms INTEGER NOT NULL,
-      status TEXT NOT NULL,
-      raw_json TEXT,
-      created_at INTEGER NOT NULL,
-      reaction_offset_ms INTEGER NOT NULL DEFAULT 0,
-      athlete_name TEXT,
-      drill_type TEXT,
-      synced INTEGER NOT NULL DEFAULT 0
-    );
-    CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id);
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY NOT NULL,
-      value TEXT NOT NULL
-    );
-  `);
-
-  // Migrations for DBs created before later columns existed (existing rows null).
-  const cols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(runs)');
-  if (!cols.some((c) => c.name === 'reaction_offset_ms')) {
-    await db.execAsync('ALTER TABLE runs ADD COLUMN reaction_offset_ms INTEGER NOT NULL DEFAULT 0');
-  }
-  if (!cols.some((c) => c.name === 'athlete_name')) {
-    await db.execAsync('ALTER TABLE runs ADD COLUMN athlete_name TEXT');
-  }
-  if (!cols.some((c) => c.name === 'drill_type')) {
-    await db.execAsync('ALTER TABLE runs ADD COLUMN drill_type TEXT');
-  }
-  const sCols = await db.getAllAsync<{ name: string }>('PRAGMA table_info(sessions)');
-  if (!sCols.some((c) => c.name === 'custom_name')) {
-    await db.execAsync('ALTER TABLE sessions ADD COLUMN custom_name TEXT');
   }
 }
 
