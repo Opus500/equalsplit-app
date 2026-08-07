@@ -113,7 +113,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
 
   const confirmDelete = useCallback(
     (run: RunRow) => {
-      Alert.alert('Delete run', `Delete run #${run.run_index} (${fmt(totalOf(run))}s)?`, [
+      Alert.alert('Delete run', `Delete run #${run.display_index} (${fmt(totalOf(run))}s)?`, [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -215,7 +215,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
               <Pressable style={styles.runRow} onPress={() => setEditing(item)}>
                 <View style={styles.runLeft}>
                   <View style={styles.runLeftTop}>
-                    <Text style={styles.runIdx}>#{item.run_index}</Text>
+                    <Text style={styles.runIdx}>#{item.display_index}</Text>
                     <Text style={styles.runMode}>M{item.mode}</Text>
                   </View>
                   <Text style={[styles.runTags, !tags && styles.runTagsEmpty]} numberOfLines={1}>
@@ -268,7 +268,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
 
         <TagPickerModal
           visible={editing != null}
-          title={editing ? `Edit run #${editing.run_index}` : 'Edit run'}
+          title={editing ? `Edit run #${editing.display_index}` : 'Edit run'}
           initialName={editing?.athlete_name ?? ''}
           initialDrill={editing?.drill_type ?? ''}
           recents={recents}

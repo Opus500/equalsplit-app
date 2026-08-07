@@ -122,6 +122,29 @@ The `MODULE_TYPELESS_PACKAGE_JSON` warning from Node is cosmetic (TS reparsed as
 | Reorder interaction | Pure JS tap-to-pick / tap-to-place. **No** gesture-handler or reanimated |
 | Athlete merge tool | Out of scope |
 
+### run_index is internal; the UI shows a display position
+
+`run_index` is `MAX+1`, so it is monotonic per session and **has gaps** wherever a run was
+discarded or deleted — correct storage behavior, and worth keeping. But a coach reading
+"1, 2, 4" sees a lost run, so it must never surface. `getRuns` computes
+
+```sql
+ROW_NUMBER() OVER (ORDER BY r.run_index ASC, r.created_at ASC, r.rowid ASC) AS display_index
+```
+
+and every user-facing number uses `display_index`. It is computed over the whole session
+(the window runs after `WHERE`), so History's client-side athlete filter can't renumber it.
+
+The `created_at, rowid` tiebreak also repairs a legacy symptom: databases written before the
+`MAX+1` fix contain **duplicate** `run_index` values from the old `COUNT(*)+1`, and those now
+display as a clean contiguous 1..N instead of showing two "#3"s.
+
+| | |
+|---|---|
+| stored (after discards) | `1, 2, 4, 5, 6, 8, 9` |
+| displayed | `#1 … #7` |
+| legacy duplicates `1,2,3,3,4,4` | `#1 … #6` |
+
 ### Why discard is a delete, not a deferred insert
 
 An earlier draft held the finished run in memory for the discard window and only inserted it if

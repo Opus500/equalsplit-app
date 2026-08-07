@@ -278,7 +278,13 @@ export async function setSessionName(id: string, name: string): Promise<void> {
 export type RunRow = {
   id: string;
   mode: number;
+  /** INTERNAL ordering key — monotonic per session, with GAPS where runs were
+   *  deleted/discarded. Never show this to a user: "1, 2, 4" reads as a lost
+   *  run. Use display_index. */
   run_index: number;
+  /** 1..N position within the session, computed from the ordered set, so a
+   *  discarded run closes the gap on screen while storage keeps its history. */
+  display_index: number;
   total_ms: number;
   split1_ms: number;
   split2_ms: number;
@@ -305,6 +311,9 @@ export async function getRuns(sessionId: string): Promise<RunRow[]> {
     `SELECT r.id, r.mode, r.run_index, r.total_ms, r.split1_ms, r.split2_ms,
             r.reaction_offset_ms, r.status, r.raw_json, r.athlete_name, r.drill_type,
             r.created_at, r.athlete_id,
+            ROW_NUMBER() OVER (
+              ORDER BY r.run_index ASC, r.created_at ASC, r.rowid ASC
+            ) AS display_index,
             a.display_name AS athlete_display_name,
             a.group_name   AS athlete_group_name,
             a.archived_at  AS athlete_archived_at
