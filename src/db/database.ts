@@ -161,11 +161,16 @@ const clean = (s?: string | null) => {
 export async function saveRun(r: RunInput): Promise<void> {
   const db = await getDb();
   const sessionId = await getOrCreateTodaySession();
-  const row = await db.getFirstAsync<{ c: number }>(
-    'SELECT COUNT(*) AS c FROM runs WHERE session_id = ?',
+  // MAX+1, not COUNT+1: with COUNT, deleting a run made the next insert REUSE a
+  // live index (delete #2 of 3, next run is also #3), so a session could show two
+  // "#3"s and run_index was unusable as an identity. MAX+1 is monotonic per
+  // session — indices are never reused, and a deleted index just leaves a gap.
+  // (runs.id remains the only true identity; this makes the displayed # honest.)
+  const row = await db.getFirstAsync<{ next: number }>(
+    'SELECT COALESCE(MAX(run_index), 0) + 1 AS next FROM runs WHERE session_id = ?',
     [sessionId],
   );
-  const runIndex = (row?.c ?? 0) + 1;
+  const runIndex = row?.next ?? 1;
   const now = Date.now();
   await db.runAsync(
     `INSERT INTO runs
