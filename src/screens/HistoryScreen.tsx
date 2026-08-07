@@ -25,6 +25,7 @@ import {
   getRecentAthletes,
   getRuns,
   getSessions,
+  resolvedAthlete,
   setSessionName,
   updateRunTags,
   type RunRow,
@@ -174,7 +175,15 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                   sessionShareText(
                     sessionLabel(selected),
                     selected.name,
-                    [...shown].sort((a, b) => a.run_index - b.run_index),
+                    // Resolve through the roster so shared text matches what's on
+                    // screen (a renamed athlete must not export their old name).
+                    [...shown]
+                      .sort((a, b) => a.run_index - b.run_index)
+                      .map((r) => ({
+                        athleteName: resolvedAthlete(r).name,
+                        drillType: r.drill_type,
+                        totalMs: r.total_ms,
+                      })),
                   ),
                 )
               }
@@ -251,7 +260,9 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                 <Text style={styles.runTotal}>{fmt(totalOf(item))}s</Text>
                 <Pressable
                   onPress={() =>
-                    shareText(runShareLine(item.athlete_name, item.drill_type, item.total_ms))
+                    shareText(
+                      runShareLine(resolvedAthlete(item).name, item.drill_type, item.total_ms),
+                    )
                   }
                   hitSlop={8}
                   style={styles.rowIcon}

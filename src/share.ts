@@ -15,15 +15,21 @@ export function runShareLine(
   return [formatTags(athlete, drill), secs(totalMs)].filter(Boolean).join(' · ');
 }
 
+/** One run, already resolved for display. Deliberately NOT a RunRow: share text
+ *  must never read the raw `athlete_name` snapshot, which is frozen at save time
+ *  and goes stale the moment an athlete is renamed. Callers resolve through
+ *  resolvedAthlete() so shared text, History and the timer always agree. */
+export type ShareRun = {
+  athleteName: string | null;
+  drillType: string | null;
+  totalMs: number;
+};
+
 /** A whole session: a header line (name, with the date in parens if renamed)
  *  followed by one run per line. Pass runs in the order you want them listed. */
-export function sessionShareText(
-  title: string,
-  dateName: string,
-  runs: { athlete_name: string | null; drill_type: string | null; total_ms: number }[],
-): string {
+export function sessionShareText(title: string, dateName: string, runs: ShareRun[]): string {
   const header = title.trim() && title.trim() !== dateName ? `${title.trim()} (${dateName})` : dateName;
-  const lines = runs.map((r) => runShareLine(r.athlete_name, r.drill_type, r.total_ms));
+  const lines = runs.map((r) => runShareLine(r.athleteName, r.drillType, r.totalMs));
   return [header, ...lines].join('\n');
 }
 

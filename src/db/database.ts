@@ -11,6 +11,7 @@
 import * as SQLite from 'expo-sqlite';
 
 import { foldName, runMigrations, type BindValue, type MigrationDb } from './migrations';
+import { EMPTY_QUEUE, type QueueState } from '../roster/queue';
 
 export const DEFAULT_REACTION_OFFSET_MS = 150;
 
@@ -528,23 +529,9 @@ export async function deleteTemplate(id: string): Promise<void> {
 // Live practice queue (settings-backed, survives restarts).
 // ---------------------------------------------------------------------------
 
-/**
- * The cursor is an ATHLETE ID, never an index. That is what makes "reordering
- * must never cause someone to run twice or get skipped" true structurally
- * rather than by careful bookkeeping: dragging rows around changes the array,
- * but the cursor still points at the same person.
- *
- * `overrideId` is a one-off jump (picking someone not at the cursor). It does
- * not move the cursor and does not reorder the queue; it is consumed by the
- * next completed run, after which the lineup resumes where it was.
- */
-export type QueueState = {
-  athleteIds: string[];
-  cursorId: string | null;
-  overrideId: string | null;
-};
-
-const EMPTY_QUEUE: QueueState = { athleteIds: [], cursorId: null, overrideId: null };
+// Shape + semantics live in ../roster/queue (pure, verifiable); this module only
+// persists them. Re-exported so callers have one import for queue state.
+export { EMPTY_QUEUE, type QueueState };
 
 export async function getQueueState(): Promise<QueueState> {
   const raw = await getSetting('practice_queue');
