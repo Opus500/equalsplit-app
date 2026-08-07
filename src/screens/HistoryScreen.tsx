@@ -20,19 +20,19 @@ import {
 } from 'react-native';
 
 import {
-  addRecentAthlete,
   deleteRun,
-  getRecentAthletes,
   getRuns,
   getSessions,
   resolvedAthlete,
   setSessionName,
-  updateRunTags,
+  updateRunAthlete,
+  updateRunDrill,
   type RunRow,
   type SessionRow,
 } from '../db/database';
 import { useSettings } from '../settings/SettingsProvider';
-import { TagPickerModal, formatTags } from '../components/TagPicker';
+import { DRILL_PRESETS, formatTags } from '../components/TagPicker';
+import { AthletePickerModal } from '../components/AthletePicker';
 import { runShareLine, sessionShareText, shareText } from '../share';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
@@ -67,7 +67,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [athleteFilter, setAthleteFilter] = useState<string | null>(null);
   const [editing, setEditing] = useState<RunRow | null>(null);
-  const [recents, setRecents] = useState<string[]>([]);
+  const [picking, setPicking] = useState(false);
   const [renaming, setRenaming] = useState(false);
 
   const loadSessions = useCallback(async () => {
@@ -88,10 +88,6 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
     if (isActive && !selected) loadSessions();
   }, [isActive, selected, loadSessions]);
 
-  useEffect(() => {
-    getRecentAthletes().then(setRecents).catch(() => {});
-  }, []);
-
   const openSession = useCallback(async (s: SessionRow) => {
     setSelected(s);
     setAthleteFilter(null);
@@ -102,12 +98,23 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
     if (selected) setRuns(await getRuns(selected.id));
   }, [selected]);
 
-  const saveEdit = useCallback(
-    async (name: string, drill: string) => {
+  // Reassignment goes through the roster by ID — never by name text.
+  const reassign = useCallback(
+    async (athleteId: string | null) => {
       if (!editing) return;
-      await updateRunTags(editing.id, { athleteName: name, drillType: drill });
-      if (name) setRecents(await addRecentAthlete(name));
+      await updateRunAthlete(editing.id, athleteId);
       await refreshRuns();
+      setEditing((cur) => (cur ? { ...cur, athlete_id: athleteId } : cur));
+    },
+    [editing, refreshRuns],
+  );
+
+  const setDrill = useCallback(
+    async (drill: string | null) => {
+      if (!editing) return;
+      await updateRunDrill(editing.id, drill);
+      await refreshRuns();
+      setEditing((cur) => (cur ? { ...cur, drill_type: drill } : cur));
     },
     [editing, refreshRuns],
   );
@@ -137,12 +144,19 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   );
 
   if (selected) {
-    const athletes = Array.from(
-      new Set(runs.map((r) => (r.athlete_name ?? '').trim()).filter(Boolean)),
-    );
-    const shown = athleteFilter
-      ? runs.filter((r) => (r.athlete_name ?? '').trim() === athleteFilter)
-      : runs;
+    // Filter by athlete RECORD, not name text, so two same-named athletes are
+    // separate chips and a rename doesn't split someone's history in two.
+    // Key '' = Unassigned, which is a real state worth filtering to (it's how you
+    // find the runs still needing attribution — 366 of them after migration).
+    const seen = new Map<string, string>(); // key -> chip label
+    for (const r of runs) {
+      const key = r.athlete_id ?? '';
+      if (seen.has(key)) continue;
+      const { name, archived } = resolvedAthlete(r);
+      seen.set(key, key === '' ? 'Unassigned' : `${name ?? '—'}${archived ? ' (archived)' : ''}`);
+    }
+    const athletes = [...seen.entries()];
+    const shown = athleteFilter == null ? runs : runs.filter((r) => (r.athlete_id ?? '') === athleteFilter);
     // Average only when the visible valid runs are actually comparable: one drill
     // type AND one mode. Otherwise an average mixes incomparable runs, so omit it.
     const validShown = shown.filter((r) => r.status === 'valid');
@@ -197,12 +211,12 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
         {athletes.length ? (
           <View style={styles.filterRow}>
             <FilterChip label="All" active={athleteFilter == null} onPress={() => setAthleteFilter(null)} />
-            {athletes.map((a) => (
+            {athletes.map(([key, label]) => (
               <FilterChip
-                key={a}
-                label={a}
-                active={athleteFilter === a}
-                onPress={() => setAthleteFilter((cur) => (cur === a ? null : a))}
+                key={key || '__unassigned'}
+                label={label}
+                active={athleteFilter === key}
+                onPress={() => setAthleteFilter((cur) => (cur === key ? null : key))}
               />
             ))}
           </View>
@@ -219,7 +233,8 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           ListEmptyComponent={<Text style={styles.empty}>No runs.</Text>}
           renderItem={({ item }) => {
             const meta = parseMeta(item);
-            const tags = formatTags(item.athlete_name, item.drill_type);
+            const who = resolvedAthlete(item);
+            const tags = formatTags(who.name, item.drill_type);
             return (
               <Pressable style={styles.runRow} onPress={() => setEditing(item)}>
                 <View style={styles.runLeft}>
@@ -227,8 +242,16 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                     <Text style={styles.runIdx}>#{item.display_index}</Text>
                     <Text style={styles.runMode}>M{item.mode}</Text>
                   </View>
-                  <Text style={[styles.runTags, !tags && styles.runTagsEmpty]} numberOfLines={1}>
-                    {tags || '+ tag'}
+                  <Text
+                    style={[
+                      styles.runTags,
+                      !tags && styles.runTagsEmpty,
+                      // legacy = a name that never got linked to a roster record
+                      who.legacy && styles.runTagsLegacy,
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {tags || '+ assign'}
                   </Text>
                 </View>
                 <View style={{ flex: 1 }} />
@@ -277,14 +300,21 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           }}
         />
 
-        <TagPickerModal
-          visible={editing != null}
-          title={editing ? `Edit run #${editing.display_index}` : 'Edit run'}
-          initialName={editing?.athlete_name ?? ''}
-          initialDrill={editing?.drill_type ?? ''}
-          recents={recents}
+        <RunEditModal
+          run={editing}
           onClose={() => setEditing(null)}
-          onSubmit={saveEdit}
+          onOpenPicker={() => setPicking(true)}
+          onSetDrill={setDrill}
+        />
+
+        {/* Reassignment (a stated requirement, not a follow-up): pick the record,
+            store the id. Rendered above the editor so it stacks over it. */}
+        <AthletePickerModal
+          visible={picking}
+          currentId={editing?.athlete_id ?? null}
+          title={editing ? `Athlete for run #${editing.display_index}` : 'Choose athlete'}
+          onClose={() => setPicking(false)}
+          onPick={reassign}
         />
 
         <RenameModal
@@ -321,6 +351,78 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
         )}
       />
     </View>
+  );
+}
+
+/** Edit one run: who it belongs to (roster record, via the picker) and its drill
+ *  label. Athlete is deliberately NOT a text field any more — free text is what
+ *  the roster replaced, and typing a name here would recreate the problem. */
+function RunEditModal({
+  run,
+  onClose,
+  onOpenPicker,
+  onSetDrill,
+}: {
+  run: RunRow | null;
+  onClose: () => void;
+  onOpenPicker: () => void;
+  onSetDrill: (drill: string | null) => void;
+}) {
+  if (!run) return null;
+  const who = resolvedAthlete(run);
+  const drill = (run.drill_type ?? '').trim();
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.rmBackdrop} onPress={onClose}>
+        <Pressable style={styles.rmCard} onPress={() => {}}>
+          <Text style={styles.rmTitle}>Run #{run.display_index}</Text>
+
+          <Text style={styles.editLabel}>Athlete</Text>
+          <Pressable
+            onPress={onOpenPicker}
+            style={({ pressed }) => [styles.athleteBtn, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={[styles.athleteName, !who.name && styles.athleteNone]} numberOfLines={1}>
+              {who.name ?? 'Unassigned'}
+            </Text>
+            <Text style={styles.athleteChange}>Change ›</Text>
+          </Pressable>
+          {who.legacy ? (
+            <Text style={styles.legacyNote}>
+              Old free-text tag, not linked to a roster athlete. Pick one to link it.
+            </Text>
+          ) : null}
+          {who.archived ? <Text style={styles.legacyNote}>This athlete is archived.</Text> : null}
+
+          <Text style={[styles.editLabel, { marginTop: 16 }]}>Drill</Text>
+          <View style={styles.chipWrap}>
+            {DRILL_PRESETS.map((p) => (
+              <Pressable
+                key={p}
+                onPress={() => onSetDrill(drill === p ? null : p)}
+                style={({ pressed }) => [
+                  styles.fchip,
+                  drill === p && styles.fchipActive,
+                  pressed && { opacity: 0.6 },
+                ]}
+              >
+                <Text style={[styles.fchipText, drill === p && styles.fchipTextActive]}>{p}</Text>
+              </Pressable>
+            ))}
+          </View>
+          {drill && !DRILL_PRESETS.includes(drill) ? (
+            <Text style={styles.customDrill}>current: {drill}</Text>
+          ) : null}
+
+          <Pressable
+            onPress={onClose}
+            style={({ pressed }) => [styles.rmBtn, styles.rmBtnPrimary, { marginTop: 18 }, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={[styles.rmBtnText, styles.rmBtnPrimaryText]}>Done</Text>
+          </Pressable>
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -472,6 +574,25 @@ const styles = StyleSheet.create({
   runMode: { color: '#94a3b8', fontWeight: '700' },
   runTags: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
   runTagsEmpty: { color: '#3b4759' },
+  runTagsLegacy: { color: '#7a6a4a', fontStyle: 'italic' },
+  editLabel: { color: '#94a3b8', fontSize: 13, fontWeight: '700', marginBottom: 6 },
+  athleteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#0b0e13',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#243042',
+  },
+  athleteName: { color: '#fff', fontSize: 16, fontWeight: '700', flex: 1 },
+  athleteNone: { color: '#64748b', fontWeight: '600' },
+  athleteChange: { color: '#60a5fa', fontSize: 13, fontWeight: '700' },
+  legacyNote: { color: '#fbbf24', fontSize: 11, lineHeight: 16, marginTop: 6 },
+  chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  customDrill: { color: '#64748b', fontSize: 11, marginTop: 8 },
   runM2: { alignItems: 'flex-end', marginRight: 10 },
   runSplits: { color: '#64748b', fontSize: 13, fontVariant: ['tabular-nums'] },
   runUnreliable: { color: '#fb923c', fontWeight: '700' },

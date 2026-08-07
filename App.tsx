@@ -13,11 +13,12 @@ import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
 import TimerV2Screen from './src/screens/TimerV2Screen';
 import DrillsScreen from './src/screens/DrillsScreen';
+import RosterScreen from './src/screens/RosterScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DebugScreen from './src/screens/DebugScreen';
 
-type Tab = 'timer' | 'drills' | 'history' | 'settings' | 'debug';
+type Tab = 'timer' | 'drills' | 'roster' | 'history' | 'settings' | 'debug';
 
 export default function App() {
   useEffect(() => {
@@ -58,6 +59,11 @@ function AppShell() {
         <View style={[styles.fill, tab !== 'drills' && styles.hidden]}>
           <DrillsScreen />
         </View>
+        {tab === 'roster' && (
+          <View style={styles.fill}>
+            <RosterScreen />
+          </View>
+        )}
         {tab === 'history' && (
           <View style={styles.fill}>
             <HistoryScreen isActive={tab === 'history'} />
@@ -78,6 +84,7 @@ function AppShell() {
       <View style={styles.tabBar}>
         <TabButton label="Timer" active={tab === 'timer'} onPress={() => setTab('timer')} />
         <TabButton label="Drills" active={tab === 'drills'} onPress={() => setTab('drills')} />
+        <TabButton label="Roster" active={tab === 'roster'} onPress={() => setTab('roster')} />
         <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
         <TabButton label="Settings" active={tab === 'settings'} onPress={() => setTab('settings')} />
         {devMode && (

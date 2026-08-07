@@ -208,17 +208,12 @@ export async function saveRun(r: RunInput): Promise<string> {
   return id;
 }
 
-// Edit a run's tags later (from History). Empty strings store as NULL.
-export async function updateRunTags(
-  id: string,
-  fields: { athleteName?: string | null; drillType?: string | null },
-): Promise<void> {
+/** Edit a run's drill label. Athlete attribution is NOT settable as text any
+ *  more — it goes through updateRunAthlete(), so athlete_name can only ever be a
+ *  snapshot written from a real record. */
+export async function updateRunDrill(id: string, drillType: string | null): Promise<void> {
   const db = await getDb();
-  await db.runAsync('UPDATE runs SET athlete_name = ?, drill_type = ? WHERE id = ?', [
-    clean(fields.athleteName),
-    clean(fields.drillType),
-    id,
-  ]);
+  await db.runAsync('UPDATE runs SET drill_type = ? WHERE id = ?', [clean(drillType), id]);
 }
 
 // Recently-used athlete names (most-recent first), kept in settings so a freshly
