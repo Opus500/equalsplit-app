@@ -10,7 +10,7 @@
 
 import * as SQLite from 'expo-sqlite';
 
-import { runMigrations, type BindValue, type MigrationDb } from './migrations';
+import { foldName, runMigrations, type BindValue, type MigrationDb } from './migrations';
 
 export const DEFAULT_REACTION_OFFSET_MS = 150;
 
@@ -128,6 +128,13 @@ export type RunInput = {
   reactionOffsetMs?: number;
   status?: string;
   rawJson?: string;
+  /** Roster link. Omit/null = Unassigned, a legitimate state (assign later from
+   *  History). This — not the name text — is the attribution of record. */
+  athleteId?: string | null;
+  /** Denormalized name snapshot. Resolved from athleteId when omitted; you
+   *  rarely pass this directly. Kept so an older build (and plain share text)
+   *  still reads a name without joining, which is what makes a rollback to a
+   *  pre-roster build safe. Display always prefers the athletes join. */
   athleteName?: string | null;
   drillType?: string | null;
 };
@@ -137,7 +144,16 @@ const clean = (s?: string | null) => {
   return t ? t : null;
 };
 
-export async function saveRun(r: RunInput): Promise<void> {
+/**
+ * Insert a finished run. Returns the new `runs.id`.
+ *
+ * The id matters: the timer's post-run discard control deletes BY ID via
+ * deleteRun(). The run is written immediately and durably — never held in memory
+ * pending a confirm — because a field phone backgrounds, locks, and takes calls,
+ * and losing a real run is far worse than a discardable junk row. Discard is a
+ * delete, and it is the same path History uses.
+ */
+export async function saveRun(r: RunInput): Promise<string> {
   const db = await getDb();
   const sessionId = await getOrCreateTodaySession();
   // MAX+1, not COUNT+1: with COUNT, deleting a run made the next insert REUSE a
@@ -151,12 +167,27 @@ export async function saveRun(r: RunInput): Promise<void> {
   );
   const runIndex = row?.next ?? 1;
   const now = Date.now();
+  const id = newId();
+  const athleteId = clean(r.athleteId);
+  // Resolve the name snapshot here so callers can't drift it out of sync with
+  // the record. An unassigned run stores NO name — a stale name on an
+  // deliberately-unassigned row would render as a legacy "unlinked" tag and be
+  // actively misleading.
+  let athleteName = clean(r.athleteName);
+  if (athleteId && !athleteName) {
+    const a = await db.getFirstAsync<{ display_name: string }>(
+      'SELECT display_name FROM athletes WHERE id = ?',
+      [athleteId],
+    );
+    athleteName = a?.display_name ?? null;
+  }
+  if (!athleteId) athleteName = null;
   await db.runAsync(
     `INSERT INTO runs
-       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, athlete_name, drill_type, synced)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, athlete_id, athlete_name, drill_type, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     [
-      newId(),
+      id,
       sessionId,
       r.mode,
       runIndex,
@@ -168,10 +199,12 @@ export async function saveRun(r: RunInput): Promise<void> {
       r.rawJson ?? null,
       now,
       r.reactionOffsetMs ?? 0,
-      clean(r.athleteName),
+      athleteId,
+      athleteName,
       clean(r.drillType),
     ],
   );
+  return id;
 }
 
 // Edit a run's tags later (from History). Empty strings store as NULL.
@@ -252,17 +285,71 @@ export type RunRow = {
   reaction_offset_ms: number;
   status: string;
   raw_json: string | null;
+  /** Legacy/snapshot text. Do NOT display this directly — use resolvedAthlete(). */
   athlete_name: string | null;
   drill_type: string | null;
   created_at: number;
+  // --- roster (schema v2), joined ---
+  athlete_id: string | null;
+  athlete_display_name: string | null;
+  athlete_group_name: string | null;
+  athlete_archived_at: number | null;
 };
 
 export async function getRuns(sessionId: string): Promise<RunRow[]> {
   const db = await getDb();
+  // LEFT JOIN, deliberately: a run whose athlete_id somehow doesn't resolve must
+  // still appear in history. Losing a time because a link is dangling would be a
+  // far worse failure than showing it unattributed.
   return db.getAllAsync<RunRow>(
-    'SELECT id, mode, run_index, total_ms, split1_ms, split2_ms, reaction_offset_ms, status, raw_json, athlete_name, drill_type, created_at FROM runs WHERE session_id = ? ORDER BY run_index DESC',
+    `SELECT r.id, r.mode, r.run_index, r.total_ms, r.split1_ms, r.split2_ms,
+            r.reaction_offset_ms, r.status, r.raw_json, r.athlete_name, r.drill_type,
+            r.created_at, r.athlete_id,
+            a.display_name AS athlete_display_name,
+            a.group_name   AS athlete_group_name,
+            a.archived_at  AS athlete_archived_at
+       FROM runs r
+       LEFT JOIN athletes a ON a.id = r.athlete_id
+      WHERE r.session_id = ?
+      ORDER BY r.run_index DESC`,
     [sessionId],
   );
+}
+
+/**
+ * The one place run→athlete display is decided, so History, share text, and the
+ * timer can't disagree:
+ *   linked → the athlete record's CURRENT name (renames apply retroactively)
+ *   unlinked but tagged → the legacy free text, flagged so the UI can grey it
+ *   neither → Unassigned
+ */
+export function resolvedAthlete(r: RunRow): {
+  name: string | null;
+  legacy: boolean;
+  archived: boolean;
+} {
+  if (r.athlete_id && r.athlete_display_name) {
+    return { name: r.athlete_display_name, legacy: false, archived: r.athlete_archived_at != null };
+  }
+  const legacyName = r.athlete_name?.trim() || null;
+  return { name: legacyName, legacy: legacyName != null, archived: false };
+}
+
+/** Reassign (or unassign) a run — the History reassignment path. Passing null
+ *  clears the name snapshot too, so an intentionally-unassigned run can never
+ *  resurface as a legacy "unlinked" tag. */
+export async function updateRunAthlete(runId: string, athleteId: string | null): Promise<void> {
+  const db = await getDb();
+  const id = clean(athleteId);
+  let name: string | null = null;
+  if (id) {
+    const a = await db.getFirstAsync<{ display_name: string }>(
+      'SELECT display_name FROM athletes WHERE id = ?',
+      [id],
+    );
+    name = a?.display_name ?? null;
+  }
+  await db.runAsync('UPDATE runs SET athlete_id = ?, athlete_name = ? WHERE id = ?', [id, name, runId]);
 }
 
 // Delete a run; if its session is left empty, remove the session too.
@@ -282,4 +369,191 @@ export async function deleteRun(id: string): Promise<void> {
       await db.runAsync('DELETE FROM sessions WHERE id = ?', [row.session_id]);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Roster (schema v2). Athletes are ARCHIVED, never deleted, so run history is
+// never orphaned — archiving only hides them from pickers.
+// ---------------------------------------------------------------------------
+
+export type Athlete = {
+  id: string;
+  display_name: string;
+  group_name: string | null;
+  created_at: number;
+  archived_at: number | null;
+  /** runs currently attributed to this athlete (all sessions) */
+  run_count: number;
+};
+
+export async function listAthletes(opts?: { includeArchived?: boolean }): Promise<Athlete[]> {
+  const db = await getDb();
+  const where = opts?.includeArchived ? '' : 'WHERE a.archived_at IS NULL';
+  return db.getAllAsync<Athlete>(
+    `SELECT a.id, a.display_name, a.group_name, a.created_at, a.archived_at,
+            (SELECT COUNT(*) FROM runs r WHERE r.athlete_id = a.id) AS run_count
+       FROM athletes a
+       ${where}
+      ORDER BY a.display_name COLLATE NOCASE ASC`,
+  );
+}
+
+/** Athletes whose name folds to the same key — powers the "already exists, add a
+ *  distinguishing detail?" prompt. Folding matches the migration exactly
+ *  (trim → NFC → lowercase), so the prompt fires on the same cases the backfill
+ *  would have merged. Includes archived records: a name colliding with an
+ *  archived athlete is exactly when the coach needs to be told. */
+export async function findAthletesByName(name: string): Promise<Athlete[]> {
+  const key = foldName(name);
+  const all = await listAthletes({ includeArchived: true });
+  return all.filter((a) => foldName(a.display_name) === key);
+}
+
+export async function createAthlete(displayName: string, groupName?: string | null): Promise<Athlete> {
+  const db = await getDb();
+  const name = clean(displayName);
+  if (!name) throw new Error('athlete needs a name');
+  const id = newId();
+  const now = Date.now();
+  await db.runAsync(
+    'INSERT INTO athletes (id, display_name, group_name, created_at, archived_at, synced) VALUES (?, ?, ?, ?, NULL, 0)',
+    [id, name, clean(groupName), now],
+  );
+  return { id, display_name: name, group_name: clean(groupName), created_at: now, archived_at: null, run_count: 0 };
+}
+
+/** Rename / re-group. Renames are retroactive by design: display resolves through
+ *  the join, so fixing a typo fixes every past run at once. */
+export async function updateAthlete(
+  id: string,
+  fields: { displayName?: string; groupName?: string | null },
+): Promise<void> {
+  const db = await getDb();
+  if (fields.displayName !== undefined) {
+    const name = clean(fields.displayName);
+    if (!name) throw new Error('athlete needs a name');
+    await db.runAsync('UPDATE athletes SET display_name = ? WHERE id = ?', [name, id]);
+  }
+  if (fields.groupName !== undefined) {
+    await db.runAsync('UPDATE athletes SET group_name = ? WHERE id = ?', [clean(fields.groupName), id]);
+  }
+}
+
+/** Archive / restore. Never deletes: runs keep pointing at the record, so the
+ *  history of someone who left the squad stays intact and attributed. */
+export async function setAthleteArchived(id: string, archived: boolean): Promise<void> {
+  const db = await getDb();
+  await db.runAsync('UPDATE athletes SET archived_at = ? WHERE id = ?', [
+    archived ? Date.now() : null,
+    id,
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Queue templates — named lineups built ahead of practice.
+// ---------------------------------------------------------------------------
+
+export type QueueTemplate = { id: string; name: string; athleteIds: string[]; created_at: number };
+
+function parseIds(json: string): string[] {
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function listTemplates(): Promise<QueueTemplate[]> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ id: string; name: string; athlete_ids: string; created_at: number }>(
+    'SELECT id, name, athlete_ids, created_at FROM queue_templates ORDER BY name COLLATE NOCASE ASC',
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    athleteIds: parseIds(r.athlete_ids),
+    created_at: r.created_at,
+  }));
+}
+
+export async function createTemplate(name: string, athleteIds: string[]): Promise<QueueTemplate> {
+  const db = await getDb();
+  const n = clean(name) ?? 'Lineup';
+  const id = newId();
+  const now = Date.now();
+  await db.runAsync(
+    'INSERT INTO queue_templates (id, name, athlete_ids, created_at, synced) VALUES (?, ?, ?, ?, 0)',
+    [id, n, JSON.stringify(athleteIds), now],
+  );
+  return { id, name: n, athleteIds, created_at: now };
+}
+
+export async function updateTemplate(
+  id: string,
+  fields: { name?: string; athleteIds?: string[] },
+): Promise<void> {
+  const db = await getDb();
+  if (fields.name !== undefined) {
+    await db.runAsync('UPDATE queue_templates SET name = ? WHERE id = ?', [
+      clean(fields.name) ?? 'Lineup',
+      id,
+    ]);
+  }
+  if (fields.athleteIds !== undefined) {
+    await db.runAsync('UPDATE queue_templates SET athlete_ids = ? WHERE id = ?', [
+      JSON.stringify(fields.athleteIds),
+      id,
+    ]);
+  }
+}
+
+/** Templates are ordinary documents, not people — deleting one is safe and does
+ *  not touch athletes or runs. (Contrast: athletes are only ever archived.) */
+export async function deleteTemplate(id: string): Promise<void> {
+  const db = await getDb();
+  await db.runAsync('DELETE FROM queue_templates WHERE id = ?', [id]);
+}
+
+// ---------------------------------------------------------------------------
+// Live practice queue (settings-backed, survives restarts).
+// ---------------------------------------------------------------------------
+
+/**
+ * The cursor is an ATHLETE ID, never an index. That is what makes "reordering
+ * must never cause someone to run twice or get skipped" true structurally
+ * rather than by careful bookkeeping: dragging rows around changes the array,
+ * but the cursor still points at the same person.
+ *
+ * `overrideId` is a one-off jump (picking someone not at the cursor). It does
+ * not move the cursor and does not reorder the queue; it is consumed by the
+ * next completed run, after which the lineup resumes where it was.
+ */
+export type QueueState = {
+  athleteIds: string[];
+  cursorId: string | null;
+  overrideId: string | null;
+};
+
+const EMPTY_QUEUE: QueueState = { athleteIds: [], cursorId: null, overrideId: null };
+
+export async function getQueueState(): Promise<QueueState> {
+  const raw = await getSetting('practice_queue');
+  if (!raw) return EMPTY_QUEUE;
+  try {
+    const v = JSON.parse(raw);
+    return {
+      athleteIds: Array.isArray(v?.athleteIds)
+        ? v.athleteIds.filter((x: unknown): x is string => typeof x === 'string')
+        : [],
+      cursorId: typeof v?.cursorId === 'string' ? v.cursorId : null,
+      overrideId: typeof v?.overrideId === 'string' ? v.overrideId : null,
+    };
+  } catch {
+    return EMPTY_QUEUE;
+  }
+}
+
+export async function setQueueState(q: QueueState): Promise<void> {
+  await setSetting('practice_queue', JSON.stringify(q));
 }

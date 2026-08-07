@@ -107,16 +107,35 @@ function buildDemo(file) {
   );
   // Deliberately messy: case variants, padding, composed vs decomposed accents,
   // an empty string, a NULL, and one clean name.
+  //
+  // Note the shape of the Jayden/Jose groups: the MOST RECENT spelling is the
+  // shouty one, but it is the LEAST used. Canonical = most frequent (ties ->
+  // most recent), so a caps-lock session must NOT win the name. That is the
+  // regression this fixture exists to catch.
+  //
+  // Built from char codes, never literals: composed e-acute (U+00E9) and
+  // decomposed e + combining acute (U+0065 U+0301) RENDER IDENTICALLY, so a
+  // source literal is indistinguishable to a reader and editors silently
+  // normalize one into the other -- which would quietly delete the very case
+  // this fixture exists to prove (folding on NFC).
+  const E_ACUTE = String.fromCharCode(0x00e9); // composed   e-acute
+  const COMBINING_ACUTE = String.fromCharCode(0x0301); // combining accent
+  const E_ACUTE_CAPS = String.fromCharCode(0x00c9); // composed   E-acute
+  const JOSE_COMPOSED = 'Jos' + E_ACUTE;
+  const JOSE_DECOMPOSED = 'Jose' + COMBINING_ACUTE;
+  const JOSE_SHOUTED = 'JOS' + E_ACUTE_CAPS;
   const rows = [
     ['r1', 1, 4210, 1000, 'Jayden', '30m'],
-    ['r2', 2, 4180, 2000, 'jayden', '30m'],
-    ['r3', 3, 4300, 3000, '  JAYDEN  ', '30m'],
-    ['r4', 4, 5010, 4000, 'José', '30m'], // composed  é
-    ['r5', 5, 4990, 5000, 'José', '30m'], // decomposed e + ́
-    ['r6', 6, 5100, 6000, 'JOSÉ', '30m'],
-    ['r7', 7, 3900, 7000, 'Mia', 'L Drill'],
-    ['r8', 8, 3950, 8000, '', 'L Drill'], // empty -> stays unassigned
-    ['r9', 9, 4000, 9000, null, 'L Drill'], // null  -> stays unassigned
+    ['r2', 2, 4180, 2000, 'Jayden', '30m'],
+    ['r3', 3, 4300, 3000, '  jayden  ', '30m'], // padded + lowercased
+    ['r4', 4, 4260, 4000, 'JAYDEN', '30m'], // most RECENT, least FREQUENT
+    ['r5', 5, 5010, 5000, JOSE_COMPOSED, '30m'],
+    ['r6', 6, 4990, 6000, JOSE_DECOMPOSED, '30m'], // identical on screen
+    ['r7', 7, 5100, 7000, JOSE_COMPOSED, '30m'], // -> composed is most frequent
+    ['r8', 8, 5050, 8000, JOSE_SHOUTED, '30m'], // most RECENT, least FREQUENT
+    ['r9', 9, 3900, 9000, 'Mia', 'L Drill'],
+    ['r10', 10, 3950, 10000, '', 'L Drill'], // empty -> stays unassigned
+    ['r11', 11, 4000, 11000, null, 'L Drill'], // null  -> stays unassigned
   ];
   for (const [id, idx, total, at, name, drill] of rows) {
     ins.run(id, 's1', idx, at, total, at, name, drill);

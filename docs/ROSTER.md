@@ -40,7 +40,11 @@ is held in code plus defensive `LEFT JOIN`s.
 - Distinct tags → athlete records, folded **case- and accent-insensitively** in JS
   (`trim → NFC → toLocaleLowerCase`). Not in SQL: SQLite's `lower()` is ASCII-only, so
   `JOSÉ`/`josé` would not fold and you'd get two records for one person.
-- Canonical `display_name` = the spelling from the **most recent** run.
+- Canonical `display_name` = the **most frequently used** spelling; ties break to the most
+  recent. Explicitly *not* "most recent": a caps-lock session is a keyboard state, not a naming
+  decision, and would permanently rename the athlete. Explicitly *not* an uppercase-detection
+  heuristic either — plenty of names legitimately carry caps (McRae, DeAndre, O'Neill), and a
+  rule that "fixes" them is worse than the problem. Frequency is the honest signal.
 - `athletes.created_at` = that athlete's **earliest** run, so roster order reflects when they
   first appeared, not when the migration ran.
 - Names in `settings['recent_athletes']` with no runs yet are **seeded** (preserves intent).
@@ -107,22 +111,47 @@ The `MODULE_TYPELESS_PACKAGE_JSON` warning from Node is cosmetic (TS reparsed as
 
 | Decision | Call |
 |---|---|
-| Case/accent variants | Merge into one athlete; canonical = most recent spelling |
-| `athlete_name` | Keep as frozen snapshot (rollback safety + provenance) |
+| Case/accent variants | Merge into one athlete; canonical = **most frequent** spelling, ties → most recent |
+| `athlete_name` | Keep as frozen snapshot (rollback safety + provenance); never displayed when linked |
 | Duplicate names | Allowed; prompt for a `group_name` detail; date+id suffix only as last resort |
 | Standalone (B1) runs | Save **Unassigned**, never auto-attributed; do not advance the queue |
 | Queue wrap | Wraps, and the strip shows an explicit "restarting lineup" state |
 | Queue jump off-queue | Transient override; cursor doesn't move; resumes after that run |
-| Cursor under reorder | Tracks the **athlete**, not the index — never double-run, never skip |
-| Discard window | Run is held and **not inserted** until the window elapses or the next rep arms |
+| Cursor under reorder | Stored as an **athlete id, not an index** — structurally cannot double-run or skip |
+| Discard | Run is **saved immediately**, discard is a `deleteRun(id)` — same path as History delete |
+| Reorder interaction | Pure JS tap-to-pick / tap-to-place. **No** gesture-handler or reanimated |
 | Athlete merge tool | Out of scope |
 
-## 6. Not yet done (next commits)
+### Why discard is a delete, not a deferred insert
 
-1. **Storage API**: `athleteId` on `saveRun`, roster CRUD (create/rename/archive), `getRuns`
-   joined to `athletes`, `updateRunAthlete`, template CRUD, queue persistence.
-2. **UI**: roster screen, athlete picker, `UpNextStrip` on all three timing screens, History
-   reassignment + Unassigned filter chip, template editor, drag-to-reorder.
+An earlier draft held the finished run in memory for the discard window and only inserted it if
+the coach didn't discard. That is wrong for a field phone: backgrounding, screen lock, and
+incoming calls all kill the holding state, so it would trade a rare junk row for **occasional
+loss of a real run**. Durability first — the run is written the instant it completes, and
+discard deletes it by id. It follows that the discard control keeps working after the window
+closes: once saved it is an ordinary row, and History's delete is the identical path.
+
+## 6. Storage API (landed — no UI yet)
+
+| Function | Purpose |
+|---|---|
+| `saveRun(...)` → `Promise<string>` | now takes `athleteId`, resolves the name snapshot itself, and **returns the run id** (what discard deletes by) |
+| `getRuns(sessionId)` | `LEFT JOIN athletes`; adds `athlete_id`, `athlete_display_name`, `athlete_group_name`, `athlete_archived_at` |
+| `resolvedAthlete(row)` | the single place run→name display is decided (linked → record name; unlinked+tagged → legacy, flagged; else Unassigned) |
+| `updateRunAthlete(runId, athleteId\|null)` | reassignment; `null` also clears the snapshot |
+| `listAthletes` / `findAthletesByName` / `createAthlete` / `updateAthlete` / `setAthleteArchived` | roster CRUD (archive, never delete) |
+| `listTemplates` / `createTemplate` / `updateTemplate` / `deleteTemplate` | named lineups |
+| `getQueueState` / `setQueueState` | live queue in settings; cursor is an athlete id |
+
+`LEFT JOIN` is deliberate: a run whose `athlete_id` somehow doesn't resolve must still appear —
+losing a time to a dangling link would be far worse than showing it unattributed. Renames are
+retroactive by design (display resolves through the join), so fixing a typo fixes every past run.
+
+## 7. Not yet done (next commit)
+
+**UI**: roster screen, athlete picker (with duplicate-name prompt), `UpNextStrip` on all three
+timing screens, History reassignment + Unassigned filter chip, template editor, tap-to-place
+reorder, and the discard control.
 
 ⚠️ **This commit is not shippable alone.** Until the storage API writes `athlete_id` on new
 runs, runs saved by the current UI would land unlinked and the version-gated backfill will not

@@ -41,8 +41,33 @@ export function foldName(s: string): string {
   return s.trim().normalize('NFC').toLocaleLowerCase();
 }
 
+/**
+ * Pick the canonical spelling for a folded name group: MOST FREQUENT wins,
+ * ties break to MOST RECENT.
+ *
+ * Deliberately NOT "most recent spelling": one session typed with caps lock on
+ * is a keyboard state, not a naming decision, and it would permanently rename
+ * the athlete. Deliberately NOT an uppercase-detection heuristic either — plenty
+ * of names legitimately carry caps (McRae, DeAndre, O'Neill), and a rule that
+ * "fixes" them is worse than the problem. Frequency is the honest signal: the
+ * spelling the coach actually uses is the one they use most.
+ */
+export function canonicalSpelling(spellings: Map<string, { count: number; lastAt: number }>): string {
+  let best = '';
+  let bestCount = -1;
+  let bestAt = -1;
+  for (const [spelling, s] of spellings) {
+    if (s.count > bestCount || (s.count === bestCount && s.lastAt > bestAt)) {
+      best = spelling;
+      bestCount = s.count;
+      bestAt = s.lastAt;
+    }
+  }
+  return best;
+}
+
 export type MergedGroup = {
-  /** the canonical display name chosen (most recent spelling) */
+  /** the canonical display name chosen (most frequent spelling, ties → most recent) */
   display: string;
   /** every distinct spelling that folded into it */
   variants: string[];
@@ -205,10 +230,9 @@ async function backfillRoster(db: MigrationDb): Promise<{
   );
 
   type Group = {
-    display: string;
-    displayAt: number;
+    /** exact spelling (trimmed) -> how often it was used, and when last used */
+    spellings: Map<string, { count: number; lastAt: number }>;
     firstAt: number;
-    variants: Set<string>;
     runIds: string[];
   };
   const groups = new Map<string, Group>();
@@ -218,16 +242,17 @@ async function backfillRoster(db: MigrationDb): Promise<{
     const key = foldName(name);
     let g = groups.get(key);
     if (!g) {
-      g = { display: name, displayAt: r.created_at, firstAt: r.created_at, variants: new Set(), runIds: [] };
+      g = { spellings: new Map(), firstAt: r.created_at, runIds: [] };
       groups.set(key, g);
     }
-    g.variants.add(name);
-    g.runIds.push(r.id);
-    // rows are ASC by created_at, so the last write wins => most recent spelling
-    if (r.created_at >= g.displayAt) {
-      g.display = name;
-      g.displayAt = r.created_at;
+    const s = g.spellings.get(name);
+    if (s) {
+      s.count += 1;
+      if (r.created_at > s.lastAt) s.lastAt = r.created_at;
+    } else {
+      g.spellings.set(name, { count: 1, lastAt: r.created_at });
     }
+    g.runIds.push(r.id);
     if (r.created_at < g.firstAt) g.firstAt = r.created_at;
   }
 
@@ -244,6 +269,7 @@ async function backfillRoster(db: MigrationDb): Promise<{
   const merges: MergedGroup[] = [];
 
   for (const [key, g] of groups) {
+    const display = canonicalSpelling(g.spellings);
     let id = byKey.get(key);
     if (!id) {
       id = newId();
@@ -251,7 +277,7 @@ async function backfillRoster(db: MigrationDb): Promise<{
       // they actually started appearing rather than when the migration ran.
       await db.runAsync(
         'INSERT INTO athletes (id, display_name, group_name, created_at, archived_at, synced) VALUES (?, ?, NULL, ?, NULL, 0)',
-        [id, g.display, g.firstAt],
+        [id, display, g.firstAt],
       );
       byKey.set(key, id);
       athletesCreated += 1;
@@ -262,8 +288,9 @@ async function backfillRoster(db: MigrationDb): Promise<{
       await db.runAsync(`UPDATE runs SET athlete_id = ? WHERE id IN (${placeholders})`, [id, ...part]);
       runsLinked += part.length;
     }
-    if (g.variants.size > 1) {
-      merges.push({ display: g.display, variants: [...g.variants], runs: g.runIds.length });
+    if (g.spellings.size > 1) {
+      const variants = [...g.spellings.entries()].map(([s, v]) => `${s} ×${v.count}`);
+      merges.push({ display, variants, runs: g.runIds.length });
     }
   }
 
