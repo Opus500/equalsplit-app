@@ -446,6 +446,35 @@ export async function deleteRun(id: string): Promise<void> {
   }
 }
 
+export type AthleteRunRow = {
+  id: string;
+  total_ms: number;
+  created_at: number;
+  status: string;
+  drill_id: string | null;
+  drill_name: string | null;
+};
+
+/**
+ * Every run attributed to one athlete, across all sessions — the progression view.
+ *
+ * Returns SUSPECT and INVALID runs too, rather than filtering in SQL, so the screen
+ * can say how many it set aside. Silently dropping them would leave a coach staring
+ * at a chart of six points wondering where the seventh went.
+ */
+export async function getAthleteRuns(athleteId: string): Promise<AthleteRunRow[]> {
+  const db = await getDb();
+  return db.getAllAsync<AthleteRunRow>(
+    `SELECT r.id, r.total_ms, r.created_at, r.status, r.drill_id,
+            d.name AS drill_name
+       FROM runs r
+       LEFT JOIN drills d ON d.id = r.drill_id
+      WHERE r.athlete_id = ?
+      ORDER BY r.created_at ASC`,
+    [athleteId],
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Roster (schema v2). Athletes are ARCHIVED, never deleted, so run history is
 // never orphaned — archiving only hides them from pickers.

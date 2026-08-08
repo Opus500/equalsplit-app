@@ -20,6 +20,12 @@ import path from 'node:path';
 const migrations = await import(new URL('../src/db/migrations.ts', import.meta.url).href);
 const { runMigrations, foldName, SCHEMA_VERSION } = migrations;
 
+// The progression screen's threshold, imported rather than restated, so the density
+// this reports is measured against the number the UI actually enforces.
+const { MIN_SERIES_RUNS } = await import(
+  new URL('../src/roster/progression.ts', import.meta.url).href
+);
+
 // --- node:sqlite -> MigrationDb adapter (mirrors the expo one in database.ts) --
 function adapt(db) {
   return {
@@ -233,6 +239,57 @@ for (const d of db
   console.log(
     `  ${d.name.padEnd(14)} runs=${String(d.runs).padEnd(3)} kind=${d.kind.padEnd(7)}${d.last_used_at ? '' : ' (never used — sinks in the picker)'}`,
   );
+}
+
+// What the progression graph can ACTUALLY draw. A run only reaches a chart if it
+// has BOTH an athlete and a drill record, so this is the intersection, not either
+// count on its own — and it is the honest answer to "will this screen be empty?".
+console.log(`\n--- SERIES DENSITY (progression graph needs ${MIN_SERIES_RUNS}+ runs per athlete per drill) ---`);
+{
+  const series = db
+    .prepare(
+      `SELECT a.display_name AS athlete, d.name AS drill, COUNT(*) AS runs
+         FROM runs r
+         JOIN athletes a ON a.id = r.athlete_id
+         JOIN drills   d ON d.id = r.drill_id
+        WHERE r.athlete_id IS NOT NULL AND r.drill_id IS NOT NULL
+        GROUP BY r.athlete_id, r.drill_id
+        ORDER BY runs DESC, a.display_name ASC`,
+    )
+    .all();
+
+  if (!series.length) {
+    console.log('  (none — no run has both an athlete and a drill)');
+  } else {
+    for (const s of series) {
+      const ok = s.runs >= MIN_SERIES_RUNS;
+      console.log(
+        `  ${String(s.athlete).padEnd(16)} ${String(s.drill).padEnd(14)} ${String(s.runs).padStart(3)} runs   ${
+          ok ? 'GRAPH' : `too thin (needs ${MIN_SERIES_RUNS - s.runs} more)`
+        }`,
+      );
+    }
+  }
+
+  const graphable = series.filter((s) => s.runs >= MIN_SERIES_RUNS);
+  const athletesWithGraph = new Set(graphable.map((s) => s.athlete)).size;
+  const bothLinked = count(
+    db,
+    'SELECT COUNT(*) AS c FROM runs WHERE athlete_id IS NOT NULL AND drill_id IS NOT NULL',
+  );
+  const total = count(db, 'SELECT COUNT(*) AS c FROM runs');
+  console.log(
+    `\n  ${graphable.length}/${series.length} series meet the threshold; ${athletesWithGraph} athlete(s) would see a chart.`,
+  );
+  console.log(
+    `  ${bothLinked}/${total} runs are chartable at all (need an athlete AND a drill); ${total - bothLinked} are missing one or both.`,
+  );
+  if (!graphable.length) {
+    console.log(
+      '  NOTE: every athlete would see "not enough data yet". Not a bug — the data is thin,\n' +
+        '        and the screen should say so plainly rather than draw a chart from two points.',
+    );
+  }
 }
 
 // Idempotency: initDb() runs at every app launch, so a second pass MUST be inert.

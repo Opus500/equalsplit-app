@@ -21,6 +21,7 @@ import {
   View,
 } from 'react-native';
 
+import { AthleteDetailModal } from '../components/AthleteDetail';
 import { createAthlete, setAthleteArchived, updateAthlete, type Athlete } from '../db/database';
 import { foldName } from '../db/migrations';
 import { disambiguate, runCountLabel } from '../roster/labels';
@@ -32,6 +33,8 @@ export default function RosterScreen() {
   const roster = useRoster();
   const all = roster.athletes;
   const [archivedOpen, setArchivedOpen] = useState(false);
+  // Tapping a row opens the DETAIL view (progress); editing is a button inside it.
+  const [viewing, setViewing] = useState<Athlete | null>(null);
   const [editing, setEditing] = useState<Athlete | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -68,6 +71,13 @@ export default function RosterScreen() {
     [editing, load],
   );
 
+  // The detail sheet holds a snapshot, so after an edit it would keep showing the
+  // old name until reopened. Re-resolve it from the refreshed list instead.
+  const viewingLive = useMemo(
+    () => (viewing ? (all.find((a) => a.id === viewing.id) ?? viewing) : null),
+    [viewing, all],
+  );
+
   const submitCreate = useCallback(
     async (name: string, group: string) => {
       await createAthlete(name, group);
@@ -81,6 +91,7 @@ export default function RosterScreen() {
     async (a: Athlete) => {
       await setAthleteArchived(a.id, a.archived_at == null);
       setEditing(null);
+      setViewing(null);
       await load();
     },
     [load],
@@ -118,7 +129,7 @@ export default function RosterScreen() {
             athlete={item}
             detail={details.get(item.id)}
             queued={inQueue.has(item.id)}
-            onPress={() => setEditing(item)}
+            onPress={() => setViewing(item)}
             onToggleQueue={() =>
               inQueue.has(item.id)
                 ? roster.removeAthleteFromQueue(item.id)
@@ -151,7 +162,7 @@ export default function RosterScreen() {
                       athlete={a}
                       detail={details.get(a.id)}
                       queued={false}
-                      onPress={() => setEditing(a)}
+                      onPress={() => setViewing(a)}
                     />
                   ))
                 : null}
@@ -160,21 +171,31 @@ export default function RosterScreen() {
         }
       />
 
+      {/* Detail (progress) is what a row tap opens; the edit form is NESTED inside
+          it, not a sibling — see the note on AthleteDetailModal's children prop. */}
+      <AthleteDetailModal
+        visible={viewingLive != null}
+        athlete={viewingLive}
+        onClose={() => setViewing(null)}
+        onEdit={() => viewingLive && setEditing(viewingLive)}
+      >
+        <AthleteFormModal
+          visible={editing != null}
+          title="Edit athlete"
+          athlete={editing}
+          existing={all}
+          onClose={() => setEditing(null)}
+          onSubmit={submitEdit}
+          onToggleArchive={editing ? () => toggleArchive(editing) : undefined}
+        />
+      </AthleteDetailModal>
+
       <AthleteFormModal
         visible={creating}
         title="Add athlete"
         existing={all}
         onClose={() => setCreating(false)}
         onSubmit={submitCreate}
-      />
-      <AthleteFormModal
-        visible={editing != null}
-        title="Edit athlete"
-        athlete={editing}
-        existing={all}
-        onClose={() => setEditing(null)}
-        onSubmit={submitEdit}
-        onToggleArchive={editing ? () => toggleArchive(editing) : undefined}
       />
     </View>
   );

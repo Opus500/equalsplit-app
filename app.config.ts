@@ -14,6 +14,7 @@ const config: ExpoConfig = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: 'com.equalsplit.app',
+    appleTeamId: 'CPM8C3S84F',
     infoPlist: {
       NSBluetoothAlwaysUsageDescription: BLUETOOTH_REASON,
       NSBluetoothPeripheralUsageDescription: BLUETOOTH_REASON,

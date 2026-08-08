@@ -134,6 +134,39 @@ out of the graphs.
 The Drills screen no longer offers a free-text label override: the drill *is* the engine's, and
 an override would mint `manual` records for engine runs and split them out of their own series.
 
+## 4c. Progression graphs
+
+`src/roster/progression.ts` is pure and dependency-free (verified by
+`scripts/verify-progression.mjs`); `ProgressionChart.tsx` only turns its fractions into
+pixels. **Hand-rolled from Views** — a line chart is horizontal rules, circles, and rotated
+rectangles, none of which justify a native module on a build that prebuilds clean.
+
+**One chart per drill, never one chart across drills.** Grouping is by `drill_id`, so a
+rename keeps a series intact and a case variant can't split one. On real data a shared axis
+would span ~1000ms while the actual signal inside each drill is ~100ms — the trend would be
+the athlete alternating distances, not their progress.
+
+| Rule | Call |
+|---|---|
+| Threshold | `MIN_SERIES_RUNS = 3`. Two points draw a line but not a trend |
+| Below threshold | Listed as "+N to chart" with best time — actionable, not hidden |
+| y-axis | **Never zero-based** (a 100ms gain would occupy 2.4% of the plot); floored at `MIN_Y_SPAN_MS = 200` so a 10ms wobble isn't dramatised |
+| y direction | Time increases **upward**, so improvement FALLS. Flipping it would put 4.0s above 4.4s on an axis labelled in seconds |
+| x-axis | Run **order**, not wall-clock — a layoff would otherwise squash a season into the left edge. Dates are on the axis labels |
+| Unlabeled runs | Counted, never charted. An "untagged" bucket would mix a 10m and a 40yd — the exact prohibition |
+| `suspect` / `invalid` runs | Excluded and counted. A false trigger lands as an impossibly fast time, i.e. a PB that never happened |
+| Touch targets | Full-height **columns**, not dots: a 10px dot is untappable, and a dozen runs sit closer together than a fingertip |
+| Ticks | Chosen by resulting tick *count*, not by rounding the interval up — the naive rule drew 2 gridlines on a 226ms span |
+
+Reached by tapping a roster row, which now opens **detail** rather than the edit form (edit
+is a button inside it). The form is **nested inside** the detail modal: on iOS, dismissing
+one root-level `Modal` while presenting another in the same frame can drop the second.
+
+`scripts/verify-migration.mjs` prints a **SERIES DENSITY** block importing the same
+`MIN_SERIES_RUNS`, so "will this screen be empty on my data?" is measured, not guessed. A run
+reaches a chart only with **both** an athlete and a drill, so that intersection is the number
+that matters — not either count alone.
+
 ## 5. Decisions of record
 
 | Decision | Call |
@@ -197,12 +230,14 @@ closes: once saved it is an ordinary row, and History's delete is the identical 
 losing a time to a dangling link would be far worse than showing it unattributed. Renames are
 retroactive by design (display resolves through the join), so fixing a typo fixes every past run.
 
-## 7. Not yet done (next commit)
+## 7. Not yet done
 
-**UI**: roster screen, athlete picker (with duplicate-name prompt), `UpNextStrip` on all three
-timing screens, History reassignment + Unassigned filter chip, template editor, tap-to-place
-reorder, and the discard control.
+Built: roster screen, athlete picker (with duplicate-name prompt), `UpNextStrip` on all three
+timing screens (with Skip + undo), History reassignment + Unassigned filter chip, drill records,
+and the progression graphs.
 
-⚠️ **This commit is not shippable alone.** Until the storage API writes `athlete_id` on new
-runs, runs saved by the current UI would land unlinked and the version-gated backfill will not
-pick them up. Land the roster work as a set, and keep the event phones on `master`.
+**Remaining, in order:** queue templates → tap-to-place reorder → the discard window.
+
+⚠️ **Do not build the event phones from this branch.** They stay on `master` (`f232a4d`) until
+the set above lands together — a partial roster build saves runs the backfill has already been
+gated past.
