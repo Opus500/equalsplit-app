@@ -21,8 +21,18 @@ export const SCHEMA_VERSION = 3;
  */
 export const ENGINE_DRILL_LABELS = ['L Drill', 'Shuttle Run', 'Standalone'];
 
-/** Seeded vocabulary for the timer's drill picker (kind='manual'). */
-export const SEED_DRILL_LABELS = ['10m', '20m', '30m', '40yd dash'];
+/**
+ * Seeded vocabulary for the timer's drill picker (kind='manual').
+ *
+ * "10m start" is a distinct drill from "10m", not a spelling of it, and it is the
+ * most-used label on real data. It first appeared only because the v3 backfill
+ * minted it from old free-text tags; listing it here makes it a first-class preset
+ * so it survives a regenerated preset list instead of depending on that artifact.
+ *
+ * Seeding is idempotent by FOLDED name (see backfillDrills), so adding a label that
+ * a device already created from tags re-uses that record rather than duplicating it.
+ */
+export const SEED_DRILL_LABELS = ['10m', '10m start', '20m', '30m', '40yd dash'];
 
 /** Which picker a drill belongs to. Engine drills are written by the Drills
  *  screen / standalone observer and must not clutter the timer's list. */
