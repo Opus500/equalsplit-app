@@ -53,6 +53,11 @@ export type SkipUndo = {
   wrapped: boolean;
 };
 
+/** The cursor move made by the last completed run, while it is still revertible.
+ *  Discarding that run must put its athlete back up — the rep didn't count, so
+ *  the queue shouldn't have moved on. Same snapshot mechanism as SkipUndo. */
+export type AdvanceUndo = { prev: QueueState; wrapped: boolean };
+
 type RosterContextValue = {
   ready: boolean;
   /** every athlete, archived included (lists filter as they need) */
@@ -78,6 +83,12 @@ type RosterContextValue = {
   lastSkip: SkipUndo | null;
   /** Restore the queue to exactly its pre-skip state. */
   undoSkip: () => void;
+  /** Undo the cursor move made by the last completeRun(), if it is still the most
+   *  recent queue change. Returns false if anything happened since, in which case
+   *  the snapshot is stale and restoring it would clobber that change.
+   *  Called when a run is DISCARDED: the rep didn't count, so its athlete is up
+   *  again rather than having silently lost their turn. */
+  revertAdvance: () => boolean;
   jumpTo: (athleteId: string) => void;
   setQueue: (ids: string[]) => void;
   addAthleteToQueue: (athleteId: string) => void;
@@ -97,6 +108,7 @@ export function RosterProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [justWrapped, setJustWrapped] = useState(false);
   const [lastSkip, setLastSkip] = useState<SkipUndo | null>(null);
+  const [lastAdvance, setLastAdvance] = useState<AdvanceUndo | null>(null);
   const wrapTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -156,11 +168,19 @@ export function RosterProvider({ children }: { children: ReactNode }) {
     [queue, activeIds, index],
   );
 
-  // Any queue change other than the skip itself makes the stored snapshot stale —
-  // restoring it would silently clobber whatever happened since. So every other
-  // mutation drops the undo rather than risking that.
-  const clearSkipUndo = useCallback(() => {
+  // BOTH snapshots (skip and advance) go stale the moment anything else changes
+  // the queue — restoring one would silently clobber whatever happened since. So
+  // every mutation drops both rather than risking it, and they are cleared
+  // together so a new one can never be reachable through a path that forgot.
+  //
+  // Note the asymmetry in TIMERS, not in invalidation: the skip undo expires on a
+  // clock (SKIP_UNDO_MS) because it is a transient toast, while the advance undo
+  // has no timer — it backs the discard window, which stays open until the next
+  // rep. A cursor that quietly stopped being revertible halfway through that
+  // window would be worse than one that never was.
+  const clearUndos = useCallback(() => {
     setLastSkip(null);
+    setLastAdvance(null);
     if (skipTimer.current) clearTimeout(skipTimer.current);
   }, []);
 
@@ -181,9 +201,23 @@ export function RosterProvider({ children }: { children: ReactNode }) {
   }, [queue, activeIds, commit]);
 
   const completeRun = useCallback(() => {
-    clearSkipUndo(); // a recorded run supersedes an undoable skip
-    advanceCursor();
-  }, [advanceCursor, clearSkipUndo]);
+    clearUndos(); // a recorded run supersedes an undoable skip
+    setLastAdvance(advanceCursor());
+  }, [advanceCursor, clearUndos]);
+
+  // Mirrors undoSkip. Returns false when the snapshot is stale — the caller (the
+  // discard control) still deletes the run; it just leaves the cursor alone rather
+  // than undoing whatever the coach did in the meantime.
+  const revertAdvance = useCallback((): boolean => {
+    if (!lastAdvance) return false;
+    commit(lastAdvance.prev);
+    if (lastAdvance.wrapped) {
+      setJustWrapped(false);
+      if (wrapTimer.current) clearTimeout(wrapTimer.current);
+    }
+    setLastAdvance(null);
+    return true;
+  }, [lastAdvance, commit]);
 
   // No run is written, so this is fully reversible. (A pending one-off jump is
   // consumed instead of the cursor moving, which is right: you're skipping
@@ -191,11 +225,12 @@ export function RosterProvider({ children }: { children: ReactNode }) {
   const skipCurrent = useCallback(() => {
     const who = currentAthlete;
     if (!who) return;
+    clearUndos(); // a skip supersedes a revertible run-advance, and vice versa
     const { prev, wrapped } = advanceCursor();
     setLastSkip({ name: who.display_name, prev, wrapped });
     if (skipTimer.current) clearTimeout(skipTimer.current);
     skipTimer.current = setTimeout(() => setLastSkip(null), SKIP_UNDO_MS);
-  }, [advanceCursor, currentAthlete]);
+  }, [advanceCursor, currentAthlete, clearUndos]);
 
   // Restores the WHOLE pre-skip state, so the cursor (and any consumed override)
   // comes back exactly — including after a wrap, where the announcement is
@@ -207,18 +242,18 @@ export function RosterProvider({ children }: { children: ReactNode }) {
       setJustWrapped(false);
       if (wrapTimer.current) clearTimeout(wrapTimer.current);
     }
-    clearSkipUndo();
-  }, [lastSkip, commit, clearSkipUndo]);
+    clearUndos();
+  }, [lastSkip, commit, clearUndos]);
 
   const jumpTo = useCallback(
     (athleteId: string) => {
       // A deliberate jump means the coach has taken control of who's up, so any
       // stale "restarting lineup" notice is no longer what they're looking at.
       setJustWrapped(false);
-      clearSkipUndo();
+      clearUndos();
       commit(jumpToAthlete(queue, athleteId));
     },
-    [queue, commit, clearSkipUndo],
+    [queue, commit, clearUndos],
   );
 
   const setQueue = useCallback(
@@ -226,46 +261,46 @@ export function RosterProvider({ children }: { children: ReactNode }) {
       // Keep the cursor on the same PERSON when possible; otherwise start at the
       // top of the new lineup.
       const cursorId = queue.cursorId && ids.includes(queue.cursorId) ? queue.cursorId : (ids[0] ?? null);
-      clearSkipUndo();
+      clearUndos();
       commit({ athleteIds: ids, cursorId, overrideId: queue.overrideId });
     },
-    [queue, commit, clearSkipUndo],
+    [queue, commit, clearUndos],
   );
 
   const addAthleteToQueue = useCallback(
     (athleteId: string) => {
-      clearSkipUndo();
+      clearUndos();
       commit(addToQueue(queue, athleteId));
     },
-    [queue, commit, clearSkipUndo],
+    [queue, commit, clearUndos],
   );
   const removeAthleteFromQueue = useCallback(
     (athleteId: string) => {
-      clearSkipUndo();
+      clearUndos();
       commit(removeFromQueue(queue, athleteId));
     },
-    [queue, commit, clearSkipUndo],
+    [queue, commit, clearUndos],
   );
   const moveInQueue = useCallback(
     (from: number, to: number) => {
-      clearSkipUndo(); // the snapshot holds the OLD order — restoring it would undo the reorder
+      clearUndos(); // the snapshot holds the OLD order — restoring it would undo the reorder
       commit(reorderQueue(queue, from, to));
     },
-    [queue, commit, clearSkipUndo],
+    [queue, commit, clearUndos],
   );
   const loadTemplate = useCallback(
     (athleteIds: string[]) => {
       setJustWrapped(false);
-      clearSkipUndo();
+      clearUndos();
       commit(loadTemplateIds(athleteIds));
     },
-    [commit, clearSkipUndo],
+    [commit, clearUndos],
   );
   const clearQueue = useCallback(() => {
     setJustWrapped(false);
-    clearSkipUndo();
+    clearUndos();
     commit(EMPTY_QUEUE);
-  }, [commit, clearSkipUndo]);
+  }, [commit, clearUndos]);
 
   const value: RosterContextValue = {
     ready,
@@ -280,6 +315,7 @@ export function RosterProvider({ children }: { children: ReactNode }) {
     skipCurrent,
     lastSkip,
     undoSkip,
+    revertAdvance,
     jumpTo,
     setQueue,
     addAthleteToQueue,

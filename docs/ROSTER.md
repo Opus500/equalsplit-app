@@ -167,6 +167,60 @@ one root-level `Modal` while presenting another in the same frame can drop the s
 reaches a chart only with **both** an athlete and a drill, so that intersection is the number
 that matters — not either count alone.
 
+## 4d. The discard window
+
+Rules in `src/runs/pending.ts` (pure, verified by `scripts/verify-pending.mjs`); the two
+guards that can't live in a screen are in `PendingRunProvider`.
+
+**No timer.** The window stays open until the next rep is armed. A fixed duration means
+glancing away costs you the chance to bin a bad rep. What closes it instead is anything
+meaning "you are no longer looking at this run":
+
+| Close path | Trigger |
+|---|---|
+| `next-rep` | the screen's arm control — `doArm` on both timers and Drills |
+| `dismissed` | the **Keep** button. Clearing the bar by hand IS "keep this run" |
+| `superseded` | a newer run took the window |
+| `disconnected` | no gate link remains (`v2.connected \|\| gate.status`) — and only if one was up when the window opened |
+| `backgrounded` | `AppState` → `background`. **Not** `inactive`: iOS fires that for the app switcher, Control Centre and call banners |
+
+Every close path **keeps** the run. Only `discard` deletes, and it deletes by id — the run
+was written durably the instant it finished (§ "Why discard is a delete"), so no close path
+can lose data.
+
+**A second run supersedes: the window moves to the newest.** The hazard that creates is
+that the run on screen is no longer the run the button deletes — a false trigger followed by
+the real rep is exactly that sequence. So the control **names its target** ("4.20s · Marcus ·
+30m"); an unlabelled *Discard* would bin the wrong rep.
+
+**Standalone (B1) runs never take the window and never close one.** Nobody was driving the
+phone, so the window — an affordance for "the rep I just watched" — would be pointing at a
+run the coach never saw. Consistent with B1 runs already saving Unassigned and not advancing
+the queue. This is structural, not just a rule: the standalone path writes from `V2Provider`,
+which sits *above* `PendingRunProvider` and cannot reach it.
+
+**Discarding reverts the queue.** `completeRun()` advanced the cursor; `revertAdvance()`
+puts that athlete back up, because the rep didn't count. It restores a whole `QueueState`
+snapshot (same mechanism as skip-undo) and no-ops if the coach changed the queue since.
+
+Suspect and invalid runs DO get a window — an early break is the single most likely thing a
+coach wants to bin, so withholding the control there would remove it exactly when needed.
+
+## 4e. Queue templates
+
+Loading **replaces** the live lineup ("today's lineup is this group"), never appends —
+appending would silently grow the lineup every time the same template was re-loaded.
+
+Because it replaces, it can destroy work: if the current lineup already has runs against it
+**today**, loading confirms first and states the count. That count comes from
+`countTodayRunsForAthletes()` — derived from the runs table, not tracked in state, because a
+counter would reset on an app restart mid-practice, which is precisely when a coach reaches
+for a template and can least afford a silent wipe. An empty or untouched lineup loads with no
+prompt: a confirm nobody needs is a confirm everybody learns to dismiss.
+
+Templates are documents, not people — they are **deleted**, not archived, and deleting one
+touches no athletes and no runs.
+
 ## 5. Decisions of record
 
 | Decision | Call |
@@ -234,9 +288,9 @@ retroactive by design (display resolves through the join), so fixing a typo fixe
 
 Built: roster screen, athlete picker (with duplicate-name prompt), `UpNextStrip` on all three
 timing screens (with Skip + undo), History reassignment + Unassigned filter chip, drill records,
-and the progression graphs.
+the progression graphs, queue templates, and the discard window.
 
-**Remaining, in order:** queue templates → tap-to-place reorder → the discard window.
+**Remaining: tap-to-place reorder.**
 
 ⚠️ **Do not build the event phones from this branch.** They stay on `master` (`f232a4d`) until
 the set above lands together — a partial roster build saves runs the backfill has already been

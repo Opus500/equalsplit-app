@@ -698,6 +698,29 @@ export async function updateTemplate(
   }
 }
 
+/**
+ * How many runs TODAY are attributed to any of these athletes.
+ *
+ * Backs the "this lineup already has runs against it" confirm before a template
+ * replaces the live lineup. Derived from the runs table rather than tracked in
+ * state on purpose: a counter would reset when the app restarts mid-practice,
+ * which is exactly when a coach is most likely to reach for a template and least
+ * able to afford a silent wipe.
+ */
+export async function countTodayRunsForAthletes(athleteIds: string[]): Promise<number> {
+  if (!athleteIds.length) return 0;
+  const db = await getDb();
+  const holes = athleteIds.map(() => '?').join(',');
+  const row = await db.getFirstAsync<{ c: number }>(
+    `SELECT COUNT(*) AS c
+       FROM runs r
+       JOIN sessions s ON s.id = r.session_id
+      WHERE s.name = ? AND r.athlete_id IN (${holes})`,
+    [localDayString(), ...athleteIds],
+  );
+  return row?.c ?? 0;
+}
+
 /** Templates are ordinary documents, not people — deleting one is safe and does
  *  not touch athletes or runs. (Contrast: athletes are only ever archived.) */
 export async function deleteTemplate(id: string): Promise<void> {

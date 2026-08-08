@@ -27,7 +27,9 @@ import { getSetting, saveRun, setSetting } from '../db/database';
 import { formatTags } from '../components/TagPicker';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
+import { DiscardBar } from '../components/DiscardBar';
 import { useRoster } from '../roster/RosterProvider';
+import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
 
 const KEEP_AWAKE_TAG = 'equalsplit-drill';
@@ -61,6 +63,11 @@ export default function DrillsScreen() {
   // whoever was up at the moment the rep landed.
   const currentAthleteRef = useRef(roster.currentAthlete);
   currentAthleteRef.current = roster.currentAthlete;
+  // Same reason: the save effect must offer the discard window for the run that
+  // just landed, without this provider's identity churning its dependencies.
+  const pending = usePendingRun();
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
   const t0Ref = useRef(0);
   const savedRef = useRef<unknown>(null);
   // On drill switch: load the persisted (tuned) lockout for that drill.
@@ -138,10 +145,20 @@ export default function DrillsScreen() {
       athleteId: who?.id ?? null, // null = Unassigned; assignable later in History
       drillType: dr,
     })
-      .then(() => {
+      .then((runId) => {
         setDbg(`saved ${fmt(run.splitMs, 3)}s ✓`);
         // Advance only once the rep is COMMITTED (see TimerV2Screen).
         roster.completeRun();
+        // Open the discard window on this rep. It stays open until the next one
+        // is armed — see doArm.
+        pendingRef.current.offerRun({
+          runId,
+          totalMs: run.splitMs,
+          athleteName: who?.display_name ?? null,
+          drillName: dr,
+          standalone: false,
+          savedAt: Date.now(),
+        });
       })
       .catch((e) => setDbg(`SAVE FAILED: ${String(e)}`));
   }, [v2.lastDrillRun, roster]);
@@ -163,8 +180,10 @@ export default function DrillsScreen() {
     setFinishedTags(null);
     setDbg('');
     setLiveMs(0);
+    // The next rep is starting, so the previous run settles — kept, not deleted.
+    pending.settleForNextRep();
     v2.armDrill(config);
-  }, [v2, config]);
+  }, [v2, config, pending]);
 
   const doCancel = useCallback(() => {
     setLiveMs(0);
@@ -188,6 +207,9 @@ export default function DrillsScreen() {
 
       {/* Who this rep is for + who follows. Tap to jump to anyone. */}
       <UpNextStrip />
+
+      {/* Stays until the next rep is armed. Discard deletes; Keep settles it. */}
+      <DiscardBar />
 
       {/* Drill picker */}
       <View style={styles.pickRow}>

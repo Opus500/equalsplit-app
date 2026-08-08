@@ -10,6 +10,7 @@ import { GateProvider } from './src/ble/GateProvider';
 import { V2Provider } from './src/ble/V2Provider';
 import { SettingsProvider, useSettings } from './src/settings/SettingsProvider';
 import { RosterProvider } from './src/roster/RosterProvider';
+import { PendingRunProvider } from './src/runs/PendingRunProvider';
 import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
 import TimerV2Screen from './src/screens/TimerV2Screen';
@@ -31,7 +32,12 @@ export default function App() {
       <RosterProvider>
         <GateProvider>
           <V2Provider>
-            <AppShell />
+            {/* Inside both BLE providers (it settles the discard window when the
+                gates drop) and inside RosterProvider (a discard puts the athlete
+                back up). */}
+            <PendingRunProvider>
+              <AppShell />
+            </PendingRunProvider>
           </V2Provider>
         </GateProvider>
       </RosterProvider>

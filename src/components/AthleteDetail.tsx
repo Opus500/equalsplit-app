@@ -4,8 +4,18 @@
 // is now a button in here, because "who is this athlete" is a more useful answer to
 // a tap on a name than "rename this athlete".
 
-import { useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type LayoutChangeEvent,
+  Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
 import { getAthleteRuns, type Athlete, type AthleteRunRow } from '../db/database';
 import { runCountLabel } from '../roster/labels';
@@ -14,6 +24,7 @@ import {
   buildProgression,
   formatMs,
   type Progression,
+  type Series,
 } from '../roster/progression';
 import { ProgressionChart } from './ProgressionChart';
 
@@ -110,9 +121,7 @@ export function AthleteDetailModal({
             </View>
           ) : (
             <>
-              {graphable.map((s) => (
-                <ProgressionChart key={s.drillId} series={s} />
-              ))}
+              <ChartPager series={graphable} />
 
               {/* Series that exist but can't be drawn yet. Listed rather than hidden:
                   "two more runs and this becomes a chart" is actionable; a blank
@@ -178,8 +187,90 @@ export function AthleteDetailModal({
   );
 }
 
+/**
+ * One drill chart at a time, swiped horizontally.
+ *
+ * Paging is RN's own `pagingEnabled` ScrollView — no new dependency. Pages are
+ * sized to the MEASURED container rather than the window, so the modal's padding
+ * doesn't leave each page a fraction off and drift the snap across swipes.
+ *
+ * The dots are the only signal that more charts exist, so they are also the
+ * shortcut to reach them: tappable, with hitSlop, since a 7px dot is not a target.
+ */
+function ChartPager({ series }: { series: Series[] }) {
+  const [pageW, setPageW] = useState(0);
+  const [page, setPage] = useState(0);
+  const ref = useRef<ScrollView>(null);
+
+  // Archiving a drill's runs (or a filter change) can shorten the list under us;
+  // without this the pager would sit on a page that no longer exists.
+  useEffect(() => {
+    if (page > series.length - 1) setPage(Math.max(0, series.length - 1));
+  }, [series.length, page]);
+
+  const onLayout = (e: LayoutChangeEvent) => setPageW(e.nativeEvent.layout.width);
+  const onEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!pageW) return;
+    setPage(Math.round(e.nativeEvent.contentOffset.x / pageW));
+  };
+
+  const goTo = (i: number) => {
+    setPage(i);
+    ref.current?.scrollTo({ x: i * pageW, animated: true });
+  };
+
+  if (!series.length) return null;
+  if (series.length === 1) return <ProgressionChart series={series[0]!} />;
+
+  return (
+    <View onLayout={onLayout}>
+      {pageW > 0 ? (
+        <>
+          <ScrollView
+            ref={ref}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            onMomentumScrollEnd={onEnd}
+            decelerationRate="fast"
+          >
+            {series.map((s) => (
+              <View key={s.drillId} style={{ width: pageW }}>
+                <ProgressionChart series={s} />
+              </View>
+            ))}
+          </ScrollView>
+
+          <View style={styles.dots}>
+            {series.map((s, i) => (
+              <Pressable
+                key={s.drillId}
+                onPress={() => goTo(i)}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel={`Show ${s.drillName} chart, ${i + 1} of ${series.length}`}
+                style={styles.dotHit}
+              >
+                <View style={[styles.dot, i === page && styles.dotOn]} />
+              </Pressable>
+            ))}
+            <Text style={styles.pagerLabel}>
+              {page + 1} / {series.length}
+            </Text>
+          </View>
+        </>
+      ) : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116' },
+  dots: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, marginTop: 2 },
+  dotHit: { paddingHorizontal: 5, paddingVertical: 8 },
+  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#334155' },
+  dotOn: { backgroundColor: '#60a5fa', width: 8, height: 8, borderRadius: 4 },
+  pagerLabel: { color: '#475569', fontSize: 11, marginLeft: 8, fontVariant: ['tabular-nums'] },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

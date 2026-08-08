@@ -16,7 +16,9 @@ import { formatTags } from '../components/TagPicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
+import { DiscardBar } from '../components/DiscardBar';
 import { useRoster } from '../roster/RosterProvider';
+import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run-v2';
@@ -45,6 +47,9 @@ export default function TimerV2Screen() {
   // ref so the save effect reads whoever was up at the moment the run landed.
   const currentAthleteRef = useRef(roster.currentAthlete);
   currentAthleteRef.current = roster.currentAthlete;
+  const pending = usePendingRun();
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
   const drillRef = useRef(drill);
   const t0Ref = useRef(0);
   const savedRef = useRef<V2Run | null>(null);
@@ -124,12 +129,20 @@ export default function TimerV2Screen() {
       athleteId: who?.id ?? null, // null = Unassigned; assignable later in History
       drillId: dr?.id ?? null,
     })
-      .then(() => {
+      .then((runId) => {
         setDbg(`saved ${fmt(run.splitMs, 3)}s ✓`);
-        // Advance only after the run is COMMITTED. When the discard window lands
-        // this call moves to the point the window closes, so a discarded run
-        // leaves the cursor untouched.
+        // Advance as soon as the run is COMMITTED. Discarding it calls
+        // revertAdvance(), which puts this athlete back up — the cursor is not
+        // held back waiting for the window to close.
         roster.completeRun();
+        pendingRef.current.offerRun({
+          runId,
+          totalMs: run.splitMs,
+          athleteName: who?.display_name ?? null,
+          drillName: dr?.name ?? null,
+          standalone: false,
+          savedAt: Date.now(),
+        });
       })
       .catch((e) => setDbg(`SAVE FAILED: ${String(e)}`));
   }, [v2.lastRun, roster]);
@@ -151,8 +164,10 @@ export default function TimerV2Screen() {
     setFinishedTags(null);
     setDbg('');
     setLiveMs(0); // clear the live counter's last frame — no ghost number while armed
+    // The next rep is starting, so the previous run settles — kept, not deleted.
+    pending.settleForNextRep();
     v2.arm();
-  }, [v2]);
+  }, [v2, pending]);
 
   // Cancel lands on idle with no result, where the timer falls back to liveMs —
   // zero it too, or a cancelled run leaves the same stale frame on screen.
@@ -174,6 +189,9 @@ export default function TimerV2Screen() {
 
       {/* Who this run is for + who follows. Tap to jump to anyone. */}
       <UpNextStrip />
+
+      {/* Stays until the next run is armed. Discard deletes; Keep settles it. */}
+      <DiscardBar />
 
       {/* Drill label only — the athlete comes from the roster queue above. */}
       <Pressable style={styles.tagBar} onPress={() => setTagOpen(true)}>

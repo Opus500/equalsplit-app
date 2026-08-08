@@ -28,7 +28,9 @@ import {
 import { formatTags } from '../components/TagPicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { UpNextStrip } from '../components/UpNextStrip';
+import { DiscardBar } from '../components/DiscardBar';
 import { useRoster } from '../roster/RosterProvider';
+import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run';
@@ -128,6 +130,9 @@ export default function TimerScreen() {
   currentAthleteRef.current = roster.currentAthlete;
   const rosterRef = useRef(roster);
   rosterRef.current = roster;
+  const pending = usePendingRun();
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
   const drillRef = useRef(drill);
   useEffect(() => {
     drillRef.current = drill;
@@ -385,12 +390,23 @@ export default function TimerScreen() {
         athleteId: who?.id ?? null, // null = Unassigned; assignable later in History
         drillId: tagDrill?.id ?? null,
       })
-        .then(() => {
+        .then((runId) => {
           console.log('[saveRun] ok');
           const shown = r.mode === 2 ? Math.max(0, r.totalMs - correction) : r.totalMs;
           setDbg(`finish(${src}) ${fmt(shown, 3)}s · saved ✓`);
           // Advance only once the run is COMMITTED (see TimerV2Screen).
           rosterRef.current.completeRun();
+          // The window opens for suspect/invalid runs too — an early break is the
+          // single most likely thing a coach wants to bin, so excluding those
+          // would withhold the control exactly when it is needed.
+          pendingRef.current.offerRun({
+            runId,
+            totalMs: shown,
+            athleteName: who?.display_name ?? null,
+            drillName: tagDrill?.name ?? null,
+            standalone: false,
+            savedAt: Date.now(),
+          });
         })
         .catch((e) => {
           console.warn('[saveRun] FAILED', e);
@@ -565,6 +581,16 @@ export default function TimerScreen() {
   const connected = status === 'connected';
   const isM2Armed = gateState === GateState.M2Armed;
   const isIdleState = gateState === GateState.Idle || gateState === null;
+
+  // Arming is this screen's "next rep starts" signal.
+  const doArm1 = useCallback(() => {
+    pending.settleForNextRep();
+    gate.arm1();
+  }, [pending, gate]);
+  const doArm2 = useCallback(() => {
+    pending.settleForNextRep();
+    gate.arm2();
+  }, [pending, gate]);
   const shownCorrection = corr ? corr.correction : reactionOffsetMs;
   const adjReactionMs =
     result && result.mode === 2 ? Math.max(0, result.split1Ms - shownCorrection) : 0;
@@ -585,6 +611,9 @@ export default function TimerScreen() {
 
       {/* Who this run is for + who follows. Tap to jump to anyone. */}
       <UpNextStrip />
+
+      {/* Stays until the next run is armed. Discard deletes; Keep settles it. */}
+      <DiscardBar />
 
       {/* Drill label only — the athlete comes from the roster strip above. */}
       <Pressable style={styles.tagBar} onPress={() => setTagOpen(true)}>
@@ -675,8 +704,10 @@ export default function TimerScreen() {
 
       <View style={styles.controls}>
         <Row>
-          <Btn label="Arm Mode 1" onPress={gate.arm1} disabled={!connected || !isIdleState} />
-          <Btn label="Arm Mode 2" onPress={gate.arm2} disabled={!connected || !isIdleState} />
+          {/* Arming IS "the next rep starts" on this screen, so it settles the
+              previous run — kept, not deleted. */}
+          <Btn label="Arm Mode 1" onPress={doArm1} disabled={!connected || !isIdleState} />
+          <Btn label="Arm Mode 2" onPress={doArm2} disabled={!connected || !isIdleState} />
         </Row>
         <Row>
           <Btn

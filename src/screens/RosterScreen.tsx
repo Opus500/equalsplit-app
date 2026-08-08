@@ -22,6 +22,7 @@ import {
 } from 'react-native';
 
 import { AthleteDetailModal } from '../components/AthleteDetail';
+import { TemplateManagerModal } from '../components/TemplateManager';
 import { createAthlete, setAthleteArchived, updateAthlete, type Athlete } from '../db/database';
 import { foldName } from '../db/migrations';
 import { disambiguate, runCountLabel } from '../roster/labels';
@@ -37,6 +38,7 @@ export default function RosterScreen() {
   const [viewing, setViewing] = useState<Athlete | null>(null);
   const [editing, setEditing] = useState<Athlete | null>(null);
   const [creating, setCreating] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
 
   const load = useCallback(() => roster.refresh(), [roster]);
 
@@ -106,6 +108,13 @@ export default function RosterScreen() {
           {active.length} athlete{active.length === 1 ? '' : 's'}
           {inQueue.size ? ` · ${inQueue.size} in today's lineup` : ''}
         </Text>
+        <Pressable
+          onPress={() => setTemplatesOpen(true)}
+          hitSlop={8}
+          style={({ pressed }) => [styles.tmplBtn, pressed && styles.dim]}
+        >
+          <Text style={styles.tmplBtnText}>Templates</Text>
+        </Pressable>
       </View>
 
       <Pressable
@@ -197,6 +206,8 @@ export default function RosterScreen() {
         onClose={() => setCreating(false)}
         onSubmit={submitCreate}
       />
+
+      <TemplateManagerModal visible={templatesOpen} onClose={() => setTemplatesOpen(false)} />
     </View>
   );
 }
@@ -380,6 +391,14 @@ const styles = StyleSheet.create({
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
   summary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   summaryText: { color: '#8b98a9', fontSize: 13, flex: 1 },
+  tmplBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#243042',
+  },
+  tmplBtnText: { color: '#94a3b8', fontSize: 12, fontWeight: '700' },
   addBtn: {
     backgroundColor: '#1d4ed8',
     borderRadius: 12,
