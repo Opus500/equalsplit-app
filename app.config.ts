@@ -14,6 +14,11 @@ const config: ExpoConfig = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: 'com.equalsplit.app',
+    // Read by expo prebuild's withDevelopmentTeam plugin, which writes
+    // DEVELOPMENT_TEAM into every build configuration of every native target.
+    // ios/ is generated and gitignored, so this is the only durable place for it —
+    // editing the pbxproj by hand does not survive the next prebuild.
+    appleTeamId: 'CPM8C3S84F',
     infoPlist: {
       NSBluetoothAlwaysUsageDescription: BLUETOOTH_REASON,
       NSBluetoothPeripheralUsageDescription: BLUETOOTH_REASON,
