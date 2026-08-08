@@ -71,11 +71,16 @@ export function UpNextStrip() {
 
         {/* Nested Pressable: it handles the press itself, so skipping never
             opens the picker. Skip is NOT removal — they keep their place and
-            come round again on the wrap. */}
+            come round again on the wrap.
+            NOT `disabled`: Pressability returns `!disabled` from
+            onStartShouldSetResponder, so a disabled button declines the
+            responder and the tap falls through to the strip — opening the
+            picker, which is exactly what the nesting exists to prevent. Stay
+            enabled (so the touch is swallowed) and make the handler inert. */}
         {current ? (
           <Pressable
-            onPress={roster.skipCurrent}
-            disabled={!canSkip}
+            onPress={canSkip ? roster.skipCurrent : undefined}
+            accessibilityState={{ disabled: !canSkip }}
             hitSlop={8}
             style={({ pressed }) => [styles.skipBtn, (!canSkip || pressed) && styles.dim]}
           >
