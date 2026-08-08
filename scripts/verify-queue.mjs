@@ -152,6 +152,44 @@ console.log('\n7c. skipping a one-off jump returns to the lineup, cursor intact'
   check('lineup untouched', r.next.athleteIds, ALL);
 }
 
+console.log('\n7d. UNDO of a skip restores the state EXACTLY, wrap included');
+{
+  // Undo restores a snapshot of the whole QueueState rather than inverting the
+  // move, so exactness is structural. These checks pin that the restored state
+  // is indistinguishable from the pre-skip one — cursor, up-next and lineup.
+  let q = loadTemplate(ALL);
+  q = advance(q, active()).next; // B
+  q = advance(q, active()).next; // C
+  q = advance(q, active()).next; // D — last in the lineup, so the next skip wraps
+  const snapshot = JSON.parse(JSON.stringify(q)); // what undo stores
+
+  const skipped = advance(q, active());
+  check('the skip wrapped', skipped.wrapped, true);
+  check('and moved to the top', currentAthleteId(skipped.next, active()), 'A');
+
+  check('undo restores the cursor', currentAthleteId(snapshot, active()), 'D');
+  check('undo restores up-next', upNext(snapshot, active(), 2), upNext(q, active(), 2));
+  check('undo restores the lineup', snapshot.athleteIds, ALL);
+  check('undo restores the override slot', snapshot.overrideId, null);
+  // `wrapped` is DERIVED, never stored — so there is nothing to un-derive; the
+  // UI only has to retract the announcement.
+  check('re-advancing from the restored state wraps identically', advance(snapshot, active()).wrapped, true);
+}
+
+console.log('\n7e. UNDO of a skip that consumed a one-off jump restores the jump');
+{
+  let q = loadTemplate(ALL);
+  q = advance(q, active()).next; // cursor -> B
+  q = jumpTo(q, 'Z');
+  const act = active([...ALL, 'Z']);
+  const snapshot = JSON.parse(JSON.stringify(q));
+  const skipped = advance(q, act); // skip Z
+  check('after skipping, B is up', currentAthleteId(skipped.next, act), 'B');
+  check('undo puts Z back up', currentAthleteId(snapshot, act), 'Z');
+  check('undo restores the pending override', snapshot.overrideId, 'Z');
+  check('and the cursor was never moved', snapshot.cursorId, 'B');
+}
+
 console.log('\n8. removing the athlete who is up hands over to the next');
 {
   let q = loadTemplate(ALL);

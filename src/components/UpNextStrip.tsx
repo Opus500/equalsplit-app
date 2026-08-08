@@ -85,9 +85,23 @@ export function UpNextStrip() {
         ) : null}
       </Pressable>
 
-      {/* The wrap is announced, never silent: snapping back to the first athlete
-          with no explanation reads as a bug mid-practice. */}
-      {roster.justWrapped ? (
+      {/* Skip is reversible: undo restores the whole pre-skip queue state, so the
+          cursor (and any consumed one-off jump) comes back exactly — including
+          the wrap, whose announcement is retracted with it. When a skip caused
+          the wrap the two notices merge, rather than stacking two banners. */}
+      {roster.lastSkip ? (
+        <View style={styles.undoNotice}>
+          <Text style={styles.undoText} numberOfLines={1}>
+            Skipped {roster.lastSkip.name}
+            {roster.lastSkip.wrapped ? ' · lineup restarted' : ''}
+          </Text>
+          <Pressable onPress={roster.undoSkip} hitSlop={10}>
+            <Text style={styles.undoAction}>Undo</Text>
+          </Pressable>
+        </View>
+      ) : roster.justWrapped ? (
+        /* The wrap is announced, never silent: snapping back to the first
+           athlete with no explanation reads as a bug mid-practice. */
         <View style={styles.wrapNotice}>
           <Text style={styles.wrapText}>↻  Restarting lineup from the top</Text>
         </View>
@@ -158,6 +172,21 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   wrapText: { color: '#93c5fd', fontSize: 12, fontWeight: '700', textAlign: 'center' },
+  undoNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    backgroundColor: '#1f2937',
+    borderRadius: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    marginTop: 6,
+    borderWidth: 1,
+    borderColor: '#374151',
+  },
+  undoText: { color: '#cbd5e1', fontSize: 12, fontWeight: '600', flex: 1 },
+  undoAction: { color: '#60a5fa', fontSize: 13, fontWeight: '800' },
   overrideNotice: { paddingTop: 6 },
   overrideText: { color: '#fbbf24', fontSize: 11, textAlign: 'center' },
   dim: { opacity: 0.7 },
