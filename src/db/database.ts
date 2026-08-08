@@ -697,11 +697,98 @@ export async function findOrCreateDrill(name: string): Promise<Drill | null> {
 
 /** Renames are retroactive (display resolves through the join), so fixing a
  *  typo fixes every past run and keeps their runs in one graph series. */
-export async function renameDrill(id: string, name: string): Promise<void> {
+export type RenameDrillResult =
+  | { merged: false; targetId: string; runsMoved: 0 }
+  | { merged: true; targetId: string; runsMoved: number; intoName: string };
+
+/**
+ * Rename a drill, MERGING into an existing record if the new name already exists.
+ *
+ * Merge rather than block, because blocking makes the case this exists for worse:
+ * you type "gs", run a rep, realise it should have been "10m start" — a name that
+ * already exists — and a block would leave you stuck with the typo. Merging moves
+ * the runs and keeps them in one series, which is the entire reason drills are
+ * records. Callers must confirm first (the merge is not reversible in-app).
+ *
+ * Matching is by FOLDED name, so a pure case fix ("10M START" -> "10m start") is a
+ * rename of the same record, not a merge with itself.
+ *
+ * The `drill_type` snapshot is rewritten too: it exists only so a pre-v3 build
+ * still reads a label after a rollback, and a stale one would show the old name.
+ */
+export async function renameDrill(id: string, name: string): Promise<RenameDrillResult> {
   const db = await getDb();
   const n = clean(name);
   if (!n) throw new Error('drill needs a name');
-  await db.runAsync('UPDATE drills SET name = ? WHERE id = ?', [n, id]);
+  const key = foldName(n);
+  const all = await db.getAllAsync<{ id: string; name: string }>('SELECT id, name FROM drills');
+  const target = all.find((d) => d.id !== id && foldName(d.name) === key);
+
+  await db.execAsync('BEGIN IMMEDIATE');
+  try {
+    if (!target) {
+      await db.runAsync('UPDATE drills SET name = ? WHERE id = ?', [n, id]);
+      await db.runAsync('UPDATE runs SET drill_type = ? WHERE drill_id = ?', [n, id]);
+      await db.execAsync('COMMIT');
+      return { merged: false, targetId: id, runsMoved: 0 };
+    }
+    const c = await db.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM runs WHERE drill_id = ?',
+      [id],
+    );
+    await db.runAsync('UPDATE runs SET drill_id = ?, drill_type = ? WHERE drill_id = ?', [
+      target.id,
+      target.name,
+      id,
+    ]);
+    // The absorbed drill's recency carries over, so a merge can't sink the
+    // surviving record below drills it is now more used than.
+    await db.runAsync(
+      `UPDATE drills SET last_used_at = (
+         SELECT MAX(created_at) FROM runs WHERE drill_id = ?
+       ) WHERE id = ? AND (
+         last_used_at IS NULL OR last_used_at < (SELECT MAX(created_at) FROM runs WHERE drill_id = ?)
+       )`,
+      [target.id, target.id, target.id],
+    );
+    await db.runAsync('DELETE FROM drills WHERE id = ?', [id]);
+    await db.execAsync('COMMIT');
+    return { merged: true, targetId: target.id, runsMoved: c?.c ?? 0, intoName: target.name };
+  } catch (e) {
+    await db.execAsync('ROLLBACK');
+    throw e;
+  }
+}
+
+/**
+ * Delete a drill, UNLABELLING its runs. The runs themselves always survive.
+ *
+ * Both `drill_id` and the `drill_type` snapshot are cleared, so a run can't come
+ * back carrying a label for a record that no longer exists — the same one-source-
+ * of-truth rule updateRunDrill(null) follows.
+ *
+ * Unlabelled runs stay in History and drop out of the progression graphs, which is
+ * the stated intent. This does NOT interact with the prune predicate: that keys on
+ * `athlete_id` alone, so clearing `drill_id` cannot make a run newly prunable.
+ */
+export async function deleteDrillUnlabellingRuns(
+  id: string,
+): Promise<{ runsUnlabelled: number }> {
+  const db = await getDb();
+  await db.execAsync('BEGIN IMMEDIATE');
+  try {
+    const c = await db.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM runs WHERE drill_id = ?',
+      [id],
+    );
+    await db.runAsync('UPDATE runs SET drill_id = NULL, drill_type = NULL WHERE drill_id = ?', [id]);
+    await db.runAsync('DELETE FROM drills WHERE id = ?', [id]);
+    await db.execAsync('COMMIT');
+    return { runsUnlabelled: c?.c ?? 0 };
+  } catch (e) {
+    await db.execAsync('ROLLBACK');
+    throw e;
+  }
 }
 
 /** Cleanup escape hatch — allowed ONLY when nothing references it, so this can

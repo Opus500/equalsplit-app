@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -22,8 +23,15 @@ import {
   View,
 } from 'react-native';
 
-import { findOrCreateDrill, listDrills, type Drill } from '../db/database';
-import { foldName } from '../db/migrations';
+import {
+  deleteDrillIfUnused,
+  deleteDrillUnlabellingRuns,
+  findOrCreateDrill,
+  listDrills,
+  renameDrill,
+  type Drill,
+} from '../db/database';
+import { ENGINE_DRILL_LABELS, foldName } from '../db/migrations';
 
 const VISIBLE_CAP = 8;
 
@@ -46,6 +54,10 @@ export function DrillPickerModal({
   const [expanded, setExpanded] = useState(false);
   const [newName, setNewName] = useState('');
   const [adding, setAdding] = useState(false);
+  // Management is off by default: picking a drill is the common action and must
+  // stay a single tap. Manage turns the rows into rename/delete controls.
+  const [managing, setManaging] = useState(false);
+  const [renaming, setRenaming] = useState<Drill | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -59,8 +71,60 @@ export function DrillPickerModal({
     if (!visible) return;
     setNewName('');
     setExpanded(false);
+    setManaging(false);
+    setRenaming(null);
     load();
   }, [visible, load]);
+
+  // Engine drills (L Drill, Shuttle Run, Standalone) are owned by the Drills engine,
+  // which writes by LABEL. Renaming one would orphan the series — the next rep would
+  // mint a fresh record under the old name — so management is refused for them.
+  // They only appear here at all when kind='all' (History re-tagging).
+  const isEngineOwned = useCallback(
+    (d: Drill) =>
+      d.kind === 'engine' || ENGINE_DRILL_LABELS.some((l) => foldName(l) === foldName(d.name)),
+    [],
+  );
+
+  const doDelete = useCallback(
+    (d: Drill) => {
+      if (d.run_count === 0) {
+        // Nothing to orphan — delete outright.
+        Alert.alert('Delete drill', `Delete “${d.name}”? It has no runs.`, [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              await deleteDrillIfUnused(d.id);
+              if (d.id === currentId) onPick(null);
+              await load();
+            },
+          },
+        ]);
+        return;
+      }
+      Alert.alert(
+        'Delete drill',
+        `“${d.name}” has ${d.run_count} run${d.run_count === 1 ? '' : 's'}.\n\n` +
+          `The run${d.run_count === 1 ? '' : 's'} are kept and stay in History, but lose this ` +
+          'label and drop out of the progression graphs.\n\nRename instead if this was a typo.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: `Delete, keep ${d.run_count} run${d.run_count === 1 ? '' : 's'}`,
+            style: 'destructive',
+            onPress: async () => {
+              await deleteDrillUnlabellingRuns(d.id);
+              if (d.id === currentId) onPick(null);
+              await load();
+            },
+          },
+        ],
+      );
+    },
+    [currentId, onPick, load],
+  );
 
   // The current drill must always be visible even if it has sunk below the cap —
   // otherwise the selected item is missing from its own picker.
@@ -139,16 +203,18 @@ export function DrillPickerModal({
             ) : null}
 
             <ScrollView style={styles.list} keyboardShouldPersistTaps="handled">
-              <Row
-                label="No drill"
-                detail="untagged"
-                muted
-                selected={currentId == null}
-                onPress={() => {
-                  onPick(null);
-                  onClose();
-                }}
-              />
+              {!managing ? (
+                <Row
+                  label="No drill"
+                  detail="untagged"
+                  muted
+                  selected={currentId == null}
+                  onPress={() => {
+                    onPick(null);
+                    onClose();
+                  }}
+                />
+              ) : null}
               {shown.map((d) => (
                 <Row
                   key={d.id}
@@ -159,11 +225,19 @@ export function DrillPickerModal({
                       : 'not used yet'
                   }
                   badge={kind === 'all' && d.kind === 'engine' ? 'drill mode' : undefined}
-                  selected={d.id === currentId}
+                  selected={!managing && d.id === currentId}
                   onPress={() => {
+                    if (managing) return;
                     onPick(d);
                     onClose();
                   }}
+                  manage={
+                    managing
+                      ? isEngineOwned(d)
+                        ? { locked: 'set by drill mode' }
+                        : { onRename: () => setRenaming(d), onDelete: () => doDelete(d) }
+                      : undefined
+                  }
                 />
               ))}
               {!expanded && drills.length > VISIBLE_CAP ? (
@@ -178,15 +252,172 @@ export function DrillPickerModal({
               ) : null}
             </ScrollView>
 
-            <Pressable onPress={onClose} style={({ pressed }) => [styles.close, pressed && styles.dim]}>
-              <Text style={styles.closeText}>Cancel</Text>
-            </Pressable>
+            <View style={styles.footRow}>
+              <Pressable
+                onPress={onClose}
+                style={({ pressed }) => [styles.close, styles.footBtn, pressed && styles.dim]}
+              >
+                <Text style={styles.closeText}>Cancel</Text>
+              </Pressable>
+              {drills.length ? (
+                <Pressable
+                  onPress={() => setManaging((v) => !v)}
+                  style={({ pressed }) => [
+                    styles.close,
+                    styles.footBtn,
+                    managing && styles.manageOn,
+                    pressed && styles.dim,
+                  ]}
+                >
+                  <Text style={[styles.closeText, managing && styles.manageOnText]}>
+                    {managing ? 'Done' : 'Manage'}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </View>
+
+            <RenameDrillPrompt
+              drill={renaming}
+              existing={drills}
+              onClose={() => setRenaming(null)}
+              onDone={async () => {
+                setRenaming(null);
+                await load();
+              }}
+            />
           </Pressable>
         </Pressable>
       </KeyboardAvoidingView>
     </Modal>
   );
 }
+
+/**
+ * Rename, with the merge case surfaced BEFORE it happens.
+ *
+ * A folded-name collision merges rather than blocking: the case this exists for is
+ * fixing a typo ("gs" -> "10m start"), and the correct target usually already
+ * exists — blocking there would leave the typo permanent. Because a merge moves
+ * runs and drops a record, it is stated explicitly with both counts first.
+ */
+function RenameDrillPrompt({
+  drill,
+  existing,
+  onClose,
+  onDone,
+}: {
+  drill: Drill | null;
+  existing: Drill[];
+  onClose: () => void;
+  onDone: () => void | Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setName(drill?.name ?? '');
+  }, [drill]);
+
+  const target = useMemo(() => {
+    if (!drill) return null;
+    const n = name.trim();
+    if (!n) return null;
+    const key = foldName(n);
+    return existing.find((d) => d.id !== drill.id && foldName(d.name) === key) ?? null;
+  }, [name, existing, drill]);
+
+  const submit = useCallback(async () => {
+    if (!drill || busy) return;
+    const n = name.trim();
+    if (!n || n === drill.name) {
+      onClose();
+      return;
+    }
+    const apply = async () => {
+      setBusy(true);
+      try {
+        await renameDrill(drill.id, n);
+        await onDone();
+      } finally {
+        setBusy(false);
+      }
+    };
+    if (target) {
+      Alert.alert(
+        'Merge drills',
+        `“${target.name}” already exists with ${target.run_count} run${
+          target.run_count === 1 ? '' : 's'
+        }.\n\n` +
+          `${drill.run_count} run${drill.run_count === 1 ? '' : 's'} from “${drill.name}” will ` +
+          `move into it and the two become one series. “${drill.name}” is removed.\n\n` +
+          'No runs are deleted. This cannot be undone from the app.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Merge', style: 'destructive', onPress: apply },
+        ],
+      );
+      return;
+    }
+    await apply();
+  }, [drill, name, target, busy, onClose, onDone]);
+
+  return (
+    <Modal visible={drill != null} transparent animationType="fade" onRequestClose={onClose}>
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <Pressable style={styles.backdrop} onPress={onClose}>
+          <Pressable style={styles.card} onPress={() => {}}>
+            <Text style={styles.cardTitle}>Rename drill</Text>
+            <Text style={styles.renameHint}>
+              Every run keeps this label and stays in the graphs — the record is the same, only
+              its name changes.
+            </Text>
+            <TextInput
+              style={styles.addInput}
+              value={name}
+              onChangeText={setName}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+              returnKeyType="done"
+              onSubmitEditing={submit}
+              placeholder="Drill name"
+              placeholderTextColor="#475569"
+            />
+            {target ? (
+              <Text style={styles.dupNote}>
+                “{target.name}” already exists — renaming will MERGE{' '}
+                {drill?.run_count ?? 0} run{(drill?.run_count ?? 0) === 1 ? '' : 's'} into it.
+              </Text>
+            ) : null}
+            <View style={styles.renameActions}>
+              <Pressable
+                onPress={onClose}
+                style={({ pressed }) => [styles.close, styles.footBtn, pressed && styles.dim]}
+              >
+                <Text style={styles.closeText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={submit}
+                disabled={!name.trim() || busy}
+                style={({ pressed }) => [
+                  styles.addBtn,
+                  styles.footBtn,
+                  (!name.trim() || busy || pressed) && styles.dim,
+                ]}
+              >
+                <Text style={styles.addBtnText}>{target ? 'Merge' : 'Rename'}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+type ManageProps =
+  | { onRename: () => void; onDelete: () => void; locked?: undefined }
+  | { locked: string; onRename?: undefined; onDelete?: undefined };
 
 function Row({
   label,
@@ -195,6 +426,7 @@ function Row({
   selected,
   muted,
   onPress,
+  manage,
 }: {
   label: string;
   detail?: string;
@@ -202,11 +434,17 @@ function Row({
   selected?: boolean;
   muted?: boolean;
   onPress: () => void;
+  manage?: ManageProps;
 }) {
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.row, selected && styles.rowSelected, pressed && styles.dim]}
+      disabled={manage != null}
+      style={({ pressed }) => [
+        styles.row,
+        selected && styles.rowSelected,
+        pressed && !manage && styles.dim,
+      ]}
     >
       <View style={styles.rowText}>
         <Text style={[styles.rowLabel, muted && styles.rowLabelMuted]} numberOfLines={1}>
@@ -215,7 +453,31 @@ function Row({
         </Text>
         {detail ? <Text style={styles.rowDetail}>{detail}</Text> : null}
       </View>
-      {selected ? <Text style={styles.check}>✓</Text> : null}
+
+      {manage?.locked ? (
+        <Text style={styles.locked}>{manage.locked}</Text>
+      ) : manage ? (
+        <>
+          {/* Rename first: it is the answer to a typo, and the one that keeps
+              every run's label intact. Delete is the destructive fallback. */}
+          <Pressable
+            onPress={manage.onRename}
+            hitSlop={6}
+            style={({ pressed }) => [styles.miniBtn, pressed && styles.dim]}
+          >
+            <Text style={styles.miniText}>Rename</Text>
+          </Pressable>
+          <Pressable
+            onPress={manage.onDelete}
+            hitSlop={6}
+            style={({ pressed }) => [styles.miniBtn, pressed && styles.dim]}
+          >
+            <Text style={styles.miniDanger}>Delete</Text>
+          </Pressable>
+        </>
+      ) : selected ? (
+        <Text style={styles.check}>✓</Text>
+      ) : null}
     </Pressable>
   );
 }
@@ -274,5 +536,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   closeText: { color: '#cbd5e1', fontWeight: '700' },
+  footRow: { flexDirection: 'row', gap: 10 },
+  footBtn: { flex: 1 },
+  manageOn: { backgroundColor: '#1e3a5f' },
+  manageOnText: { color: '#93c5fd' },
+  miniBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#243042',
+    backgroundColor: '#161b22',
+  },
+  miniText: { color: '#94a3b8', fontSize: 12, fontWeight: '700' },
+  miniDanger: { color: '#f87171', fontSize: 12, fontWeight: '700' },
+  locked: { color: '#475569', fontSize: 10, fontStyle: 'italic', maxWidth: 92, textAlign: 'right' },
+  renameHint: { color: '#64748b', fontSize: 12, lineHeight: 17, marginBottom: 10 },
+  renameActions: { flexDirection: 'row', gap: 10 },
   dim: { opacity: 0.45 },
 });
