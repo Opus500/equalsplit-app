@@ -10,6 +10,7 @@ import { useGate } from '../ble/GateProvider';
 import { EVT_NAME, STATE_NAME } from '../ble/constants';
 import { describeEvent, toHex } from '../ble/decode';
 import V2Lab from '../components/V2Lab';
+import { PruneTestDataModal } from '../components/PruneTestData';
 
 type LogLine = { id: string; text: string; kind: 'evt' | 'status' };
 let logSeq = 0;
@@ -17,6 +18,7 @@ let logSeq = 0;
 export default function DebugScreen({ onBack }: { onBack?: () => void }) {
   const gate = useGate();
   const [view, setView] = useState<'diag' | 'v2'>('diag');
+  const [pruneOpen, setPruneOpen] = useState(false);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   const lastStatusRef = useRef('');
@@ -61,11 +63,26 @@ export default function DebugScreen({ onBack }: { onBack?: () => void }) {
           <Text style={styles.backText}>‹  Settings</Text>
         </Pressable>
       ) : null}
-      <Text style={styles.title}>Diagnostics</Text>
-      <Text style={styles.subtitle}>
-        adapter {gate.adapterOn ? 'on' : 'off'} · {gate.status}
-        {gate.gateStatus ? ` · proto ${gate.gateStatus.protoVer}` : ''}
-      </Text>
+      <View style={styles.titleRow}>
+        <View style={styles.titleCol}>
+          <Text style={styles.title}>Diagnostics</Text>
+          <Text style={styles.subtitle}>
+            adapter {gate.adapterOn ? 'on' : 'off'} · {gate.status}
+            {gate.gateStatus ? ` · proto ${gate.gateStatus.protoVer}` : ''}
+          </Text>
+        </View>
+        {/* One-time maintenance, dev-mode only. Not a "clear history" button —
+            it shows the distribution, then a count, before it can delete. */}
+        <Pressable
+          onPress={() => setPruneOpen(true)}
+          hitSlop={8}
+          style={({ pressed }) => [styles.pruneBtn, pressed && { opacity: 0.5 }]}
+        >
+          <Text style={styles.pruneBtnText}>Prune data</Text>
+        </Pressable>
+      </View>
+
+      <PruneTestDataModal visible={pruneOpen} onClose={() => setPruneOpen(false)} />
 
       <View style={styles.seg}>
         <Pressable
@@ -187,8 +204,20 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   backRow: { paddingBottom: 6 },
   backText: { color: '#60a5fa', fontSize: 15, fontWeight: '700' },
+  titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  titleCol: { flex: 1, minWidth: 0 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800' },
   subtitle: { color: '#8b98a9', marginTop: 4, marginBottom: 10 },
+  pruneBtn: {
+    marginTop: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#7f1d1d',
+    backgroundColor: '#1a1214',
+  },
+  pruneBtnText: { color: '#f87171', fontSize: 12, fontWeight: '800' },
   cards: { flexDirection: 'row', gap: 10, marginBottom: 6 },
   card: { flex: 1, backgroundColor: '#161b22', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
   cardWarn: { backgroundColor: '#3b1d1d', borderWidth: 1, borderColor: '#b4541f' },

@@ -221,6 +221,36 @@ prompt: a confirm nobody needs is a confirm everybody learns to dismiss.
 Templates are documents, not people — they are **deleted**, not archived, and deleting one
 touches no athletes and no runs.
 
+## 4f. Test-data prune (dev-mode maintenance)
+
+Predicate in `src/runs/prune.ts` (pure, verified by `scripts/verify-prune.mjs`), shared by
+the preview and the delete so they cannot diverge:
+
+```
+athlete_id IS NULL  AND  created_at < cutoff
+```
+
+**Drill is deliberately not in it.** A run with a drill but no athlete is still
+unattributed, and on real data that is most of the test rows. What is spared is anything
+*attributed*, however old, plus any unassigned run newer than the cutoff.
+
+**The date bound is the safety property, not a convenience.** `athlete_id IS NULL` alone
+would be unsafe as a standing control: Unassigned is a legitimate ongoing state — standalone
+B1 runs save that way by design — so an unbounded version would quietly eat real data months
+later. The cutoff keeps this a one-time cleanup rather than a permanent hazard in the app.
+
+Flow: **distribution → cutoff → preview → confirm twice.** The histogram buckets runs by
+week or month showing `unassigned/total` per period, so an all-unassigned test week is
+obvious and a cutoff can be picked from the data instead of guessed. Only then does it show
+the count, a five-row sample of what goes, and the two-step confirm. Deleting is unreachable
+without having seen the count.
+
+Runs only. Athletes and drills are never touched — a drill left with zero runs survives and
+sinks in the picker on its own. Sessions left empty are removed, the same tidy-up
+`deleteRun()` already does for one row. The whole thing runs in `BEGIN IMMEDIATE … COMMIT`.
+
+Reached from **Diagnostics ▸ Prune data**, which is behind dev mode (default OFF).
+
 ## 5. Decisions of record
 
 | Decision | Call |

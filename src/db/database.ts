@@ -476,6 +476,84 @@ export async function getAthleteRuns(athleteId: string): Promise<AthleteRunRow[]
 }
 
 // ---------------------------------------------------------------------------
+// Test-data prune (dev-mode maintenance). The PREDICATE lives in ../runs/prune.ts
+// so the preview and the delete cannot diverge; these are only the queries.
+// ---------------------------------------------------------------------------
+
+/** Minimal shape for the prune preview — every run, so the histogram can show
+ *  attributed runs alongside prunable ones for contrast. */
+export async function listRunsForPrune(): Promise<
+  { id: string; createdAt: number; athleteId: string | null; drillId: string | null }[]
+> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{
+    id: string;
+    created_at: number;
+    athlete_id: string | null;
+    drill_id: string | null;
+  }>('SELECT id, created_at, athlete_id, drill_id FROM runs ORDER BY created_at DESC');
+  return rows.map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    athleteId: r.athlete_id,
+    drillId: r.drill_id,
+  }));
+}
+
+/** A few matching rows, so the confirm shows actual data and not just a number. */
+export async function sampleRunsToPrune(
+  cutoff: number,
+  limit = 5,
+): Promise<{ id: string; total_ms: number; created_at: number; drill_name: string | null }[]> {
+  const db = await getDb();
+  return db.getAllAsync(
+    `SELECT r.id, r.total_ms, r.created_at, d.name AS drill_name
+       FROM runs r
+       LEFT JOIN drills d ON d.id = r.drill_id
+      WHERE r.athlete_id IS NULL AND r.created_at < ?
+      ORDER BY r.created_at DESC
+      LIMIT ?`,
+    [cutoff, limit],
+  );
+}
+
+/**
+ * Delete unassigned runs older than `cutoff`, then remove any session left empty.
+ *
+ * The WHERE clause mirrors isPrunable() exactly. Athletes and drills are never
+ * touched: this deletes rows from `runs` and nothing else, so a pruned drill record
+ * survives with zero runs (and sinks in the picker on its own).
+ *
+ * Wrapped in a transaction so a failure part-way cannot leave a half-pruned DB.
+ */
+export async function pruneUnassignedRunsBefore(
+  cutoff: number,
+): Promise<{ runsDeleted: number; sessionsDeleted: number }> {
+  const db = await getDb();
+  await db.execAsync('BEGIN IMMEDIATE');
+  try {
+    const before = await db.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM runs WHERE athlete_id IS NULL AND created_at < ?',
+      [cutoff],
+    );
+    await db.runAsync('DELETE FROM runs WHERE athlete_id IS NULL AND created_at < ?', [cutoff]);
+    // Same tidy-up deleteRun() does for a single row: a session with no runs is an
+    // empty heading in History, not a record of anything.
+    const orphans = await db.getFirstAsync<{ c: number }>(
+      'SELECT COUNT(*) AS c FROM sessions s WHERE NOT EXISTS (SELECT 1 FROM runs r WHERE r.session_id = s.id)',
+    );
+    await db.runAsync(
+      'DELETE FROM sessions WHERE NOT EXISTS (SELECT 1 FROM runs r WHERE r.session_id = sessions.id)',
+    );
+    await db.execAsync('COMMIT');
+    return { runsDeleted: before?.c ?? 0, sessionsDeleted: orphans?.c ?? 0 };
+  } catch (e) {
+    await db.execAsync('ROLLBACK');
+    throw e;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Roster (schema v2). Athletes are ARCHIVED, never deleted, so run history is
 // never orphaned — archiving only hides them from pickers.
 // ---------------------------------------------------------------------------
