@@ -29,6 +29,9 @@ export function UpNextStrip() {
   );
 
   const overrideActive = roster.queue.overrideId != null;
+  // Nothing to skip TO when the lineup is one athlete (or empty) and no one-off
+  // jump is pending — skipping would be a no-op, so don't offer it.
+  const canSkip = overrideActive || next.length > 0;
 
   return (
     <>
@@ -65,6 +68,21 @@ export function UpNextStrip() {
             <Text style={styles.nextEmpty}>{current ? 'end of lineup' : ''}</Text>
           )}
         </View>
+
+        {/* Nested Pressable: it handles the press itself, so skipping never
+            opens the picker. Skip is NOT removal — they keep their place and
+            come round again on the wrap. */}
+        {current ? (
+          <Pressable
+            onPress={roster.skipCurrent}
+            disabled={!canSkip}
+            hitSlop={8}
+            style={({ pressed }) => [styles.skipBtn, (!canSkip || pressed) && styles.dim]}
+          >
+            <Text style={styles.skipText}>Skip</Text>
+            <Text style={styles.skipGlyph}>⇥</Text>
+          </Pressable>
+        ) : null}
       </Pressable>
 
       {/* The wrap is announced, never silent: snapping back to the first athlete
@@ -116,7 +134,19 @@ const styles = StyleSheet.create({
   current: { color: '#fff', fontSize: 20, fontWeight: '800', marginTop: 1 },
   currentNone: { color: '#64748b', fontSize: 16, fontWeight: '600' },
   detail: { color: '#8b98a9', fontSize: 11, marginTop: 1 },
-  nextCol: { maxWidth: '46%', alignItems: 'flex-end' },
+  nextCol: { maxWidth: '38%', alignItems: 'flex-end' },
+  skipBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#243042',
+    backgroundColor: '#0b0e13',
+  },
+  skipText: { color: '#94a3b8', fontSize: 11, fontWeight: '800', letterSpacing: 0.3 },
+  skipGlyph: { color: '#64748b', fontSize: 13, fontWeight: '800', marginTop: 1 },
   nextName: { color: '#94a3b8', fontSize: 12, marginTop: 2, textAlign: 'right' },
   nextDetail: { color: '#64748b', fontSize: 10 },
   nextEmpty: { color: '#475569', fontSize: 11 },

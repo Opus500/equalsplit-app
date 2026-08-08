@@ -57,6 +57,10 @@ type RosterContextValue = {
   /** call after a run is COMMITTED (kept). Advances the cursor; discarding a run
    *  must not call this, which is why it isn't wired into saveRun itself. */
   completeRun: () => void;
+  /** Move past whoever is up WITHOUT recording a run — they stay in the lineup
+   *  and come round again on the wrap. Distinct from removal, which is the
+   *  lineup toggle in Roster. */
+  skipCurrent: () => void;
   jumpTo: (athleteId: string) => void;
   setQueue: (ids: string[]) => void;
   addAthleteToQueue: (athleteId: string) => void;
@@ -132,7 +136,11 @@ export function RosterProvider({ children }: { children: ReactNode }) {
     [queue, activeIds, index],
   );
 
-  const completeRun = useCallback(() => {
+  // The single place the cursor moves. completeRun and skipCurrent are separate
+  // PUBLIC verbs that happen to share it today — keeping them distinct is what
+  // lets the discard window later delay completeRun (to the point the window
+  // closes) without skip inheriting that delay, and without either advancing twice.
+  const advanceCursor = useCallback(() => {
     const { next, wrapped } = advanceQueue(queue, activeIds);
     commit(next);
     if (wrapped) {
@@ -141,6 +149,13 @@ export function RosterProvider({ children }: { children: ReactNode }) {
       wrapTimer.current = setTimeout(() => setJustWrapped(false), WRAP_NOTICE_MS);
     }
   }, [queue, activeIds, commit]);
+
+  const completeRun = useCallback(() => advanceCursor(), [advanceCursor]);
+
+  // No run is written, so nothing to undo — the athlete keeps their place in the
+  // lineup and comes back around. (A pending one-off jump is consumed instead of
+  // the cursor moving, which is right: you're skipping the person who is up.)
+  const skipCurrent = useCallback(() => advanceCursor(), [advanceCursor]);
 
   const jumpTo = useCallback(
     (athleteId: string) => {
@@ -196,6 +211,7 @@ export function RosterProvider({ children }: { children: ReactNode }) {
     upNext,
     justWrapped,
     completeRun,
+    skipCurrent,
     jumpTo,
     setQueue,
     addAthleteToQueue,

@@ -124,6 +124,34 @@ console.log('\n7. degenerate lineups');
   check('everyone archived => nobody up', currentAthleteId(allArchived, active([])), null);
 }
 
+console.log('\n7b. SKIP is not removal — skipped athletes come back on the wrap');
+{
+  // Skip shares advance() with completeRun (no run is written), so the property
+  // to pin is that the lineup ARRAY is untouched and the athlete returns.
+  let q = loadTemplate(ALL); // A up
+  const before = [...q.athleteIds];
+  q = advance(q, active()).next; // "skip" A -> B
+  check('lineup array untouched by a skip', q.athleteIds, before);
+  check('B is now up', currentAthleteId(q, active()), 'B');
+  q = advance(q, active()).next; // C
+  q = advance(q, active()).next; // D
+  const r = advance(q, active()); // wraps
+  check('skipped A comes back around', currentAthleteId(r.next, active()), 'A');
+  check('and the wrap is still announced', r.wrapped, true);
+}
+
+console.log('\n7c. skipping a one-off jump returns to the lineup, cursor intact');
+{
+  let q = loadTemplate(ALL);
+  q = advance(q, active()).next; // cursor -> B
+  q = jumpTo(q, 'Z');
+  const act = active([...ALL, 'Z']);
+  check('Z is up', currentAthleteId(q, act), 'Z');
+  const r = advance(q, act); // skip Z without running
+  check('override consumed, not the cursor', currentAthleteId(r.next, act), 'B');
+  check('lineup untouched', r.next.athleteIds, ALL);
+}
+
 console.log('\n8. removing the athlete who is up hands over to the next');
 {
   let q = loadTemplate(ALL);

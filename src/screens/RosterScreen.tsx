@@ -16,7 +16,6 @@ import {
   Platform,
   Pressable,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
@@ -32,7 +31,7 @@ export default function RosterScreen() {
   // so an edit here can't leave them showing a stale roster.
   const roster = useRoster();
   const all = roster.athletes;
-  const [showArchived, setShowArchived] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const [editing, setEditing] = useState<Athlete | null>(null);
   const [creating, setCreating] = useState(false);
 
@@ -48,9 +47,15 @@ export default function RosterScreen() {
 
   const active = useMemo(() => all.filter((a) => a.archived_at == null), [all]);
   const archived = useMemo(() => all.filter((a) => a.archived_at != null), [all]);
-  const visible = showArchived ? all : active;
-  // Disambiguate over exactly what's rendered: hiding archived athletes removes
-  // them as a source of ambiguity, so the list shouldn't carry their clutter.
+  // Archived athletes live in a collapsed section at the BOTTOM rather than
+  // behind a toggle: the roster reads as one list you scroll to the end of, and
+  // the section header states how many are down there instead of hiding the fact.
+  const visible = useMemo(
+    () => (archivedOpen ? [...active, ...archived] : active),
+    [active, archived, archivedOpen],
+  );
+  // Disambiguate over exactly what's rendered: collapsing the archived section
+  // removes them as a source of ambiguity, so the list drops their clutter too.
   const details = useMemo(() => disambiguate(visible), [visible]);
 
   const submitEdit = useCallback(
@@ -88,20 +93,8 @@ export default function RosterScreen() {
       <View style={styles.summary}>
         <Text style={styles.summaryText}>
           {active.length} athlete{active.length === 1 ? '' : 's'}
-          {archived.length ? ` · ${archived.length} archived` : ''}
           {inQueue.size ? ` · ${inQueue.size} in today's lineup` : ''}
         </Text>
-        {archived.length ? (
-          <View style={styles.switchRow}>
-            <Text style={styles.switchLabel}>Show archived</Text>
-            <Switch
-              value={showArchived}
-              onValueChange={setShowArchived}
-              trackColor={{ false: '#243042', true: '#1d4ed8' }}
-              thumbColor="#e2e8f0"
-            />
-          </View>
-        ) : null}
       </View>
 
       <Pressable
@@ -112,7 +105,7 @@ export default function RosterScreen() {
       </Pressable>
 
       <FlatList
-        data={visible}
+        data={active}
         keyExtractor={(a) => a.id}
         contentContainerStyle={{ paddingBottom: 24 }}
         ListEmptyComponent={
@@ -120,47 +113,51 @@ export default function RosterScreen() {
             No athletes yet. Add one, or tag a run and it will appear here.
           </Text>
         }
-        renderItem={({ item }) => {
-          const isArchived = item.archived_at != null;
-          const detail = details.get(item.id);
-          const queued = inQueue.has(item.id);
-          return (
-            <Pressable
-              onPress={() => setEditing(item)}
-              style={({ pressed }) => [styles.row, isArchived && styles.rowArchived, pressed && styles.dim]}
-            >
-              <View style={styles.rowText}>
-                <Text style={styles.name} numberOfLines={1}>
-                  {item.display_name}
-                  {isArchived ? <Text style={styles.archTag}>  archived</Text> : null}
+        renderItem={({ item }) => (
+          <AthleteRow
+            athlete={item}
+            detail={details.get(item.id)}
+            queued={inQueue.has(item.id)}
+            onPress={() => setEditing(item)}
+            onToggleQueue={() =>
+              inQueue.has(item.id)
+                ? roster.removeAthleteFromQueue(item.id)
+                : roster.addAthleteToQueue(item.id)
+            }
+          />
+        )}
+        /* Archived athletes sit in a collapsed section at the BOTTOM of the
+           same list, not behind a toggle: the count is always stated, and
+           expanding shows them styled distinctly so it is obvious at a glance
+           why they are missing from every picker. */
+        ListFooterComponent={
+          archived.length ? (
+            <View>
+              <Pressable
+                onPress={() => setArchivedOpen((v) => !v)}
+                style={({ pressed }) => [styles.archHeader, pressed && styles.dim]}
+              >
+                <Text style={styles.archHeaderText}>
+                  {archivedOpen ? '▾' : '▸'}  Archived ({archived.length})
                 </Text>
-                <Text style={styles.sub} numberOfLines={1}>
-                  {[detail, runCountLabel(item.run_count)].filter(Boolean).join(' · ')}
+                <Text style={styles.archHeaderHint}>
+                  {archivedOpen ? 'hidden from every picker · runs kept' : 'tap to show'}
                 </Text>
-              </View>
-              {/* Today's lineup. Archived athletes can't be added — they're out of
-                  rotation by definition; the queue skips them anyway. */}
-              {!isArchived ? (
-                <Pressable
-                  onPress={() =>
-                    queued ? roster.removeAthleteFromQueue(item.id) : roster.addAthleteToQueue(item.id)
-                  }
-                  hitSlop={8}
-                  style={({ pressed }) => [
-                    styles.queueBtn,
-                    queued && styles.queueBtnOn,
-                    pressed && styles.dim,
-                  ]}
-                >
-                  <Text style={[styles.queueBtnText, queued && styles.queueBtnTextOn]}>
-                    {queued ? '✓ lineup' : '+ lineup'}
-                  </Text>
-                </Pressable>
-              ) : null}
-              <Text style={styles.chev}>›</Text>
-            </Pressable>
-          );
-        }}
+              </Pressable>
+              {archivedOpen
+                ? archived.map((a) => (
+                    <AthleteRow
+                      key={a.id}
+                      athlete={a}
+                      detail={details.get(a.id)}
+                      queued={false}
+                      onPress={() => setEditing(a)}
+                    />
+                  ))
+                : null}
+            </View>
+          ) : null
+        }
       />
 
       <AthleteFormModal
@@ -180,6 +177,57 @@ export default function RosterScreen() {
         onToggleArchive={editing ? () => toggleArchive(editing) : undefined}
       />
     </View>
+  );
+}
+
+/** One roster row. Shared by the active list and the archived section so the two
+ *  can't drift apart; archived rows are deliberately styled distinctly (dimmed,
+ *  struck name, explicit tag, no lineup button) so it reads as a different state
+ *  rather than a normal athlete that happens to be lower down. */
+function AthleteRow({
+  athlete,
+  detail,
+  queued,
+  onPress,
+  onToggleQueue,
+}: {
+  athlete: Athlete;
+  detail?: string | null;
+  queued: boolean;
+  onPress: () => void;
+  onToggleQueue?: () => void;
+}) {
+  const isArchived = athlete.archived_at != null;
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.row, isArchived && styles.rowArchived, pressed && styles.dim]}
+    >
+      <View style={styles.rowText}>
+        <Text style={[styles.name, isArchived && styles.nameArchived]} numberOfLines={1}>
+          {athlete.display_name}
+        </Text>
+        <Text style={styles.sub} numberOfLines={1}>
+          {[isArchived ? 'archived' : null, detail, runCountLabel(athlete.run_count)]
+            .filter(Boolean)
+            .join(' · ')}
+        </Text>
+      </View>
+      {/* Archived athletes get no lineup button — they're out of rotation by
+          definition, and the queue skips them anyway. */}
+      {!isArchived && onToggleQueue ? (
+        <Pressable
+          onPress={onToggleQueue}
+          hitSlop={8}
+          style={({ pressed }) => [styles.queueBtn, queued && styles.queueBtnOn, pressed && styles.dim]}
+        >
+          <Text style={[styles.queueBtnText, queued && styles.queueBtnTextOn]}>
+            {queued ? '✓ lineup' : '+ lineup'}
+          </Text>
+        </Pressable>
+      ) : null}
+      <Text style={styles.chev}>›</Text>
+    </Pressable>
   );
 }
 
@@ -311,8 +359,6 @@ const styles = StyleSheet.create({
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
   summary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   summaryText: { color: '#8b98a9', fontSize: 13, flex: 1 },
-  switchRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  switchLabel: { color: '#94a3b8', fontSize: 12 },
   addBtn: {
     backgroundColor: '#1d4ed8',
     borderRadius: 12,
@@ -330,10 +376,28 @@ const styles = StyleSheet.create({
     padding: 14,
     marginBottom: 8,
   },
-  rowArchived: { opacity: 0.55 },
+  rowArchived: {
+    opacity: 0.6,
+    backgroundColor: '#12151b',
+    borderLeftWidth: 3,
+    borderLeftColor: '#b4541f',
+  },
   rowText: { flex: 1 },
   name: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
-  archTag: { color: '#b4541f', fontSize: 11, fontWeight: '700' },
+  nameArchived: { color: '#94a3b8', textDecorationLine: 'line-through' },
+  archHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    marginTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#243042',
+  },
+  archHeaderText: { color: '#94a3b8', fontSize: 13, fontWeight: '800' },
+  archHeaderHint: { color: '#64748b', fontSize: 11 },
   sub: { color: '#64748b', fontSize: 12, marginTop: 3 },
   queueBtn: {
     borderRadius: 999,
