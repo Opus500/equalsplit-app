@@ -22,6 +22,7 @@ import {
 } from 'react-native';
 
 import { AthleteDetailModal } from '../components/AthleteDetail';
+import { LineupEditorModal } from '../components/LineupEditor';
 import { TemplateManagerModal } from '../components/TemplateManager';
 import { createAthlete, setAthleteArchived, updateAthlete, type Athlete } from '../db/database';
 import { foldName } from '../db/migrations';
@@ -39,6 +40,7 @@ export default function RosterScreen() {
   const [editing, setEditing] = useState<Athlete | null>(null);
   const [creating, setCreating] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [lineupOpen, setLineupOpen] = useState(false);
 
   const load = useCallback(() => roster.refresh(), [roster]);
 
@@ -108,6 +110,15 @@ export default function RosterScreen() {
           {active.length} athlete{active.length === 1 ? '' : 's'}
           {inQueue.size ? ` · ${inQueue.size} in today's lineup` : ''}
         </Text>
+        {inQueue.size ? (
+          <Pressable
+            onPress={() => setLineupOpen(true)}
+            hitSlop={8}
+            style={({ pressed }) => [styles.tmplBtn, pressed && styles.dim]}
+          >
+            <Text style={styles.tmplBtnText}>Order</Text>
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={() => setTemplatesOpen(true)}
           hitSlop={8}
@@ -205,6 +216,19 @@ export default function RosterScreen() {
         existing={all}
         onClose={() => setCreating(false)}
         onSubmit={submitCreate}
+      />
+
+      {/* Live lineup order. Moves go through RosterProvider, so the cursor keeps
+          tracking the ATHLETE and a reorder invalidates a pending skip undo. */}
+      <LineupEditorModal
+        visible={lineupOpen}
+        title="Lineup order"
+        athleteIds={roster.queue.athleteIds}
+        currentId={roster.currentAthlete?.id ?? null}
+        onMove={roster.moveInQueue}
+        onRemove={roster.removeAthleteFromQueue}
+        onClose={() => setLineupOpen(false)}
+        note="Whoever is UP keeps their turn wherever you move them — the cursor follows the athlete, not the position."
       />
 
       <TemplateManagerModal visible={templatesOpen} onClose={() => setTemplatesOpen(false)} />

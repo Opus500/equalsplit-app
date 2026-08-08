@@ -119,6 +119,20 @@ export function reorder(q: QueueState, from: number, to: number): QueueState {
   return { ...q, athleteIds: ids };
 }
 
+/**
+ * Tap-to-place: turn a chosen SLOT into the destination index for reorder().
+ *
+ * With n athletes there are n+1 slots — the gaps above each row plus one at the
+ * end — so slot indices and item indices are not the same space. reorder() splices
+ * the item OUT before putting it back, which shifts every slot after `from` down
+ * by one; without this correction, dragging downwards lands one place short.
+ *
+ * Slots `from` and `from+1` are both "where it already is" and map to a no-op.
+ */
+export function slotToIndex(from: number, slot: number): number {
+  return slot > from ? slot - 1 : slot;
+}
+
 export function addToQueue(q: QueueState, athleteId: string): QueueState {
   if (q.athleteIds.includes(athleteId)) return q;
   const athleteIds = [...q.athleteIds, athleteId];

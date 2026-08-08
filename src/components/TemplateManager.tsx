@@ -32,6 +32,7 @@ import {
   type QueueTemplate,
 } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
+import { LineupEditorModal } from './LineupEditor';
 
 export function TemplateManagerModal({
   visible,
@@ -44,6 +45,15 @@ export function TemplateManagerModal({
   const [templates, setTemplates] = useState<QueueTemplate[]>([]);
   const [newName, setNewName] = useState('');
   const [busy, setBusy] = useState(false);
+  // Template ordering edits a LOCAL copy and writes on close — unlike the live
+  // lineup, where every move persists immediately. A half-reordered template is
+  // not a state anyone needs to survive a crash.
+  const [ordering, setOrdering] = useState<QueueTemplate | null>(null);
+  const [orderIds, setOrderIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setOrderIds(ordering ? [...ordering.athleteIds] : []);
+  }, [ordering]);
 
   const load = useCallback(async () => {
     try {
@@ -52,6 +62,18 @@ export function TemplateManagerModal({
       /* keep what we have */
     }
   }, []);
+
+  const closeOrdering = useCallback(async () => {
+    const t = ordering;
+    setOrdering(null);
+    if (!t) return;
+    const changed =
+      orderIds.length !== t.athleteIds.length ||
+      orderIds.some((id, i) => id !== t.athleteIds[i]);
+    if (!changed) return;
+    await updateTemplate(t.id, { athleteIds: orderIds });
+    await load();
+  }, [ordering, orderIds, load]);
 
   useEffect(() => {
     if (visible) load();
@@ -211,6 +233,13 @@ export function TemplateManagerModal({
                     </Text>
                   </Pressable>
                   <Pressable
+                    onPress={() => setOrdering(t)}
+                    hitSlop={6}
+                    style={({ pressed }) => [styles.smallBtn, pressed && styles.dim]}
+                  >
+                    <Text style={styles.smallBtnText}>Order</Text>
+                  </Pressable>
+                  <Pressable
                     onPress={() => doOverwrite(t)}
                     hitSlop={6}
                     disabled={!current.length}
@@ -232,6 +261,24 @@ export function TemplateManagerModal({
               ))
             )}
           </ScrollView>
+
+          {/* Same editor as the live lineup — nested inside this modal, because on
+              iOS a root-level Modal presented as another dismisses can be dropped. */}
+          <LineupEditorModal
+            visible={ordering != null}
+            title={ordering ? `Order: ${ordering.name}` : ''}
+            athleteIds={orderIds}
+            onMove={(from, to) =>
+              setOrderIds((ids) => {
+                const next = [...ids];
+                const [moved] = next.splice(from, 1);
+                next.splice(to, 0, moved);
+                return next;
+              })
+            }
+            onClose={closeOrdering}
+            note="The order a template loads in. Saved when you tap Done."
+          />
         </View>
       </KeyboardAvoidingView>
     </Modal>

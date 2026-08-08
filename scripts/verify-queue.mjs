@@ -13,6 +13,7 @@ import {
   loadTemplate,
   removeFromQueue,
   reorder,
+  slotToIndex,
   upNext,
 } from '../src/roster/queue.ts';
 
@@ -188,6 +189,60 @@ console.log('\n7e. UNDO of a skip that consumed a one-off jump restores the jump
   check('undo puts Z back up', currentAthleteId(snapshot, act), 'Z');
   check('undo restores the pending override', snapshot.overrideId, 'Z');
   check('and the cursor was never moved', snapshot.cursorId, 'B');
+}
+
+console.log('\n7f. TAP-TO-PLACE: every slot lands the athlete exactly where it was tapped');
+{
+  // n athletes => n+1 slots (the gap above each row, plus one at the end). This is
+  // the off-by-one that makes a downward move land one place short.
+  const names = ['A', 'B', 'C', 'D'];
+  const place = (from, slot) => reorder(loadTemplate(names), from, slotToIndex(from, slot)).athleteIds;
+
+  check('move A (0) to the end (slot 4)', place(0, 4), ['B', 'C', 'D', 'A']);
+  check('move A (0) to slot 2 = between B and C', place(0, 2), ['B', 'A', 'C', 'D']);
+  check('move D (3) to the top (slot 0)', place(3, 0), ['D', 'A', 'B', 'C']);
+  check('move C (2) up one (slot 1)', place(2, 1), ['A', 'C', 'B', 'D']);
+  check('move B (1) down one (slot 3)', place(1, 3), ['A', 'C', 'B', 'D']);
+
+  // Both slots adjacent to an item mean "leave it alone".
+  check('slot above self is a no-op', place(2, 2), names);
+  check('slot below self is a no-op', place(2, 3), names);
+
+  // Exhaustive: for every (from, slot), the moved athlete must end up with exactly
+  // the athletes that were before that slot ahead of it.
+  let wrong = 0;
+  for (let from = 0; from < names.length; from++) {
+    for (let slot = 0; slot <= names.length; slot++) {
+      const out = place(from, slot);
+      const moved = names[from];
+      const expectedAhead = names.filter((n, i) => i !== from).slice(0, slotToIndex(from, slot));
+      if (out.indexOf(moved) !== expectedAhead.length) wrong++;
+      if (out.length !== names.length || new Set(out).size !== names.length) wrong++;
+    }
+  }
+  check('all 20 (from, slot) pairs land correctly and lose nobody', wrong, 0);
+}
+
+console.log('\n7g. reorder under a live cursor  (the property tap-to-place must not break)');
+{
+  // Same guarantee as block 2, restated through the tap-to-place path, because the
+  // editor is what a coach will actually be using mid-practice.
+  let q = loadTemplate(ALL);
+  q = advance(q, active()).next; // -> B
+  check('B is up', currentAthleteId(q, active()), 'B');
+
+  // Tap B and drop it at the very end while it is the current athlete.
+  q = reorder(q, 1, slotToIndex(1, 4));
+  check('lineup reordered', q.athleteIds, ['A', 'C', 'D', 'B']);
+  check('B is STILL up — the cursor tracks the athlete', currentAthleteId(q, active()), 'B');
+  check('and up-next follows the new order', upNext(q, active(), 2), ['A', 'C']);
+
+  // Moving someone ELSE past the cursor must not steal the current turn either.
+  let r = loadTemplate(ALL);
+  r = advance(r, active()).next; // -> B
+  r = reorder(r, 3, slotToIndex(3, 0)); // D to the top
+  check('cursor unaffected by a move around it', currentAthleteId(r, active()), 'B');
+  check('nobody is dropped or duplicated', [...r.athleteIds].sort(), [...ALL].sort());
 }
 
 console.log('\n8. removing the athlete who is up hands over to the next');

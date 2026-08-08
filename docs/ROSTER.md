@@ -251,6 +251,63 @@ sinks in the picker on its own. Sessions left empty are removed, the same tidy-u
 
 Reached from **Diagnostics ▸ Prune data**, which is behind dev mode (default OFF).
 
+## 4g. Drill management (rename / delete), in the picker
+
+Behind **Manage** in the drill picker, so picking a drill stays one tap.
+
+**Rename MERGES on a folded-name collision, rather than blocking.** Blocking makes the
+case this exists for worse: you type `gs`, run a rep, realise it should have been
+`10m start` — a name that already exists — and a block leaves the typo permanent. Merge
+moves the runs and keeps them in one series, which is the entire reason drills are
+records. It is not silent: the confirm states both run counts and that the old record
+goes. A pure case fix (`10M START` → `10m start`) matches the *same* record by folded
+name, so it is a rename, not a self-merge.
+
+Rename rewrites the `drill_type` snapshot too. That column exists only so a pre-v3 build
+reads a label after a rollback; a stale one would show the old name.
+
+**Delete keeps the runs, always.** Zero-run drills go outright. A drill with runs deletes
+after a confirm naming the count; its runs stay in History, lose the label, and drop out
+of the graphs. Both `drill_id` and `drill_type` are cleared, so a run can't resurface
+carrying a label for a record that no longer exists — the same rule `updateRunDrill(null)`
+follows.
+
+**Engine drills are locked.** `L Drill` / `Shuttle Run` / `Standalone` are written by the
+engine *by label*, so renaming one would orphan the series — the next rep would mint a
+fresh record under the old name. They only appear here under `kind='all'` (History) and
+are shown as "set by drill mode".
+
+**No interaction with the prune.** The prune predicate keys on `athlete_id` alone, so
+clearing `drill_id` cannot make a run newly prunable. The only visible effect is that the
+prune preview's "…of which carry a drill" line goes down.
+
+## 4h. Tap-to-place reorder
+
+`ReorderList` — pure JS, **no gesture-handler, no reanimated**. Tap a row to pick it up,
+the gaps become drop slots, tap one to place. Chosen over drag: a long-press-drag one-handed
+at the side of a track is fiddly, it would have cost two native dependencies, and two taps
+are interruptible — you can look up mid-reorder and come back.
+
+Slot → index is `slotToIndex()` in `roster/queue.ts`. With n athletes there are **n+1
+slots**, and `reorder()` splices the item out before reinserting, so every slot after
+`from` shifts down one; without the correction a downward move lands one place short.
+`verify-queue.mjs` block 7f checks **all 20 (from, slot) pairs** on a four-athlete lineup,
+that nobody is lost or duplicated, and that both slots adjacent to the picked row are no-ops.
+
+`LineupEditorModal` is the same component for both callers, differing only in persistence:
+
+| | live lineup | template |
+|---|---|---|
+| reached from | Roster ▸ **Order** | Templates ▸ **Order** |
+| each move | persists immediately via `RosterProvider.moveInQueue` | edits a local array |
+| written | every move | on Done, only if changed |
+| cursor | shown as **UP**, tracks the athlete | n/a |
+
+Block 7g restates the cursor guarantee through the tap-to-place path: move the athlete who
+is UP to the end of the lineup and they are **still up**, because the cursor is an athlete
+id, not an index. `moveInQueue` calls `clearUndos()`, so a reorder invalidates a pending
+skip undo — the snapshot holds the old order and restoring it would silently undo the move.
+
 ## 5. Decisions of record
 
 | Decision | Call |
@@ -317,10 +374,14 @@ retroactive by design (display resolves through the join), so fixing a typo fixe
 ## 7. Not yet done
 
 Built: roster screen, athlete picker (with duplicate-name prompt), `UpNextStrip` on all three
-timing screens (with Skip + undo), History reassignment + Unassigned filter chip, drill records,
-the progression graphs, queue templates, and the discard window.
+timing screens (with Skip + undo), History reassignment + Unassigned filter chip, drill records
+(with rename/merge and delete), the progression graphs, queue templates, tap-to-place reorder,
+the discard window, and the dev-gated test-data prune.
 
-**Remaining: tap-to-place reorder.**
+**The roster set is complete.** Everything above is verified as logic
+(`scripts/verify-{queue,labels,migration,progression,pending,prune}.mjs`, all exit 0) but only
+partly on hardware — the discard window's background/disconnect guards and all touch targets
+still need a device pass.
 
 ⚠️ **Do not build the event phones from this branch.** They stay on `master` (`f232a4d`) until
 the set above lands together — a partial roster build saves runs the backfill has already been
