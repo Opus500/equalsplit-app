@@ -911,7 +911,9 @@ export async function getQueueState(): Promise<QueueState> {
         ? v.athleteIds.filter((x: unknown): x is string => typeof x === 'string')
         : [],
       cursorId: typeof v?.cursorId === 'string' ? v.cursorId : null,
-      overrideId: typeof v?.overrideId === 'string' ? v.overrideId : null,
+      // A pre-existing `overrideId` from the transient-jump era is ignored rather
+      // than migrated: it described a one-off that no longer exists, and dropping
+      // it just means the next jump inserts instead.
     };
   } catch {
     return EMPTY_QUEUE;

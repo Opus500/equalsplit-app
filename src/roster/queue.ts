@@ -13,12 +13,9 @@ export type QueueState = {
   athleteIds: string[];
   /** who is up — an ID, so reordering can never move it to someone else */
   cursorId: string | null;
-  /** a one-off jump to someone off-cursor; consumed by the next completed run,
-   *  and it never moves the cursor or reorders the lineup */
-  overrideId: string | null;
 };
 
-export const EMPTY_QUEUE: QueueState = { athleteIds: [], cursorId: null, overrideId: null };
+export const EMPTY_QUEUE: QueueState = { athleteIds: [], cursorId: null };
 
 /** Ids currently selectable — i.e. not archived. Archived athletes stay IN the
  *  lineup array (removing them would silently edit the coach's lineup) but are
@@ -29,8 +26,8 @@ function activeOrder(q: QueueState, active: ActiveSet): string[] {
   return q.athleteIds.filter((id) => active.has(id));
 }
 
-/** Where the LINEUP is, ignoring any transient override. Falls back to the top
- *  when the cursor's athlete has left the lineup or been archived. */
+/** Falls back to the top when the cursor's athlete has left the lineup or been
+ *  archived, so an archived athlete can never strand the queue. */
 function cursorAnchorId(q: QueueState, active: ActiveSet): string | null {
   const order = activeOrder(q, active);
   if (order.length === 0) return null;
@@ -38,32 +35,22 @@ function cursorAnchorId(q: QueueState, active: ActiveSet): string | null {
   return order[0];
 }
 
-/** Who is up right now: the override if one is pending, else the cursor. */
+/** Who is up right now. */
 export function currentAthleteId(q: QueueState, active: ActiveSet): string | null {
-  if (q.overrideId && active.has(q.overrideId)) return q.overrideId;
   return cursorAnchorId(q, active);
 }
 
-/**
- * The next `count` athletes for the "up next" strip.
- *
- * With an override pending, the cursor athlete has NOT run yet — so they are
- * next, and the lineup shown is unchanged. That is what "overrides the queue
- * position without reordering it" looks like on screen.
- */
+/** The next `count` athletes for the "up next" strip. */
 export function upNext(q: QueueState, active: ActiveSet, count = 2): string[] {
   const order = activeOrder(q, active);
   if (order.length === 0) return [];
-  const current = currentAthleteId(q, active);
   const anchor = cursorAnchorId(q, active);
   if (!anchor) return [];
-  const overrideActive = !!(q.overrideId && active.has(q.overrideId));
-  const start = overrideActive ? 0 : 1; // override pending => cursor is next
   const i = order.indexOf(anchor);
   const out: string[] = [];
   for (let k = 0; out.length < count && k < order.length; k++) {
-    const id = order[(i + start + k) % order.length];
-    if (id === current) continue; // never list whoever is currently up
+    const id = order[(i + 1 + k) % order.length];
+    if (id === anchor) continue; // never list whoever is currently up
     if (out.includes(id)) break; // wrapped the whole lineup
     out.push(id);
   }
@@ -79,10 +66,6 @@ export type AdvanceResult = {
 
 /** Called after a run is completed (and kept — a discarded run must not advance). */
 export function advance(q: QueueState, active: ActiveSet): AdvanceResult {
-  // A pending override is a one-off: consume it and resume exactly where the
-  // lineup was. The cursor athlete still hasn't run, so the cursor stays put.
-  if (q.overrideId) return { next: { ...q, overrideId: null }, wrapped: false };
-
   const order = activeOrder(q, active);
   if (order.length === 0) return { next: { ...q, cursorId: null }, wrapped: false };
 
@@ -97,20 +80,37 @@ export function advance(q: QueueState, active: ActiveSet): AdvanceResult {
 
 /**
  * Jump to any athlete (the picker behind the strip).
+ *
  * - already in the lineup → move the cursor there. No reordering.
- * - not in the lineup → a transient override; the cursor does not move, so the
- *   lineup resumes untouched after their run.
+ * - NOT in the lineup → INSERT them at the current cursor position and make them
+ *   up. Whoever was up runs next, so nobody loses a turn, and the walk-up stays
+ *   in the rotation for the rest of the session.
+ *
+ * This replaced a transient one-off override. The override read as correct in the
+ * moment and wrong afterwards: the athlete ran once and never came round again,
+ * so a coach who pulled someone in mid-session had to notice and re-add them.
+ * Inserting is the behaviour that matches what "they're running now" means.
+ *
+ * Session-only by construction: this edits the live QueueState, and loadTemplate
+ * COPIES a template's ids in, so a saved template can never be reached from here.
  */
-export function jumpTo(q: QueueState, athleteId: string): QueueState {
+export function jumpTo(q: QueueState, athleteId: string, active: ActiveSet): QueueState {
   if (q.athleteIds.includes(athleteId)) {
-    return { ...q, cursorId: athleteId, overrideId: null };
+    return { ...q, cursorId: athleteId };
   }
-  return { ...q, overrideId: athleteId };
+  // Insert immediately BEFORE whoever is up, so they become next rather than
+  // being skipped. Uses the effective current athlete (not the raw cursorId), so
+  // an archived cursor can't drop the insert in the wrong place.
+  const upNow = currentAthleteId(q, active);
+  const at = upNow ? q.athleteIds.indexOf(upNow) : -1;
+  const athleteIds = [...q.athleteIds];
+  athleteIds.splice(at < 0 ? athleteIds.length : at, 0, athleteId);
+  return { athleteIds, cursorId: athleteId };
 }
 
-/** Move a lineup entry (tap-to-pick / tap-to-place). cursorId and overrideId are
- *  IDs, so they keep pointing at the same PEOPLE — this is the whole reason
- *  reordering can't make someone run twice or get skipped. */
+/** Move a lineup entry (tap-to-pick / tap-to-place). cursorId is an ID, so it
+ *  keeps pointing at the same PERSON — this is the whole reason reordering can't
+ *  make someone run twice or get skipped. */
 export function reorder(q: QueueState, from: number, to: number): QueueState {
   const ids = [...q.athleteIds];
   if (from < 0 || from >= ids.length || to < 0 || to >= ids.length || from === to) return q;
@@ -149,15 +149,11 @@ export function removeFromQueue(q: QueueState, athleteId: string): QueueState {
   if (cursorId === athleteId) {
     cursorId = athleteIds.length ? athleteIds[Math.min(i, athleteIds.length - 1)] : null;
   }
-  return {
-    athleteIds,
-    cursorId,
-    overrideId: q.overrideId === athleteId ? null : q.overrideId,
-  };
+  return { athleteIds, cursorId };
 }
 
 /** Load a template into today's queue. COPIES the ids — editing the day's
  *  lineup must never mutate the saved template. */
 export function loadTemplate(athleteIds: string[]): QueueState {
-  return { athleteIds: [...athleteIds], cursorId: athleteIds[0] ?? null, overrideId: null };
+  return { athleteIds: [...athleteIds], cursorId: athleteIds[0] ?? null };
 }

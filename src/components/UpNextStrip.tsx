@@ -2,10 +2,10 @@
 // follows. Shared by all three timing screens so attribution works the same
 // wherever you're timing from.
 //
-// Tapping it opens the picker to jump to anyone. A jump OVERRIDES the queue
-// position without reordering the lineup (see ../roster/queue): pick someone in
-// the lineup and the cursor moves there; pick someone outside it and they run
-// once, then the lineup resumes exactly where it was.
+// Tapping it opens the picker to jump to anyone (see ../roster/queue): pick
+// someone in the lineup and the cursor moves there; pick someone OUTSIDE it and
+// they are inserted at the cursor and are up now, so whoever was up runs next and
+// the walk-up stays in the rotation.
 
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -28,10 +28,9 @@ export function UpNextStrip() {
     [current, next],
   );
 
-  const overrideActive = roster.queue.overrideId != null;
-  // Nothing to skip TO when the lineup is one athlete (or empty) and no one-off
-  // jump is pending — skipping would be a no-op, so don't offer it.
-  const canSkip = overrideActive || next.length > 0;
+  // Nothing to skip TO when the lineup is one athlete (or empty) — skipping
+  // would be a no-op, so don't offer it.
+  const canSkip = next.length > 0;
 
   return (
     <>
@@ -40,9 +39,7 @@ export function UpNextStrip() {
         style={({ pressed }) => [styles.strip, pressed && styles.dim]}
       >
         <View style={styles.currentCol}>
-          <Text style={styles.kicker}>
-            {current ? (overrideActive ? 'UP NOW · JUMPED' : 'UP NOW') : 'NO ATHLETE'}
-          </Text>
+          <Text style={styles.kicker}>{current ? 'UP NOW' : 'NO ATHLETE'}</Text>
           <Text style={[styles.current, !current && styles.currentNone]} numberOfLines={1}>
             {current ? current.display_name : 'Tap to choose'}
           </Text>
@@ -91,7 +88,7 @@ export function UpNextStrip() {
       </Pressable>
 
       {/* Skip is reversible: undo restores the whole pre-skip queue state, so the
-          cursor (and any consumed one-off jump) comes back exactly — including
+          cursor comes back exactly — including
           the wrap, whose announcement is retracted with it. When a skip caused
           the wrap the two notices merge, rather than stacking two banners. */}
       {roster.lastSkip ? (
@@ -109,14 +106,6 @@ export function UpNextStrip() {
            athlete with no explanation reads as a bug mid-practice. */
         <View style={styles.wrapNotice}>
           <Text style={styles.wrapText}>↻  Restarting lineup from the top</Text>
-        </View>
-      ) : null}
-
-      {overrideActive ? (
-        <View style={styles.overrideNotice}>
-          <Text style={styles.overrideText}>
-            One-off — the lineup resumes after this run
-          </Text>
         </View>
       ) : null}
 
@@ -192,7 +181,5 @@ const styles = StyleSheet.create({
   },
   undoText: { color: '#cbd5e1', fontSize: 12, fontWeight: '600', flex: 1 },
   undoAction: { color: '#60a5fa', fontSize: 13, fontWeight: '800' },
-  overrideNotice: { paddingTop: 6 },
-  overrideText: { color: '#fbbf24', fontSize: 11, textAlign: 'center' },
   dim: { opacity: 0.7 },
 });

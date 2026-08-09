@@ -219,9 +219,8 @@ export function RosterProvider({ children }: { children: ReactNode }) {
     return true;
   }, [lastAdvance, commit]);
 
-  // No run is written, so this is fully reversible. (A pending one-off jump is
-  // consumed instead of the cursor moving, which is right: you're skipping
-  // whoever is up — and that is captured by the snapshot too.)
+  // No run is written, so this is fully reversible — the snapshot captures the
+  // whole queue, including a walk-up who was inserted by a jump.
   const skipCurrent = useCallback(() => {
     const who = currentAthlete;
     if (!who) return;
@@ -251,9 +250,11 @@ export function RosterProvider({ children }: { children: ReactNode }) {
       // stale "restarting lineup" notice is no longer what they're looking at.
       setJustWrapped(false);
       clearUndos();
-      commit(jumpToAthlete(queue, athleteId));
+      // activeIds matters here: an off-lineup jump INSERTS at whoever is
+      // effectively up, which an archived cursor would otherwise misplace.
+      commit(jumpToAthlete(queue, athleteId, activeIds));
     },
-    [queue, commit, clearUndos],
+    [queue, activeIds, commit, clearUndos],
   );
 
   const setQueue = useCallback(
@@ -262,7 +263,7 @@ export function RosterProvider({ children }: { children: ReactNode }) {
       // top of the new lineup.
       const cursorId = queue.cursorId && ids.includes(queue.cursorId) ? queue.cursorId : (ids[0] ?? null);
       clearUndos();
-      commit({ athleteIds: ids, cursorId, overrideId: queue.overrideId });
+      commit({ athleteIds: ids, cursorId });
     },
     [queue, commit, clearUndos],
   );

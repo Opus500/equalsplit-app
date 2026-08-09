@@ -337,7 +337,7 @@ skip undo — the snapshot holds the old order and restoring it would silently u
 | Duplicate names | Allowed; prompt for a `group_name` detail; date+id suffix only as last resort |
 | Standalone (B1) runs | Save **Unassigned**, never auto-attributed; do not advance the queue |
 | Queue wrap | Wraps, and the strip shows an explicit "restarting lineup" state |
-| Queue jump off-queue | Transient override; cursor doesn't move; resumes after that run |
+| Queue jump off-queue | **Inserts** them at the cursor: they are up, whoever was up runs next, and they stay in rotation. Session-only — `loadTemplate` copies ids, so a template is unreachable from here |
 | Cursor under reorder | Stored as an **athlete id, not an index** — structurally cannot double-run or skip |
 | Discard | Run is **saved immediately**, discard is a `deleteRun(id)` — same path as History delete |
 | Reorder interaction | Pure JS tap-to-pick / tap-to-place. **No** gesture-handler or reanimated |

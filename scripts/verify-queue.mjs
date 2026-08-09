@@ -66,28 +66,74 @@ console.log('\n2. reorder cannot make anyone run twice or be skipped  (requireme
 console.log('\n3. jump to someone IN the lineup moves the cursor, no reordering');
 {
   let q = loadTemplate(ALL); // cursor A
-  q = jumpTo(q, 'D');
+  q = jumpTo(q, 'D', active());
   check('cursor moved to D', currentAthleteId(q, active()), 'D');
   check('lineup order untouched', q.athleteIds, ALL);
-  check('no override pending', q.overrideId, null);
+  check('nobody was inserted', q.athleteIds.length, ALL.length);
   check('next wraps from D', upNext(q, active(), 2), ['A', 'B']);
 }
 
-console.log('\n4. jump to someone NOT in the lineup is a one-off override');
+console.log('\n4. jump to someone NOT in the lineup INSERTS them at the cursor');
 {
   let q = loadTemplate(ALL);
   q = advance(q, active()).next; // cursor -> B
-  q = jumpTo(q, 'Z'); // a walk-up athlete, not in today's lineup
   const act = active([...ALL, 'Z']);
+  q = jumpTo(q, 'Z', act); // a walk-up athlete, not in today's lineup
+
+  check('Z is inserted where B was', q.athleteIds, ['A', 'Z', 'B', 'C', 'D']);
   check('Z is up', currentAthleteId(q, act), 'Z');
-  check('cursor did NOT move (B still next)', upNext(q, act, 2), ['B', 'C']);
-  check('lineup not reordered', q.athleteIds, ALL);
+  check('B — who WAS up — runs next, losing no turn', upNext(q, act, 2), ['B', 'C']);
 
   const r = advance(q, act); // Z finishes
   q = r.next;
-  check('override consumed', q.overrideId, null);
-  check('lineup resumes exactly where it was', currentAthleteId(q, act), 'B');
-  check('no false wrap from the override', r.wrapped, false);
+  check('the lineup resumes at B', currentAthleteId(q, act), 'B');
+  check('no false wrap', r.wrapped, false);
+
+  // The whole point of the change: Z is still in rotation next time round.
+  q = advance(q, act).next; // C
+  q = advance(q, act).next; // D
+  const wrap = advance(q, act); // -> A
+  check('wrap announced', wrap.wrapped, true);
+  check('and Z comes round again', upNext(wrap.next, act, 1), ['Z']);
+  console.log('       (under the old override, Z ran once and was never seen again)');
+}
+
+console.log('\n4b. the insert never costs the athlete who was up their turn');
+{
+  // Exhaustive over cursor position: whoever was up must end up exactly next.
+  let bad = 0;
+  for (let start = 0; start < ALL.length; start++) {
+    let q = loadTemplate(ALL);
+    for (let k = 0; k < start; k++) q = advance(q, active()).next;
+    const act = active([...ALL, 'Z']);
+    const was = currentAthleteId(q, act);
+    const j = jumpTo(q, 'Z', act);
+    if (currentAthleteId(j, act) !== 'Z') bad++;
+    if (upNext(j, act, 1)[0] !== was) bad++;
+    if (j.athleteIds.length !== ALL.length + 1) bad++;
+    if (new Set(j.athleteIds).size !== ALL.length + 1) bad++;
+  }
+  check('all 4 cursor positions insert correctly', bad, 0);
+
+  // Jumping to someone ALREADY in the lineup must not duplicate them.
+  const dup = jumpTo(loadTemplate(ALL), 'C', active());
+  check('an in-lineup jump adds nobody', dup.athleteIds, ALL);
+
+  // Degenerate: an empty lineup gains its first athlete.
+  const fresh = jumpTo(EMPTY_QUEUE, 'Z', active(['Z']));
+  check('empty lineup accepts the insert', fresh.athleteIds, ['Z']);
+  check('and they are up', currentAthleteId(fresh, active(['Z'])), 'Z');
+}
+
+console.log('\n4c. the insert is SESSION-only — a saved template is never touched');
+{
+  const template = ['A', 'B', 'C'];
+  let q = loadTemplate(template);
+  const act = active([...template, 'Z']);
+  q = jumpTo(q, 'Z', act);
+  check('template array untouched', template, ['A', 'B', 'C']);
+  check("today's lineup gained Z", q.athleteIds, ['Z', 'A', 'B', 'C']);
+  console.log('       (loadTemplate COPIES the ids, so the live queue cannot alias a template)');
 }
 
 console.log('\n5. archived athletes are skipped but stay in the lineup');
@@ -141,16 +187,22 @@ console.log('\n7b. SKIP is not removal — skipped athletes come back on the wra
   check('and the wrap is still announced', r.wrapped, true);
 }
 
-console.log('\n7c. skipping a one-off jump returns to the lineup, cursor intact');
+console.log('\n7c. skipping an inserted walk-up hands over to whoever was up');
 {
   let q = loadTemplate(ALL);
   q = advance(q, active()).next; // cursor -> B
-  q = jumpTo(q, 'Z');
   const act = active([...ALL, 'Z']);
+  q = jumpTo(q, 'Z', act);
   check('Z is up', currentAthleteId(q, act), 'Z');
   const r = advance(q, act); // skip Z without running
-  check('override consumed, not the cursor', currentAthleteId(r.next, act), 'B');
-  check('lineup untouched', r.next.athleteIds, ALL);
+  check('B takes over', currentAthleteId(r.next, act), 'B');
+  check('Z stays in the lineup — a skip is not a removal', r.next.athleteIds, [
+    'A',
+    'Z',
+    'B',
+    'C',
+    'D',
+  ]);
 }
 
 console.log('\n7d. UNDO of a skip restores the state EXACTLY, wrap included');
@@ -171,24 +223,22 @@ console.log('\n7d. UNDO of a skip restores the state EXACTLY, wrap included');
   check('undo restores the cursor', currentAthleteId(snapshot, active()), 'D');
   check('undo restores up-next', upNext(snapshot, active(), 2), upNext(q, active(), 2));
   check('undo restores the lineup', snapshot.athleteIds, ALL);
-  check('undo restores the override slot', snapshot.overrideId, null);
   // `wrapped` is DERIVED, never stored — so there is nothing to un-derive; the
   // UI only has to retract the announcement.
   check('re-advancing from the restored state wraps identically', advance(snapshot, active()).wrapped, true);
 }
 
-console.log('\n7e. UNDO of a skip that consumed a one-off jump restores the jump');
+console.log('\n7e. UNDO of a skipped walk-up puts them back up');
 {
   let q = loadTemplate(ALL);
   q = advance(q, active()).next; // cursor -> B
-  q = jumpTo(q, 'Z');
   const act = active([...ALL, 'Z']);
+  q = jumpTo(q, 'Z', act);
   const snapshot = JSON.parse(JSON.stringify(q));
   const skipped = advance(q, act); // skip Z
   check('after skipping, B is up', currentAthleteId(skipped.next, act), 'B');
   check('undo puts Z back up', currentAthleteId(snapshot, act), 'Z');
-  check('undo restores the pending override', snapshot.overrideId, 'Z');
-  check('and the cursor was never moved', snapshot.cursorId, 'B');
+  check('and the insert survives the undo', snapshot.athleteIds, ['A', 'Z', 'B', 'C', 'D']);
 }
 
 console.log('\n7f. TAP-TO-PLACE: every slot lands the athlete exactly where it was tapped');
