@@ -518,6 +518,59 @@ console.log('\n17. SUSPECT hint points at the walk-back, without dropping it');
   check('under three intervals, no hint', suspectIntervals(two.end(70_000)), []);
 }
 
+console.log('\n18. FRAME ACCOUNTING makes a rejection visible instead of silent');
+{
+  // This block exists because a shipped bug was invisible: every rest crossing
+  // was swallowed and nothing anywhere said so. The pure tests all passed,
+  // because they fed one consistent clock — only the WIRING mixed two. So the
+  // engine now counts why a frame was dropped, and the count is on screen.
+  const e = new RepeatEngine(REPEAT_REST);
+  e.arm(0, null);
+  check('a fresh set starts with a clean tally', e.diag, {
+    beam: 0,
+    clears: 0,
+    otherGate: 0,
+    notRunning: 0,
+    lockedOut: 0,
+    opened: 0,
+    accepted: 0,
+    lastRejectMs: null,
+  });
+
+  // Nothing arriving vs arriving-and-rejected: the first counter separates them.
+  e.ingest(clr(1_000_000), 1_000); // a clear
+  e.ingest(brk(1_000_000, 2), 1_000); // the other gate
+  e.ingest(brk(2_000_000), 2_000); // right gate, but no tap yet
+  check('beam frames were seen', e.diag.beam, 3);
+  check('and each was attributed', [e.diag.clears, e.diag.otherGate, e.diag.notRunning], [1, 1, 1]);
+  check('none became an interval', e.diag.accepted, 0);
+
+  e.startRep(10_000);
+  check('the tap is counted as an open', e.diag.opened, 1);
+  e.ingest(brk(10_500_000), 10_500); // inside the 1s lockout
+  check('locked out', e.diag.lockedOut, 1);
+  check('and the dt is reported', e.diag.lastRejectMs, 500);
+
+  e.ingest(brk(74_000_000), 74_000);
+  check('a good crossing is accepted', e.diag.accepted, 1);
+
+  // THE SHIPPED BUG, reproduced: a tap stamped on the wall clock against a frame
+  // stamped on the monotonic one. The engine cannot know, but it must SAY so.
+  const wrong = new RepeatEngine(REPEAT_REST);
+  wrong.arm(0);
+  wrong.startRep(Date.now()); // epoch ms — the mistake
+  wrong.ingest(brk(74_000_000), 74_000); // perfNow ms — what frames carry
+  check('the crossing is rejected, as it was on device', wrong.diag.accepted, 0);
+  check('by the lockout', wrong.diag.lockedOut, 1);
+  truthy(
+    'and lastRejectMs is unmistakably a clock mismatch, not a long lockout',
+    wrong.diag.lastRejectMs < -60_000,
+  );
+  console.log(
+    `       (lastRejectMs ${wrong.diag.lastRejectMs}ms — no lockout is minutes long; that is two clocks)`,
+  );
+}
+
 console.log('\n=============================');
 console.log(failures === 0 ? 'RESULT: OK — single-gate interval rules hold.' : `RESULT: ${failures} FAILURE(S)`);
 process.exitCode = failures === 0 ? 0 : 1;

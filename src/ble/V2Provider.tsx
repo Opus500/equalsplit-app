@@ -52,7 +52,9 @@ import {
   type RepeatConfig,
   type RepInterval,
   type RepSet,
+  type RepeatDiag,
   type RepeatState,
+  emptyDiag,
 } from './repeats';
 import { GATE_ID_ALL } from './v2constants';
 import { buildAnchor, gateUsToPhoneMs, type ClockAnchor, type PingSample } from './clockSync';
@@ -161,6 +163,9 @@ export type V2ContextValue = {
    *  walking back through the beam, so the coach says when the set is over. */
   endRepeat: () => void;
   cancelRepeat: () => void;
+  /** Frame accounting for the Debug screen: tells 'nothing arriving' from
+   *  'arriving and being rejected', and names which rejection. */
+  repeatDiag: RepeatDiag;
   clearLastRepSet: () => void;
   /** Most recent reconstructed standalone (B1) run — only produced when the
    *  logStandalone setting is on. The screen that owns saving reads this. */
@@ -213,6 +218,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const [repeatState, setRepeatState] = useState<RepeatState>('idle');
   const [repeatIntervals, setRepeatIntervals] = useState<RepInterval[]>([]);
   const [lastRepSet, setLastRepSet] = useState<RepSet | null>(null);
+  const [repeatDiag, setRepeatDiag] = useState<RepeatDiag>(emptyDiag());
 
   // Live mirrors (refs) so the async bring-up reads current values, not stale.
   const discoveredRef = useRef<Record<string, number>>({}); // mac -> lastSeenMs
@@ -467,6 +473,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
           // fall through untouched even though it is connected and advertising.
           if (repeat.ingest(f, atMs)) setRepeatIntervals([...repeat.intervals]);
           setRepeatState(repeat.state);
+          setRepeatDiag({ ...repeat.diag });
           observer.onBeam(f.edge, f.gateId, f.micros, atMs);
           break;
         case 'button':
@@ -827,9 +834,12 @@ export function V2Provider({ children }: { children: ReactNode }) {
       setLastRepSet(null);
       repeatRef.current.reset();
       repeatRef.current.setConfig(config);
-      repeatRef.current.arm(Date.now(), targetLaps);
+      // perfNow, NOT Date.now: this must be the same clock the BLE layer stamps
+      // frames with, or every rest crossing fails its lockout by ~1.8e12 ms.
+      repeatRef.current.arm(perfNow(), targetLaps);
       setRepeatState(repeatRef.current.state);
       setRepeatIntervals([]);
+      setRepeatDiag(repeatRef.current.diag);
       pushLog(
         `rep set armed: ${config.title} on gate ${config.gateId} (lockout ${config.lockoutMs}ms` +
           `${targetLaps ? `, target ${targetLaps}` : ''})`,
@@ -839,13 +849,15 @@ export function V2Provider({ children }: { children: ReactNode }) {
   );
 
   const startRep = useCallback(() => {
-    repeatRef.current.startRep(Date.now());
+    // Same clock as the frames — see armRepeat.
+    repeatRef.current.startRep(perfNow());
     setRepeatState(repeatRef.current.state);
+    setRepeatDiag({ ...repeatRef.current.diag });
   }, []);
 
   const endRepeat = useCallback(() => {
     if (repeatRef.current.state === 'idle') return;
-    const set = repeatRef.current.end(Date.now());
+    const set = repeatRef.current.end(perfNow());
     setRepeatState(repeatRef.current.state);
     setRepeatIntervals([]);
     setLastRepSet(set);
@@ -956,6 +968,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
     endRepeat,
     cancelRepeat,
     clearLastRepSet,
+    repeatDiag,
     lastStandaloneRun,
     changeSet,
     restoreDefaults,

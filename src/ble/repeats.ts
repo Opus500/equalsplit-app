@@ -22,6 +22,15 @@
 // Nothing is committed until end(). That is what makes the end-of-set interval
 // list editable — dropping a spurious crossing is a pure list operation on data
 // that has not been written yet.
+//
+// ONE PHONE CLOCK, AND IT IS THE MONOTONIC ONE. Every `monoMs` here — the tap in
+// startRep(), the frame arrival in ingest() — must come from the SAME source the
+// BLE layer stamps frames with (perfNow / performance.now, GateProvider). Mixing
+// in a Date.now() reading is not a small error: the two bases differ by ~1.8e12,
+// so a rest interval computed across them fails its lockout and is silently
+// swallowed — exactly the bug that shipped. The `diag` counters exist so that
+// failure can never be silent again: a hugely negative lastRejectMs IS a clock
+// mismatch, and says so on the Debug screen.
 
 import { sdiff32 } from './clockSync';
 import { clampToBounds, passedLockoutMs, passedLockoutUs, type LockoutBounds } from './lockout';
@@ -99,7 +108,7 @@ export type RepInterval = {
   ms: number;
   /** gate micros at the closing crossing */
   closeUs: number;
-  /** phone ms at the closing crossing */
+  /** MONOTONIC phone ms at the closing crossing (perfNow, never Date.now) */
   closeAtMs: number;
   /** how this interval's START was timed — the accuracy story, per interval */
   startSource: 'gate' | 'tap';
@@ -131,6 +140,41 @@ export type RepSet = {
   startedAtMs: number;
   endedAtMs: number;
 };
+
+/** Frame accounting. Every counter is a REASON a frame did not become an
+ *  interval, so whichever one climbs names the fault. */
+export type RepeatDiag = {
+  /** beam frames seen at all - 0 means nothing is arriving */
+  beam: number;
+  /** dropped: a CLEAR edge, not a break */
+  clears: number;
+  /** dropped: the other gate */
+  otherGate: number;
+  /** dropped: engine not in a state that accepts a crossing (not armed / no tap) */
+  notRunning: number;
+  /** dropped: inside the lockout window */
+  lockedOut: number;
+  /** intervals opened (t0 or a tap) */
+  opened: number;
+  /** intervals closed */
+  accepted: number;
+  /** dt (ms) of the last lockout rejection. Hugely negative = CLOCK MISMATCH,
+   *  not a lockout that is merely too long. */
+  lastRejectMs: number | null;
+};
+
+export function emptyDiag(): RepeatDiag {
+  return {
+    beam: 0,
+    clears: 0,
+    otherGate: 0,
+    notRunning: 0,
+    lockedOut: 0,
+    opened: 0,
+    accepted: 0,
+    lastRejectMs: null,
+  };
+}
 
 export function summarize(intervals: RepInterval[]): { totalMs: number; meanMs: number } {
   const totalMs = intervals.reduce((n, i) => n + i.ms, 0);
@@ -316,6 +360,10 @@ export class RepeatEngine {
 
   /** planned lap/rep count for the live set, or null. Never ends anything. */
   targetLaps: number | null = null;
+  /** Why frames did or did not become intervals. Read on the Debug screen to
+   *  tell "nothing arriving" from "arriving and being rejected" without
+   *  guessing - the distinction that cost two round trips to establish by hand. */
+  diag: RepeatDiag = emptyDiag();
   /** gate micros of the open interval's start (CONTINUOUS) */
   private openUs = 0;
   /** phone ms of the open interval's start (REST — a tap, so phone clock) */
@@ -337,10 +385,12 @@ export class RepeatEngine {
   }
 
   /** Begin a set. CONTINUOUS waits for the first crossing; REST waits for a tap. */
-  arm(atMs: number, targetLaps: number | null = null): void {
+  /** @param monoMs monotonic clock, the same one frames carry (perfNow). */
+  arm(monoMs: number, targetLaps: number | null = null): void {
     this.intervals = [];
+    this.diag = emptyDiag();
     this.targetLaps = targetLaps && targetLaps > 0 ? Math.round(targetLaps) : null;
-    this.startedAtMs = atMs;
+    this.startedAtMs = monoMs;
     this.openUs = 0;
     this.openAtMs = 0;
     this.state = this.config.variant === 'continuous' ? 'armed' : 'resting';
@@ -348,12 +398,16 @@ export class RepeatEngine {
 
   /** REST only: the coach taps, the athlete goes. Ignored in CONTINUOUS, where
    *  the gate decides when an interval opens. */
-  startRep(atMs: number): void {
+  /** @param monoMs MUST be the same monotonic clock frames carry (perfNow).
+   *  A Date.now() reading here differs from a frame's stamp by ~1.8e12 and every
+   *  crossing is then swallowed by the lockout. */
+  startRep(monoMs: number): void {
     if (this.config.variant !== 'rest') return;
     if (this.state !== 'resting') return;
-    this.openAtMs = atMs;
+    this.openAtMs = monoMs;
     this.state = 'running';
-    this.onOpen?.(atMs);
+    this.diag.opened += 1;
+    this.onOpen?.(monoMs);
   }
 
   /** Abandon without producing a set. */
@@ -367,7 +421,7 @@ export class RepeatEngine {
    * the stretch after the last crossing with no closing crossing, and in REST it
    * is a rep the athlete never finished. Neither is a time.
    */
-  end(atMs: number): RepSet {
+  end(monoMs: number): RepSet {
     const intervals = this.intervals;
     this.state = 'idle';
     this.intervals = [];
@@ -382,41 +436,59 @@ export class RepeatEngine {
       // is not, however precise the closing edge is.
       exact: this.config.variant === 'continuous',
       startedAtMs: this.startedAtMs,
-      endedAtMs: atMs,
+      endedAtMs: monoMs,
     };
   }
 
   /** Route one parsed frame. Returns the interval this frame closed, if any. */
-  ingest(frame: V2Frame, atMs: number): RepInterval | null {
-    if (frame.kind !== 'beam' || frame.edge !== 'break') return null;
-    if (frame.gateId !== this.config.gateId) return null;
+  ingest(frame: V2Frame, monoMs: number): RepInterval | null {
+    if (frame.kind !== 'beam') return null;
+    this.diag.beam += 1;
+    if (frame.edge !== 'break') {
+      this.diag.clears += 1;
+      return null;
+    }
+    if (frame.gateId !== this.config.gateId) {
+      this.diag.otherGate += 1;
+      return null;
+    }
 
     const { variant, lockoutMs } = this.config;
 
     // CONTINUOUS: the first crossing is t0 and closes nothing.
     if (variant === 'continuous' && this.state === 'armed') {
       this.openUs = frame.micros;
-      this.openAtMs = atMs;
+      this.openAtMs = monoMs;
       this.state = 'running';
-      this.onOpen?.(atMs);
+      this.diag.opened += 1;
+      this.onOpen?.(monoMs);
       return null;
     }
 
-    if (this.state !== 'running') return null;
+    if (this.state !== 'running') {
+      this.diag.notRunning += 1;
+      return null;
+    }
 
     if (variant === 'continuous') {
       // Gate clock at both ends: exact, wrap-safe.
-      if (!passedLockoutUs(frame.micros, this.openUs, lockoutMs)) return null;
+      if (!passedLockoutUs(frame.micros, this.openUs, lockoutMs)) {
+        this.diag.lockedOut += 1;
+        this.diag.lastRejectMs = Math.round(sdiff32(frame.micros, this.openUs) / 1000);
+        return null;
+      }
       const interval: RepInterval = {
         ms: Math.round(sdiff32(frame.micros, this.openUs) / 1000),
         closeUs: frame.micros,
-        closeAtMs: atMs,
+        closeAtMs: monoMs,
         startSource: 'gate',
       };
       // The close of this lap is the open of the next — no gap between intervals.
       this.openUs = frame.micros;
-      this.openAtMs = atMs;
+      this.openAtMs = monoMs;
       this.intervals.push(interval);
+      this.diag.accepted += 1;
+      this.diag.opened += 1;
       this.onInterval?.(interval, this.intervals.length);
       return interval;
     }
@@ -425,15 +497,23 @@ export class RepeatEngine {
     // Mixing a phone start with a gate close would need the sync offset for ~20ms
     // of BLE delivery jitter, which is noise beside the ~200ms tap error it sits
     // on top of. One clock, honestly labelled, beats two clocks and a correction.
-    if (!passedLockoutMs(atMs, this.openAtMs, lockoutMs)) return null;
+    if (!passedLockoutMs(monoMs, this.openAtMs, lockoutMs)) {
+      this.diag.lockedOut += 1;
+      // A dt near -1.8e12 here is not a lockout problem, it is a clock mismatch:
+      // the tap stamped Date.now(), the frame perfNow(). Surfaced rather than
+      // swallowed, because swallowing it is what made this invisible.
+      this.diag.lastRejectMs = monoMs - this.openAtMs;
+      return null;
+    }
     const interval: RepInterval = {
-      ms: atMs - this.openAtMs,
+      ms: monoMs - this.openAtMs,
       closeUs: frame.micros,
-      closeAtMs: atMs,
+      closeAtMs: monoMs,
       startSource: 'tap',
     };
     this.state = 'resting'; // rest begins, and is outside every interval
     this.intervals.push(interval);
+    this.diag.accepted += 1;
     this.onInterval?.(interval, this.intervals.length);
     return interval;
   }

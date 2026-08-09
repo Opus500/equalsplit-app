@@ -7,6 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useGate } from '../ble/GateProvider';
+import { useV2 } from '../ble/V2Provider';
 import { EVT_NAME, STATE_NAME } from '../ble/constants';
 import { describeEvent, toHex } from '../ble/decode';
 import V2Lab from '../components/V2Lab';
@@ -83,6 +84,8 @@ export default function DebugScreen({ onBack }: { onBack?: () => void }) {
       </View>
 
       <PruneTestDataModal visible={pruneOpen} onClose={() => setPruneOpen(false)} />
+
+      <RepeatDiagPanel />
 
       <View style={styles.seg}>
         <Pressable
@@ -200,7 +203,56 @@ function Btn({
   );
 }
 
+/**
+ * Rep-set frame accounting. Answers, without guessing, whether frames are not
+ * ARRIVING or are arriving and being REJECTED — and which rejection.
+ *
+ *   beam 0                      -> nothing is reaching the engine at all
+ *   beam climbing, accepted 0   -> arriving and rejected; read the reason counters
+ *   lastReject hugely negative  -> CLOCK MISMATCH, not a lockout that is too long
+ */
+function RepeatDiagPanel() {
+  const v2 = useV2();
+  const d = v2.repeatDiag;
+  const suspectClock = d.lastRejectMs != null && d.lastRejectMs < -60000;
+  return (
+    <View style={styles.diagWrap}>
+      <Text style={styles.diagTitle}>REP SETS — FRAME ACCOUNTING ({v2.repeatState})</Text>
+      <Text style={styles.diagLine}>
+        beam {d.beam} · opened {d.opened} · accepted {d.accepted}
+      </Text>
+      <Text style={styles.diagLine}>
+        rejected: clears {d.clears} · otherGate {d.otherGate} · notRunning {d.notRunning} ·
+        lockedOut {d.lockedOut}
+      </Text>
+      <Text style={[styles.diagLine, suspectClock && styles.diagAlert]}>
+        lastReject {d.lastRejectMs == null ? '—' : `${d.lastRejectMs}ms`}
+        {suspectClock ? '   ← CLOCK MISMATCH, not the lockout' : ''}
+      </Text>
+      {d.beam === 0 ? (
+        <Text style={styles.diagHint}>No beam frames seen — not an engine problem.</Text>
+      ) : d.accepted === 0 ? (
+        <Text style={styles.diagHint}>
+          Frames ARE arriving and being rejected. The counter above that is climbing says why.
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  diagWrap: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#243042',
+    backgroundColor: '#0b0e13',
+  },
+  diagTitle: { color: '#64748b', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
+  diagLine: { color: '#94a3b8', fontSize: 12, marginTop: 4, fontVariant: ['tabular-nums'] },
+  diagAlert: { color: '#fbbf24', fontWeight: '800' },
+  diagHint: { color: '#fbbf24', fontSize: 11, marginTop: 6, lineHeight: 15 },
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   backRow: { paddingBottom: 6 },
   backText: { color: '#60a5fa', fontSize: 15, fontWeight: '700' },
