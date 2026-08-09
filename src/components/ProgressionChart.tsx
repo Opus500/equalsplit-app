@@ -12,7 +12,6 @@ import { useMemo, useState } from 'react';
 import { type LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
-  formatDelta,
   formatMs,
   xFraction,
   yBounds,
@@ -80,7 +79,6 @@ export function ProgressionChart({ series }: { series: Series }) {
   const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
 
   const shown = sel != null ? pts[sel] : null;
-  const trendUp = series.slopeMsPerRun > 0;
 
   // Tappable COLUMNS, not dots: a 10px dot is an unreasonable target, and with a
   // dozen runs the dots are closer together than a fingertip anyway. Columns tile
@@ -98,14 +96,11 @@ export function ProgressionChart({ series }: { series: Series }) {
         </Text>
       </View>
 
+      {/* Best and latest only. A first→latest delta reads as a verdict on two
+          arbitrary points — the chart already shows the shape between them. */}
       <View style={styles.statRow}>
         <Stat label="Best" value={`${formatMs(series.bestMs)}s`} tone="best" />
         <Stat label="Latest" value={`${formatMs(series.latestMs)}s`} />
-        <Stat
-          label="First → latest"
-          value={formatDelta(series.deltaMs)}
-          tone={series.deltaMs < -5 ? 'good' : trendUp ? 'bad' : undefined}
-        />
       </View>
 
       <View style={styles.plotRow}>
