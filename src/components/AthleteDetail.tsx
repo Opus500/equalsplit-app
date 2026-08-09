@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 
 import { deleteRun, getAthleteRuns, type Athlete, type AthleteRunRow } from '../db/database';
+import { REPEAT_MODE, parseRepSetJson, savedChartValueMs } from '../ble/repeats';
 import { runCountLabel } from '../roster/labels';
 import { useRoster } from '../roster/RosterProvider';
 import {
@@ -73,13 +74,29 @@ export function AthleteDetailModal({
     const valid = rows.filter((r) => r.status === 'valid');
     return {
       prog: buildProgression(
-        valid.map((r) => ({
-          id: r.id,
-          drillId: r.drill_id,
-          drillName: r.drill_name,
-          elapsedMs: r.total_ms,
-          createdAt: r.created_at,
-        })),
+        valid.map((r) => {
+          // A rep set is ONE point, never one per interval — the x-axis means
+          // "one effort per point", and a line between rep 3 of Monday and rep 1
+          // of Thursday would span a rest day at the same visual weight as the
+          // 90s between two reps. WHICH value that point takes differs by variant
+          // (total for continuous, mean for rest); savedChartValueMs owns that
+          // rule, so the graph cannot drift from what the review screen showed.
+          const rep = r.mode === REPEAT_MODE ? parseRepSetJson(r.raw_json) : null;
+          const elapsedMs =
+            (r.mode === REPEAT_MODE ? savedChartValueMs(r.raw_json, r.total_ms) : null) ??
+            r.total_ms;
+          return {
+            id: r.id,
+            drillId: r.drill_id,
+            drillName: r.drill_name,
+            elapsedMs,
+            createdAt: r.created_at,
+            // Splits stay reachable in the readout without touching the axis.
+            note: rep?.intervals.length
+              ? `${rep.intervals.length} × ${rep.intervals.map((ms) => (ms / 1000).toFixed(2)).join(' / ')}${rep.exact ? '' : '  · hand-started'}`
+              : null,
+          };
+        }),
       ),
       excluded: rows.length - valid.length,
     };

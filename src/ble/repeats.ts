@@ -153,6 +153,44 @@ export function chartValueMs(set: RepSet): number {
   return set.variant === 'continuous' ? set.totalMs : set.meanMs;
 }
 
+/** A rep set as it comes back out of `runs.raw_json`. */
+export type SavedRepSet = {
+  variant: RepeatVariant;
+  /** interval times in ms, in order */
+  intervals: number[];
+  exact: boolean;
+};
+
+/** Read a saved rep set out of raw_json. Returns null for any other kind of run,
+ *  and for anything malformed — a chart must never throw on one bad row. */
+export function parseRepSetJson(raw: string | null | undefined): SavedRepSet | null {
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    if (v?.engine !== 'repeat') return null;
+    const variant: RepeatVariant = v.variant === 'rest' ? 'rest' : 'continuous';
+    const intervals = Array.isArray(v.intervals)
+      ? v.intervals.filter((n: unknown): n is number => typeof n === 'number' && Number.isFinite(n))
+      : [];
+    return { variant, intervals, exact: v.exact === true };
+  } catch {
+    return null;
+  }
+}
+
+/** The chart value for a SAVED rep set — the same rule as chartValueMs, applied
+ *  to storage, so the graph cannot drift from what the screen showed at save time.
+ *  Returns null when the row is not a rep set. */
+export function savedChartValueMs(
+  raw: string | null | undefined,
+  totalMs: number,
+): number | null {
+  const s = parseRepSetJson(raw);
+  if (!s) return null;
+  if (s.variant === 'continuous') return totalMs;
+  return s.intervals.length ? Math.round(totalMs / s.intervals.length) : totalMs;
+}
+
 /**
  * Pure — no React, no BLE. The provider feeds it every parsed v2 frame via
  * ingest() and the screen drives arm()/startRep()/end().

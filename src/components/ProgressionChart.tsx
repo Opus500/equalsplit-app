@@ -274,11 +274,20 @@ export function ProgressionChart({
 
         {shown ? (
           <>
-            <Text style={styles.readoutText} numberOfLines={1}>
-              <Text style={styles.readoutStrong}>Run {(sel ?? 0) + 1}</Text> ·{' '}
-              {formatMs(shown.elapsedMs)}s · {shortDate(shown.createdAt)}
-              {shown.isBest ? <Text style={styles.pbTag}>  ★ PB</Text> : null}
-            </Text>
+            <View style={styles.readoutCol}>
+              <Text style={styles.readoutText} numberOfLines={1}>
+                <Text style={styles.readoutStrong}>Run {(sel ?? 0) + 1}</Text> ·{' '}
+                {formatMs(shown.elapsedMs)}s · {shortDate(shown.createdAt)}
+                {shown.isBest ? <Text style={styles.pbTag}>  ★ PB</Text> : null}
+              </Text>
+              {/* A multi-interval run's splits — one point on the axis, full
+                  detail on tap. */}
+              {shown.note ? (
+                <Text style={styles.readoutNote} numberOfLines={1}>
+                  {shown.note}
+                </Text>
+              ) : null}
+            </View>
             {/* For junk data — a false start, someone walking through the beam.
                 A real delete through the same path History uses, so the two can
                 never disagree about which runs exist. */}
@@ -388,7 +397,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#0b0e13',
   },
   stepText: { color: '#93c5fd', fontSize: 18, fontWeight: '800', lineHeight: 20 },
-  readoutText: { color: '#cbd5e1', fontSize: 13, flex: 1 },
+  readoutCol: { flex: 1, minWidth: 0 },
+  readoutText: { color: '#cbd5e1', fontSize: 13 },
+  readoutNote: { color: '#64748b', fontSize: 11, marginTop: 2, fontVariant: ['tabular-nums'] },
   readoutStrong: { color: '#fff', fontWeight: '800' },
   readoutHint: { color: '#475569', fontSize: 12, flex: 1 },
   pbTag: { color: '#fbbf24', fontWeight: '800' },

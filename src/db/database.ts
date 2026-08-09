@@ -448,9 +448,12 @@ export async function deleteRun(id: string): Promise<void> {
 
 export type AthleteRunRow = {
   id: string;
+  mode: number;
   total_ms: number;
   created_at: number;
   status: string;
+  /** carries a rep set's intervals — the chart reads the variant out of it */
+  raw_json: string | null;
   drill_id: string | null;
   drill_name: string | null;
 };
@@ -465,7 +468,7 @@ export type AthleteRunRow = {
 export async function getAthleteRuns(athleteId: string): Promise<AthleteRunRow[]> {
   const db = await getDb();
   return db.getAllAsync<AthleteRunRow>(
-    `SELECT r.id, r.total_ms, r.created_at, r.status, r.drill_id,
+    `SELECT r.id, r.mode, r.total_ms, r.created_at, r.status, r.raw_json, r.drill_id,
             d.name AS drill_name
        FROM runs r
        LEFT JOIN drills d ON d.id = r.drill_id

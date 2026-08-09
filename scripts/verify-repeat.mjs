@@ -19,6 +19,8 @@ const {
   chartValueMs,
   clampRepeatLockout,
   dropInterval,
+  parseRepSetJson,
+  savedChartValueMs,
   summarize,
 } = await import('../src/ble/repeats.ts');
 
@@ -271,6 +273,64 @@ console.log('\n12. degenerate sets and config guards');
   check('lockout clamps to bounds', clampRepeatLockout('repeat-rest', 99_999), 60_000);
   check('and up to the floor', clampRepeatLockout('repeat-rest', 10), 500);
   check('rep sets get their own mode', REPEAT_MODE, 4);
+}
+
+console.log('\n13. SAVED sets chart the same as live ones (storage round-trip)');
+{
+  // The rule has to survive raw_json, or the graph drifts from what the review
+  // screen showed at save time.
+  const mk = (engine) => {
+    const set = engine.end(999_999);
+    const raw = JSON.stringify({
+      engine: 'repeat',
+      variant: set.variant,
+      gateId: set.gateId,
+      intervals: set.intervals.map((i) => i.ms),
+      lockoutMs: set.lockoutMs,
+      exact: set.exact,
+    });
+    return { set, raw };
+  };
+
+  const c = new RepeatEngine(REPEAT_CONTINUOUS);
+  c.arm(0);
+  c.ingest(brk(0), 0);
+  c.ingest(brk(62_000_000), 62_000);
+  c.ingest(brk(126_500_000), 126_500);
+  c.ingest(brk(193_100_000), 193_100);
+  const cont = mk(c);
+  check(
+    'CONTINUOUS round-trips to the same chart value',
+    savedChartValueMs(cont.raw, cont.set.totalMs),
+    chartValueMs(cont.set),
+  );
+
+  const r = new RepeatEngine(REPEAT_REST);
+  r.arm(0);
+  r.startRep(0);
+  r.ingest(brk(64_000_000), 64_000);
+  r.startRep(300_000);
+  r.ingest(brk(365_000_000), 365_000);
+  r.startRep(600_000);
+  r.ingest(brk(666_500_000), 666_500);
+  const rest = mk(r);
+  check(
+    'REST round-trips to the same chart value',
+    savedChartValueMs(rest.raw, rest.set.totalMs),
+    chartValueMs(rest.set),
+  );
+  truthy('and it is still the mean, not the total', savedChartValueMs(rest.raw, rest.set.totalMs) !== rest.set.totalMs);
+
+  check('the intervals survive for the History expansion', parseRepSetJson(rest.raw).intervals, [
+    64_000, 65_000, 66_500,
+  ]);
+
+  // A chart must never throw on one bad row.
+  check('a non-rep run is not a rep set', savedChartValueMs('{"engine":"v2"}', 4200), null);
+  check('null raw_json', savedChartValueMs(null, 4200), null);
+  check('malformed JSON', savedChartValueMs('{not json', 4200), null);
+  check('rep set with no intervals falls back to the total', savedChartValueMs('{"engine":"repeat","variant":"rest","intervals":[]}', 4200), 4200);
+  check('garbage intervals are filtered', parseRepSetJson('{"engine":"repeat","intervals":[1,"x",null,2]}').intervals, [1, 2]);
 }
 
 console.log('\n=============================');

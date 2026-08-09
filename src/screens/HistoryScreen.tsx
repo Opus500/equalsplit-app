@@ -33,6 +33,7 @@ import {
 } from '../db/database';
 import { useSettings } from '../settings/SettingsProvider';
 import { formatTags } from '../runs/format';
+import { REPEAT_MODE, parseRepSetJson } from '../ble/repeats';
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { runShareLine, sessionShareText, shareText } from '../share';
@@ -69,6 +70,8 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   const [runs, setRuns] = useState<RunRow[]>([]);
   const [athleteFilter, setAthleteFilter] = useState<string | null>(null);
   const [editing, setEditing] = useState<RunRow | null>(null);
+  // Which rep set has its intervals showing. One at a time — the list is long.
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
   const [pickingDrill, setPickingDrill] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -240,7 +243,12 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
             const meta = parseMeta(item);
             const who = resolvedAthlete(item);
             const tags = formatTags(who.name, resolvedDrill(item).name);
+            // A rep set is ONE entry with its intervals folded away — a 3x400
+            // listed as three rows would read as three separate efforts.
+            const repSet = item.mode === REPEAT_MODE ? parseRepSetJson(item.raw_json) : null;
+            const open = expanded === item.id;
             return (
+              <View>
               <Pressable style={styles.runRow} onPress={() => setEditing(item)}>
                 <View style={styles.runLeft}>
                   <View style={styles.runLeftTop}>
@@ -301,6 +309,32 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                   <Text style={styles.delText}>✕</Text>
                 </Pressable>
               </Pressable>
+
+              {repSet && repSet.intervals.length ? (
+                <>
+                  <Pressable
+                    onPress={() => setExpanded(open ? null : item.id)}
+                    hitSlop={6}
+                    style={({ pressed }) => [styles.repToggle, pressed && { opacity: 0.6 }]}
+                  >
+                    <Text style={styles.repToggleText}>
+                      {open ? '▾' : '▸'}  {repSet.intervals.length} ×{' '}
+                      {repSet.variant === 'continuous' ? 'lap' : 'rep'} · avg{' '}
+                      {fmt(Math.round(item.total_ms / repSet.intervals.length))}s
+                      {repSet.exact ? '' : ' · hand-started'}
+                    </Text>
+                  </Pressable>
+                  {open
+                    ? repSet.intervals.map((ms, i) => (
+                        <View key={i} style={styles.repRow}>
+                          <Text style={styles.repIdx}>{i + 1}</Text>
+                          <Text style={styles.repTime}>{fmt(ms)}s</Text>
+                        </View>
+                      ))
+                    : null}
+                </>
+              ) : null}
+              </View>
             );
           }}
         />
@@ -528,6 +562,17 @@ function RenameModal({
 }
 
 const styles = StyleSheet.create({
+  repToggle: { paddingVertical: 7, paddingHorizontal: 14, marginTop: -4 },
+  repToggleText: { color: '#94a3b8', fontSize: 11, fontWeight: '700' },
+  repRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 5,
+    paddingHorizontal: 26,
+  },
+  repIdx: { color: '#475569', fontSize: 11, fontWeight: '800', width: 16 },
+  repTime: { color: '#cbd5e1', fontSize: 14, fontVariant: ['tabular-nums'] },
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   flex: { flex: 1 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },

@@ -104,3 +104,53 @@ when both app engines are idle) and drops a stale arm after ~35 s.
 **Why opt-in:** B1 and B2 emit the **same** BUTTON_PRESS (flags 0), so the app can't tell a Mode-1
 arm from a Mode-2 press — a Mode-2 (reaction) standalone would be mis-logged as its gate→gate leg.
 Off by default so it can never inject a phantom run into an event; turn it on deliberately.
+
+## Rep sets — single-gate interval timing (mode 4)
+
+`src/ble/repeats.ts`, pure, verified by `scripts/verify-repeat.mjs` (13 blocks).
+**Beside `DrillEngine`, not inside it**: the two differ in terminal condition (a frame
+says stop vs a button says stop) and output cardinality (one time vs N), which are the
+state machine's contract. `drills.ts` is untouched, and so is `DrillsScreen.tsx` —
+`RepeatsScreen` is a sibling behind a segmented switch in `DrillsTab`.
+
+Both gates stay paired and connected as normal. The engine drops every frame whose
+`gateId` is not the one being timed, so gate 2 being live costs nothing: no partial
+bring-up, no set-splitting.
+
+| | CONTINUOUS | REST |
+|---|---|---|
+| shape | 1200m as three laps | 3×400 with recovery |
+| opens | first BREAK is `t0` | coach taps **Start rep** |
+| closes | each qualifying BREAK | the crossing |
+| rest | none | **outside every interval**, never timed |
+| clock | gate micros at both ends — intra-clock, exact, wrap-safe | phone ms at both ends |
+| accuracy | gate-accurate | hand-started, ~200ms (`HAND_START_ERROR_MS`) — stated in the UI |
+| **charts** | **total** | **mean** |
+
+**The chart rule is `chartValueMs()`**, one function so the variants cannot silently
+share one. Continuous charts the total because a 1200m *has* a real total time, the laps
+are its breakdown, and there is exactly one start — a gate edge — so no error
+accumulates. Rest charts the mean because the sum is not a time anybody ran, and because
+every rep is hand-started: a sum accumulates the tap bias **once per rep** (~600ms over
+3×400) where the mean carries ~200ms however many reps there are. `savedChartValueMs()`
+applies the same rule to a stored row, so the graph cannot drift from the review screen.
+
+Comparability across sessions comes from the **drill label** carrying the distance and
+rep count (`1200m`, `400m ×3`) — different labels mint different records, so a series
+never mixes set sizes. Same mechanism that keeps a 30m off a 40yd's axis.
+
+**Nothing is written until Save.** `end()` produces the set, the screen lists every
+interval, and `dropInterval()` removes a spurious crossing before storage — the only
+thing that catches an athlete drifting back through the beam, which no lockout of a
+usable size can. Rep sets therefore do **not** open the post-run discard window: the
+review list already is one.
+
+Tunable and persisted per variant: the lockout, via steppers, locked while a set is live
+(bounds 0.5s–60s). Raising it is the blunt alternative to pruning the list.
+
+`end()` discards the interval still open — in continuous, the stretch after the last
+crossing has no closing crossing; in rest, a rep the athlete never finished. Neither is
+a time.
+
+History renders a rep set as **one row**, expandable to per-interval times with the
+average. The chart draws **one point**, with the splits in the readout on tap.

@@ -14,7 +14,7 @@ import { PendingRunProvider } from './src/runs/PendingRunProvider';
 import { initDb } from './src/db/database';
 import TimerScreen from './src/screens/TimerScreen';
 import TimerV2Screen from './src/screens/TimerV2Screen';
-import DrillsScreen from './src/screens/DrillsScreen';
+import DrillsTab from './src/screens/DrillsTab';
 import RosterScreen from './src/screens/RosterScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
@@ -62,11 +62,12 @@ function AppShell() {
         <View style={[styles.fill, tab !== 'timer' && styles.hidden]}>
           {useV2Engine ? <TimerV2Screen /> : <TimerScreen />}
         </View>
-        {/* Kept mounted (hidden), like Timer: preserves an in-progress drill run,
-            the selected drill, and — critically — the per-run save guard across
-            tab switches, so a completed run can't be re-saved on remount. */}
+        {/* Kept mounted (hidden), like Timer: preserves an in-progress drill run
+            or rep set, the selected drill, and — critically — the per-run save
+            guard across tab switches, so a completed run can't be re-saved on
+            remount. DrillsTab holds both engines behind a segmented switch. */}
         <View style={[styles.fill, tab !== 'drills' && styles.hidden]}>
-          <DrillsScreen />
+          <DrillsTab />
         </View>
         {tab === 'roster' && (
           <View style={styles.fill}>

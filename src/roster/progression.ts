@@ -33,6 +33,11 @@ export type ProgressionRun = {
   drillName: string | null;
   elapsedMs: number;
   createdAt: number;
+  /** Optional extra shown in the chart readout when this point is selected —
+   *  a rep set's individual splits, say. The chart plots ONE value per run, so
+   *  this is how a multi-interval run keeps its detail reachable without putting
+   *  several points on an axis that means "one effort per point". */
+  note?: string | null;
 };
 
 export type SeriesPoint = {
@@ -41,6 +46,8 @@ export type SeriesPoint = {
   createdAt: number;
   /** ties count as best — a matched PB is still a PB */
   isBest: boolean;
+  /** see ProgressionRun.note */
+  note: string | null;
 };
 
 export type Series = {
@@ -141,6 +148,7 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
         elapsedMs: r.elapsedMs,
         createdAt: r.createdAt,
         isBest: r.elapsedMs === bestMs,
+        note: r.note ?? null,
       })),
       bestMs,
       worstMs,

@@ -46,6 +46,14 @@ import {
   type DrillRun,
   type DrillState,
 } from './drills';
+import {
+  RepeatEngine,
+  REPEAT_CONTINUOUS,
+  type RepeatConfig,
+  type RepInterval,
+  type RepSet,
+  type RepeatState,
+} from './repeats';
 import { GATE_ID_ALL } from './v2constants';
 import { buildAnchor, gateUsToPhoneMs, type ClockAnchor, type PingSample } from './clockSync';
 import { saveRun } from '../db/database';
@@ -137,6 +145,22 @@ export type V2ContextValue = {
   setDrill: (config: DrillConfig) => void;
   armDrill: (config: DrillConfig) => void;
   cancelDrill: () => void;
+  // Rep sets (single-gate interval timing, src/ble/repeats.ts). Both gates stay
+  // paired as normal; the engine simply ignores every frame from the gate it is
+  // not timing, so this needs no partial bring-up and no set-splitting.
+  repeatState: RepeatState;
+  /** intervals collected SO FAR — nothing is stored until endRepeat(). */
+  repeatIntervals: RepInterval[];
+  /** the finished set, awaiting review-and-save on the screen. */
+  lastRepSet: RepSet | null;
+  armRepeat: (config: RepeatConfig) => void;
+  /** REST variant only: the coach taps, the athlete goes. */
+  startRep: () => void;
+  /** Explicit end — never a timeout. One gate cannot tell finishing a lap from
+   *  walking back through the beam, so the coach says when the set is over. */
+  endRepeat: () => void;
+  cancelRepeat: () => void;
+  clearLastRepSet: () => void;
   /** Most recent reconstructed standalone (B1) run — only produced when the
    *  logStandalone setting is on. The screen that owns saving reads this. */
   lastStandaloneRun: StandaloneRun | null;
@@ -155,6 +179,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const { logStandalone } = useSettings();
   const engineRef = useRef(new V2RunEngine(START_ID, FINISH_ID));
   const drillRef = useRef(new DrillEngine(DRILL_L_DRILL));
+  const repeatRef = useRef(new RepeatEngine(REPEAT_CONTINUOUS));
   const observerRef = useRef(new StandaloneObserver());
   // Live mirror of the opt-in flag so the event-stream closure reads it fresh.
   const logStandaloneRef = useRef(logStandalone);
@@ -184,6 +209,9 @@ export function V2Provider({ children }: { children: ReactNode }) {
   );
   const [lastDrillRun, setLastDrillRun] = useState<DrillRun | null>(null);
   const [lastStandaloneRun, setLastStandaloneRun] = useState<StandaloneRun | null>(null);
+  const [repeatState, setRepeatState] = useState<RepeatState>('idle');
+  const [repeatIntervals, setRepeatIntervals] = useState<RepInterval[]>([]);
+  const [lastRepSet, setLastRepSet] = useState<RepSet | null>(null);
 
   // Live mirrors (refs) so the async bring-up reads current values, not stale.
   const discoveredRef = useRef<Record<string, number>>({}); // mac -> lastSeenMs
@@ -334,8 +362,14 @@ export function V2Provider({ children }: { children: ReactNode }) {
       pushLog(`drill ${run.label}: ${run.splitMs}ms${run.synced ? '' : ' (unsynced — withheld)'}`);
     };
 
+    // Rep sets — single gate, open-ended, ended by a button not a frame.
+    const repeat = repeatRef.current;
+    repeat.onOpen = () => setRepeatState(repeat.state);
+    repeat.onInterval = (interval, count) =>
+      pushLog(`rep ${count}: ${interval.ms}ms (${interval.startSource}-started)`);
+
     // Standalone (B1) observer — passive; only arms on a button press when opted
-    // in and both app engines are idle (see the 'button' case below).
+    // in and all app engines are idle (see the 'button' case below).
     const observer = observerRef.current;
     observer.onRun = (run) => {
       setLastStandaloneRun(run);
@@ -428,13 +462,22 @@ export function V2Provider({ children }: { children: ReactNode }) {
           // Drills need BOTH edges (start on a CLEAR); the observer ignores clears.
           drill.ingest(f, atMs);
           setDrillState(drill.state);
+          // Rep sets: only BREAKs on the timed gate matter, so gate 2 crossings
+          // fall through untouched even though it is connected and advertising.
+          if (repeat.ingest(f, atMs)) setRepeatIntervals([...repeat.intervals]);
+          setRepeatState(repeat.state);
           observer.onBeam(f.edge, f.gateId, f.micros, atMs);
           break;
         case 'button':
           // A gate button (B1/B2) was pressed. If opted in AND no app-driven run
           // is active, observe a standalone Mode-1 run; re-arms on each press and
           // self-drops after a window if no run completes (stray press).
-          if (logStandaloneRef.current && engine.state === 'idle' && drill.state === 'idle') {
+          if (
+            logStandaloneRef.current &&
+            engine.state === 'idle' &&
+            drill.state === 'idle' &&
+            repeat.state === 'idle'
+          ) {
             observer.arm();
             if (saTimerRef.current) clearTimeout(saTimerRef.current);
             saTimerRef.current = setTimeout(() => observer.reset(), 35000);
@@ -770,6 +813,49 @@ export function V2Provider({ children }: { children: ReactNode }) {
     setDrillProgress(null);
   }, []);
 
+  // --- rep sets -------------------------------------------------------------
+  const armRepeat = useCallback(
+    (config: RepeatConfig) => {
+      // Same mutual exclusion the drills use: one timing engine owns the gates.
+      observerRef.current.reset();
+      engineRef.current.reset();
+      setEngineState(engineRef.current.state);
+      setRunning(null);
+      drillRef.current.reset();
+      setDrillState(drillRef.current.state);
+      setLastRepSet(null);
+      repeatRef.current.reset();
+      repeatRef.current.setConfig(config);
+      repeatRef.current.arm(Date.now());
+      setRepeatState(repeatRef.current.state);
+      setRepeatIntervals([]);
+      pushLog(`rep set armed: ${config.title} on gate ${config.gateId} (lockout ${config.lockoutMs}ms)`);
+    },
+    [pushLog],
+  );
+
+  const startRep = useCallback(() => {
+    repeatRef.current.startRep(Date.now());
+    setRepeatState(repeatRef.current.state);
+  }, []);
+
+  const endRepeat = useCallback(() => {
+    if (repeatRef.current.state === 'idle') return;
+    const set = repeatRef.current.end(Date.now());
+    setRepeatState(repeatRef.current.state);
+    setRepeatIntervals([]);
+    setLastRepSet(set);
+    pushLog(`rep set ended: ${set.intervals.length} interval(s), total ${set.totalMs}ms`);
+  }, [pushLog]);
+
+  const cancelRepeat = useCallback(() => {
+    repeatRef.current.reset();
+    setRepeatState(repeatRef.current.state);
+    setRepeatIntervals([]);
+  }, []);
+
+  const clearLastRepSet = useCallback(() => setLastRepSet(null), []);
+
   const clearComparisons = useCallback(() => setComparisons([]), []);
 
   const gateToPhoneMs = useCallback((gateUs: number): number | null => {
@@ -858,6 +944,14 @@ export function V2Provider({ children }: { children: ReactNode }) {
     setDrill,
     armDrill,
     cancelDrill,
+    repeatState,
+    repeatIntervals,
+    lastRepSet,
+    armRepeat,
+    startRep,
+    endRepeat,
+    cancelRepeat,
+    clearLastRepSet,
     lastStandaloneRun,
     changeSet,
     restoreDefaults,
