@@ -181,7 +181,6 @@ export default function TimerV2Screen() {
 
   return (
     <View style={styles.container}>
-      <ConnChip />
       <View style={styles.setRow}>
         <SetControl />
       </View>
@@ -302,39 +301,6 @@ function SessionLine() {
   );
 }
 
-function ConnChip() {
-  const gate = useGate();
-  const s = gate.status;
-  const label =
-    s === 'connected'
-      ? 'Gate connected'
-      : s === 'scanning'
-        ? 'Scanning…'
-        : s === 'connecting'
-          ? 'Connecting…'
-          : s === 'reconnecting'
-            ? 'Reconnecting…'
-            : 'Disconnected';
-  const busy = s === 'scanning' || s === 'connecting' || s === 'reconnecting';
-  const dotStyle = s === 'connected' ? styles.dotOn : busy ? styles.dotBusy : styles.dotOff;
-  const showDisconnect = s === 'connected' || s === 'reconnecting';
-  return (
-    <View style={styles.chipRow}>
-      <View style={[styles.dot, dotStyle]} />
-      <Text style={styles.chipText}>{label}</Text>
-      <View style={{ flex: 1 }} />
-      {showDisconnect ? (
-        <Pressable onPress={gate.disconnect} hitSlop={8}>
-          <Text style={styles.chipAction}>{s === 'reconnecting' ? 'Cancel' : 'Disconnect'}</Text>
-        </Pressable>
-      ) : (
-        <Pressable onPress={gate.quickConnect} disabled={busy || !gate.adapterOn} hitSlop={8}>
-          <Text style={[styles.chipAction, (busy || !gate.adapterOn) && styles.dim]}>Connect</Text>
-        </Pressable>
-      )}
-    </View>
-  );
-}
 
 function Split({ label, ms, strong }: { label: string; ms: number; strong?: boolean }) {
   return (
@@ -374,13 +340,6 @@ function Btn({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
-  chipRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
-  dot: { width: 10, height: 10, borderRadius: 5 },
-  dotOn: { backgroundColor: '#22c55e' },
-  dotOff: { backgroundColor: '#64748b' },
-  dotBusy: { backgroundColor: '#f59e0b' },
-  chipText: { color: '#cbd5e1', fontSize: 13 },
-  chipAction: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
   setRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 6 },
   sdot: { width: 8, height: 8, borderRadius: 4 },

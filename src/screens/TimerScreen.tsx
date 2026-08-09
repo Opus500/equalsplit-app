@@ -27,6 +27,7 @@ import {
 } from '../db/database';
 import { formatTags } from '../runs/format';
 import { DrillPickerModal } from '../components/DrillPicker';
+import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
 import { DiscardBar } from '../components/DiscardBar';
 import { useRoster } from '../roster/RosterProvider';
@@ -607,7 +608,19 @@ export default function TimerScreen() {
 
   return (
     <View style={styles.container}>
-      <ConnChip />
+      {/* Was a local ConnChip. showSet=false: v1 predates sets and has none to
+          choose. `detail` carries the gate state / run count / finish-link
+          warning that only THIS copy showed — the other two never had it. */}
+      <SetControl
+        showSet={false}
+        detail={
+          status === 'connected' && gateStatus
+            ? ` · ${STATE_NAME[gateStatus.state] ?? ''} · runs ${gateStatus.runCount}${
+                gateStatus.finishLinkOk ? '' : ' · finish ⚠'
+              }`
+            : null
+        }
+      />
 
       {/* Who this run is for + who follows. Tap to jump to anyone. */}
       <UpNextStrip />
@@ -751,41 +764,6 @@ function hintFor(connected: boolean, gs: GateState | null, rs: RunState): string
   }
 }
 
-function ConnChip() {
-  const gate = useGate();
-  const s = gate.status;
-  const label =
-    s === 'connected'
-      ? `Gate connected${gate.gateStatus ? ` · ${STATE_NAME[gate.gateStatus.state] ?? ''}` : ''}${
-          gate.gateStatus ? ` · runs ${gate.gateStatus.runCount}` : ''
-        }${gate.gateStatus && !gate.gateStatus.finishLinkOk ? ' · finish ⚠' : ''}`
-      : s === 'scanning'
-        ? 'Scanning…'
-        : s === 'connecting'
-          ? 'Connecting…'
-          : s === 'reconnecting'
-            ? 'Reconnecting…'
-            : 'Disconnected';
-  const busy = s === 'scanning' || s === 'connecting' || s === 'reconnecting';
-  const dotStyle = s === 'connected' ? styles.dotOn : busy ? styles.dotBusy : styles.dotOff;
-  const showDisconnect = s === 'connected' || s === 'reconnecting';
-  return (
-    <View style={styles.chipRow}>
-      <View style={[styles.dot, dotStyle]} />
-      <Text style={styles.chipText}>{label}</Text>
-      <View style={{ flex: 1 }} />
-      {showDisconnect ? (
-        <Pressable onPress={gate.disconnect} hitSlop={8}>
-          <Text style={styles.chipAction}>{s === 'reconnecting' ? 'Cancel' : 'Disconnect'}</Text>
-        </Pressable>
-      ) : (
-        <Pressable onPress={gate.quickConnect} disabled={busy || !gate.adapterOn} hitSlop={8}>
-          <Text style={[styles.chipAction, (busy || !gate.adapterOn) && styles.dim]}>Connect</Text>
-        </Pressable>
-      )}
-    </View>
-  );
-}
 
 function Split({
   label,
@@ -861,13 +839,6 @@ function Btn({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
-  chipRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
-  dot: { width: 10, height: 10, borderRadius: 5 },
-  dotOn: { backgroundColor: '#22c55e' },
-  dotOff: { backgroundColor: '#64748b' },
-  dotBusy: { backgroundColor: '#f59e0b' },
-  chipText: { color: '#cbd5e1', fontSize: 13 },
-  chipAction: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
   tagBar: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -5,6 +5,16 @@
 // reads the g1-a3 scan-response set byte (FF FF 0N) so you can choose Set 1/2/3
 // BEFORE connecting.
 //
+// It is also the app's ONE gate-connection control, having absorbed the ConnChip
+// that used to be copy-pasted into three screens: status dot, Connect (via
+// quickConnect — the affordance that matters when a gate drops mid-practice) and
+// Disconnect. `showSet={false}` gives just those, for the v1 timer, which has no
+// concept of sets.
+//
+// RECONNECT BEHAVIOUR IS UNCHANGED. Every button calls exactly the provider
+// function ConnChip called — quickConnect, disconnect, connectTo — and
+// GateProvider is untouched, so auto-reconnect after a drop is byte-identical.
+//
 // Deliberately ADDITIVE: the picker only ever calls the existing gate.connectTo /
 // gate.disconnect — it does NOT touch quickConnect, auto-reconnect, or bring-up.
 // After a pick, the app's normal last-gate stickiness + drop-reconnect keep the
@@ -26,12 +36,37 @@ type Found = { device: Device; name: string; set: number | null; rssi: number };
 const SET_COLORS: Record<number, string> = { 1: '#2563eb', 2: '#16a34a', 3: '#a855f7' };
 const setColor = (s: number | null | undefined) => (s ? SET_COLORS[s] ?? '#475569' : '#475569');
 
-export function SetControl() {
+export function SetControl({
+  showSet = true,
+  detail,
+}: {
+  /** false on the v1 timer: it predates sets and has no set to show or choose. */
+  showSet?: boolean;
+  /** extra text beside the status, for v1's gate state / run count / finish-link
+   *  warning, which its ConnChip carried and the other two did not. */
+  detail?: string | null;
+} = {}) {
   const gate = useGate();
   const v2 = useV2();
   const [open, setOpen] = useState(false);
   const connected = gate.status === 'connected';
   const currentSet = v2.gates.find((g) => g.setNumber > 0)?.setNumber ?? null;
+
+  // Verbatim from ConnChip, including which states count as busy and which show
+  // Disconnect rather than Connect.
+  const s = gate.status;
+  const busy = s === 'scanning' || s === 'connecting' || s === 'reconnecting';
+  const showDisconnect = s === 'connected' || s === 'reconnecting';
+  const statusLabel =
+    s === 'connected'
+      ? 'Connected'
+      : s === 'scanning'
+        ? 'Scanning…'
+        : s === 'connecting'
+          ? 'Connecting…'
+          : s === 'reconnecting'
+            ? 'Reconnecting…'
+            : 'Disconnected';
 
   const onPick = useCallback(
     async (d: Device) => {
@@ -50,18 +85,49 @@ export function SetControl() {
 
   return (
     <View style={styles.wrap}>
-      {connected && currentSet ? (
-        <View style={[styles.badge, { backgroundColor: setColor(currentSet) }]}>
-          <Text style={styles.badgeText}>SET {currentSet}</Text>
-        </View>
+      {showSet ? (
+        connected && currentSet ? (
+          <View style={[styles.badge, { backgroundColor: setColor(currentSet) }]}>
+            <Text style={styles.badgeText}>SET {currentSet}</Text>
+          </View>
+        ) : (
+          <View style={[styles.badge, styles.badgeMuted]}>
+            <Text style={styles.badgeMutedText}>{connected ? 'set ?' : 'no set'}</Text>
+          </View>
+        )
+      ) : null}
+
+      <View
+        style={[
+          styles.statusDot,
+          s === 'connected' ? styles.dotOn : busy ? styles.dotBusy : styles.dotOff,
+        ]}
+      />
+      <Text style={styles.status} numberOfLines={1}>
+        {statusLabel}
+        {detail ? <Text style={styles.detail}>{detail}</Text> : null}
+      </Text>
+
+      <View style={styles.spacer} />
+
+      {showSet ? (
+        <Pressable onPress={() => setOpen(true)} hitSlop={8}>
+          <Text style={styles.link}>Choose set</Text>
+        </Pressable>
+      ) : null}
+
+      {/* quickConnect, not connectTo: this is the one-tap "bring the last gate
+          back" path a coach reaches for when a gate drops mid-practice, and it
+          has no equivalent in the set picker (which always scans and asks). */}
+      {showDisconnect ? (
+        <Pressable onPress={gate.disconnect} hitSlop={8}>
+          <Text style={styles.action}>{s === 'reconnecting' ? 'Cancel' : 'Disconnect'}</Text>
+        </Pressable>
       ) : (
-        <View style={[styles.badge, styles.badgeMuted]}>
-          <Text style={styles.badgeMutedText}>{connected ? 'set ?' : 'no set'}</Text>
-        </View>
+        <Pressable onPress={gate.quickConnect} disabled={busy || !gate.adapterOn} hitSlop={8}>
+          <Text style={[styles.action, (busy || !gate.adapterOn) && styles.dimText]}>Connect</Text>
+        </Pressable>
       )}
-      <Pressable onPress={() => setOpen(true)} hitSlop={8}>
-        <Text style={styles.link}>Choose set</Text>
-      </Pressable>
       <SetPickerModal
         visible={open}
         currentSet={currentSet}
@@ -238,6 +304,17 @@ const styles = StyleSheet.create({
   badgeMuted: { backgroundColor: '#243042' },
   badgeMutedText: { color: '#94a3b8', fontSize: 12, fontWeight: '700' },
   link: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
+  // Dot + label + action copied from ConnChip so the bar reads the same.
+  // NOT `dot` — the set picker below already owns that name for its colour swatch.
+  statusDot: { width: 9, height: 9, borderRadius: 5 },
+  dotOn: { backgroundColor: '#22c55e' },
+  dotBusy: { backgroundColor: '#f59e0b' },
+  dotOff: { backgroundColor: '#64748b' },
+  status: { color: '#94a3b8', fontSize: 12, flexShrink: 1 },
+  detail: { color: '#64748b', fontSize: 11 },
+  spacer: { flex: 1 },
+  action: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
+  dimText: { opacity: 0.4 },
   backdrop: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.6)',
