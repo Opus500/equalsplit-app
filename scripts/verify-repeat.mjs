@@ -19,6 +19,7 @@ const {
   chartValueMs,
   clampRepeatLockout,
   dropInterval,
+  mergeCrossing,
   parseRepSetJson,
   savedChartValueMs,
   suspectIntervals,
@@ -207,9 +208,9 @@ console.log('\n9. THE CHART RULE — the two variants do NOT share one');
   );
 }
 
-console.log('\n10. Dropping a spurious crossing before saving');
+console.log('\n10. CONTINUOUS: repairing a walk-back removes a BOUNDARY, not time');
 {
-  // Athlete finishes a lap, then drifts back through the beam: a junk ~4s interval.
+  // Athlete finishes lap 1 at 62, drifts back through at 66, finishes lap 2 at 130.
   const e = new RepeatEngine(REPEAT_CONTINUOUS);
   e.arm(0);
   e.ingest(brk(0), 0);
@@ -220,14 +221,97 @@ console.log('\n10. Dropping a spurious crossing before saving');
   check('the junk crossing IS collected', raw.intervals.map((i) => i.ms), [62_000, 4_000, 64_000]);
   console.log('       (a 1s lockout cannot catch a walk-back 4s later — that is what the list is for)');
 
-  const fixed = dropInterval(raw, 1);
-  check('dropped', fixed.intervals.map((i) => i.ms), [62_000, 64_000]);
-  check('total recomputed', fixed.totalMs, 126_000);
-  check('mean recomputed', fixed.meanMs, 63_000);
-  check('order preserved', fixed.intervals[0].ms < fixed.intervals[1].ms, true);
+  // Deleting the 4.0s interval would claim a 126s 1200m nobody ran: the athlete
+  // was running for all 130s. Removing the BOUNDARY at t=66 is the truth.
+  const fixed = mergeCrossing(raw, 1);
+  check('lap 2 absorbs the stray split', fixed.intervals.map((i) => i.ms), [62_000, 68_000]);
+  check('TOTAL IS UNCHANGED — the run really took this long', fixed.totalMs, raw.totalMs);
+  check('and that total is the real 1200m time', fixed.totalMs, 130_000);
+  check('mean recomputed off two laps', fixed.meanMs, 65_000);
   check('the original set is untouched', raw.intervals.length, 3);
-  check('an out-of-range index is inert', dropInterval(fixed, 9), fixed);
-  check('dropping to empty is safe', dropInterval(dropInterval(fixed, 0), 0).meanMs, 0);
+}
+
+console.log('\n10b. INVARIANT: removing an interior boundary never changes the total');
+{
+  const e = new RepeatEngine(REPEAT_CONTINUOUS);
+  e.arm(0);
+  const at = [0, 61_000_000, 65_000_000, 129_000_000, 133_000_000, 196_000_000];
+  at.forEach((us, i) => e.ingest(brk(us), Math.round(us / 1000)));
+  const set = e.end(200_000);
+  check('five intervals', set.intervals.length, 5);
+
+  // Exhaustive over every interior boundary.
+  let drift = 0;
+  let lost = 0;
+  for (let b = 0; b < set.intervals.length - 1; b++) {
+    const m = mergeCrossing(set, b);
+    if (m.totalMs !== set.totalMs) drift++;
+    if (m.intervals.length !== set.intervals.length - 1) lost++;
+  }
+  check('no boundary removal changed the total', drift, 0);
+  check('each removed exactly one boundary', lost, 0);
+
+  // Repeated merges still hold it.
+  const twice = mergeCrossing(mergeCrossing(set, 1), 1);
+  check('two merges, total still intact', twice.totalMs, set.totalMs);
+  check('down to three intervals', twice.intervals.length, 3);
+
+  check('merging past the end is inert', mergeCrossing(set, 4), set);
+  check('a negative boundary is inert', mergeCrossing(set, -1), set);
+}
+
+console.log('\n10c. the LAST crossing is the one case where the total SHOULD drop');
+{
+  // Walk-back AFTER the final lap: the run really ended at the previous crossing.
+  const e = new RepeatEngine(REPEAT_CONTINUOUS);
+  e.arm(0);
+  e.ingest(brk(0), 0);
+  e.ingest(brk(62_000_000), 62_000);
+  e.ingest(brk(130_000_000), 130_000);
+  e.ingest(brk(134_000_000), 134_000); // stepped back through after finishing
+  const set = e.end(140_000);
+  check('collected with the trailing junk', set.intervals.map((i) => i.ms), [62_000, 68_000, 4_000]);
+
+  const fixed = dropInterval(set, 2);
+  check('truncated to the real finish', fixed.intervals.map((i) => i.ms), [62_000, 68_000]);
+  check('and the total DROPS, correctly', fixed.totalMs, 130_000);
+  console.log('       (time after the real finish is not part of the run — the only honest shortening)');
+}
+
+console.log('\n10d. an interior DELETE is refused for CONTINUOUS');
+{
+  const e = new RepeatEngine(REPEAT_CONTINUOUS);
+  e.arm(0);
+  e.ingest(brk(0), 0);
+  e.ingest(brk(62_000_000), 62_000);
+  e.ingest(brk(66_000_000), 66_000);
+  e.ingest(brk(130_000_000), 130_000);
+  const set = e.end(140_000);
+  check('deleting an interior interval is a no-op', dropInterval(set, 1), set);
+  check('so the total can never be silently shortened', dropInterval(set, 0).totalMs, set.totalMs);
+  console.log('       (enforced here, not remembered at the call site)');
+}
+
+console.log('\n10e. REST is NOT chained — delete is correct and merge is refused');
+{
+  const e = new RepeatEngine(REPEAT_REST);
+  e.arm(0);
+  e.startRep(0);
+  e.ingest(brk(64_000_000), 64_000); // 64.0
+  e.startRep(200_000);
+  e.ingest(brk(203_000_000), 203_000); // 3.0 — junk crossing closed the rep early
+  e.startRep(400_000);
+  e.ingest(brk(465_000_000), 465_000); // 65.0
+  const set = e.end(500_000);
+  check('three splits', set.intervals.map((i) => i.ms), [64_000, 3_000, 65_000]);
+
+  const fixed = dropInterval(set, 1);
+  check('the junk split is genuinely deleted', fixed.intervals.map((i) => i.ms), [64_000, 65_000]);
+  check('and the total drops, correctly', fixed.totalMs, 129_000);
+  console.log('       (rest sits between reps and is untimed, so there is no elapsed time to preserve)');
+
+  check('merging is refused for rest', mergeCrossing(set, 1), set);
+  check('dropping to empty is safe', dropInterval(dropInterval(fixed, 1), 0).meanMs, 0);
 }
 
 console.log('\n11. frames that must not drive the engine');
@@ -359,10 +443,12 @@ console.log('\n14. LAP TARGET is a target, NOT a terminal condition');
   check('actual', st.actual, 4);
   check('one too many — flagged, not fixed', st.excess, 1);
 
-  // The coach drops the junk and the count matches.
-  const fixed = dropInterval(set, 1);
-  check('after dropping, the count matches', targetStatus(fixed).excess, 0);
-  check('and the laps are the real ones', fixed.intervals.map((i) => i.ms), [62_000, 64_000, 65_000]);
+  // The coach removes the stray BOUNDARY and the count matches. (Deleting the
+  // 4.0s split is refused here — see 10d — because the athlete ran that time.)
+  const fixed = mergeCrossing(set, 1);
+  check('after joining, the count matches', targetStatus(fixed).excess, 0);
+  check('and the laps are the real ones', fixed.intervals.map((i) => i.ms), [62_000, 68_000, 65_000]);
+  check('with the total untouched', fixed.totalMs, set.totalMs);
 }
 
 console.log('\n15. no target => behaves exactly as before, with no flagging');

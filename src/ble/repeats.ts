@@ -191,10 +191,54 @@ export function suspectIntervals(set: RepSet): number[] {
   return out;
 }
 
-/** Drop a spurious crossing from a finished set, before it is saved. Pure, so the
- *  end-of-set list can be edited without touching the database. */
+/**
+ * Remove the CROSSING that separates intervals `boundary` and `boundary + 1`,
+ * merging them into one. CONTINUOUS only.
+ *
+ * This is the correct repair for a spurious crossing in a chained set, and
+ * deleting the short interval is NOT. Continuous intervals partition the elapsed
+ * time from t0 to the last crossing: the athlete was running through all of it.
+ * Crossings at 0/62/66/130 give [62.0, 4.0, 64.0]; the 66 is a walk-back, and
+ * deleting its 4.0s interval would claim a 126s 1200m that nobody ran. Removing
+ * the BOUNDARY gives [62.0, 68.0] — total still 130s, which is the truth. A
+ * spurious crossing is a boundary that shouldn't be there, not time that didn't
+ * happen.
+ *
+ * INVARIANT: merging never changes totalMs. Only the boundaries move.
+ */
+export function mergeCrossing(set: RepSet, boundary: number): RepSet {
+  // Rest intervals are not chained — each is its own tap-to-crossing effort with
+  // untimed rest between, so there is no boundary to remove. See dropInterval.
+  if (set.variant !== 'continuous') return set;
+  if (boundary < 0 || boundary >= set.intervals.length - 1) return set;
+  const a = set.intervals[boundary]!;
+  const b = set.intervals[boundary + 1]!;
+  const merged: RepInterval = {
+    ms: a.ms + b.ms,
+    // the surviving boundary is b's close; a's was the spurious one
+    closeUs: b.closeUs,
+    closeAtMs: b.closeAtMs,
+    startSource: a.startSource,
+  };
+  const intervals = [...set.intervals];
+  intervals.splice(boundary, 2, merged);
+  return { ...set, intervals, ...summarize(intervals) };
+}
+
+/**
+ * Delete an interval outright. Correct for REST — each rep is tap-start to
+ * crossing with untimed rest between, so the intervals are independent and a junk
+ * crossing closed one early; there is nothing to merge into.
+ *
+ * For CONTINUOUS this is only valid on the LAST interval, where it truncates the
+ * set: the final crossing was spurious, so the run really did end at the previous
+ * one and the total legitimately drops. An interior delete would subtract elapsed
+ * time the athlete spent running, so it is REFUSED rather than left available —
+ * the invariant is enforced here, not remembered at the call site.
+ */
 export function dropInterval(set: RepSet, index: number): RepSet {
   if (index < 0 || index >= set.intervals.length) return set;
+  if (set.variant === 'continuous' && index < set.intervals.length - 1) return set;
   const intervals = set.intervals.filter((_, i) => i !== index);
   return { ...set, intervals, ...summarize(intervals) };
 }

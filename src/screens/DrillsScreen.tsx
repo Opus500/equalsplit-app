@@ -50,7 +50,7 @@ const lockoutKey = (drillKey: string) => `drill_lockout_${drillKey}_ms`;
  * Nothing below the picker knows this prop exists — arming, cancel, lockout
  * persistence, the save effect and the result view are untouched.
  */
-export default function DrillsScreen({ selectedKey }: { selectedKey?: string } = {}) {
+export default function DrillsScreen({ selectedKey, header }: { selectedKey?: string; header?: React.ReactNode } = {}) {
   const v2 = useV2();
   const gate = useGate();
 
@@ -214,9 +214,15 @@ export default function DrillsScreen({ selectedKey }: { selectedKey?: string } =
       keyboardShouldPersistTaps="handled"
     >
       <ConnChip />
-      <View style={styles.setRow}>
-        <SetControl />
-      </View>
+      {/* Hosted: the SetControl is PINNED by DrillsTab above the scroll, and
+          `header` (the drill dropdown) scrolls with the content. Standalone: the
+          screen keeps its own inline SetControl exactly as before. */}
+      {selectedKey == null ? (
+        <View style={styles.setRow}>
+          <SetControl />
+        </View>
+      ) : null}
+      {header}
       <SessionLine />
 
       {/* Who this rep is for + who follows. Tap to jump to anyone. */}

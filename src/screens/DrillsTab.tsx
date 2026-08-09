@@ -19,6 +19,7 @@ import { useMemo, useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { DRILL_CATALOG, entryFor, kindFor } from '../ble/catalog';
+import { SetControl } from '../components/SetControl';
 import DrillsScreen from './DrillsScreen';
 import RepeatsScreen from './RepeatsScreen';
 
@@ -28,27 +29,42 @@ export default function DrillsTab() {
   const active = useMemo(() => entryFor(key) ?? DRILL_CATALOG[0]!, [key]);
   const kind = kindFor(active.key);
 
+  // Which set the phone controls is the thing you check mid-session without
+  // wanting to scroll for it, so it is PINNED. The drill you pick once at the
+  // start, so it rides the content and scrolls away.
+  const dropdown = (
+    <Pressable
+      onPress={() => setPicking(true)}
+      style={({ pressed }) => [styles.header, pressed && styles.dim]}
+    >
+      <View style={styles.headerText}>
+        <Text style={styles.kicker}>DRILL</Text>
+        <Text style={styles.title} numberOfLines={1}>
+          {active.title}
+        </Text>
+      </View>
+      <Text style={styles.chev}>▾</Text>
+    </Pressable>
+  );
+
   return (
     <View style={styles.root}>
-      <Pressable
-        onPress={() => setPicking(true)}
-        style={({ pressed }) => [styles.header, pressed && styles.dim]}
-      >
-        <View style={styles.headerText}>
-          <Text style={styles.kicker}>DRILL</Text>
-          <Text style={styles.title} numberOfLines={1}>
-            {active.title}
-          </Text>
-        </View>
-        <Text style={styles.chev}>▾</Text>
-      </Pressable>
+      <View style={styles.pinned}>
+        <SetControl />
+      </View>
 
       <View style={styles.body}>
         <View style={[styles.fill, kind !== 'counted' && styles.hidden]}>
-          <DrillsScreen selectedKey={kind === 'counted' ? active.key : undefined} />
+          <DrillsScreen
+            selectedKey={kind === 'counted' ? active.key : undefined}
+            header={kind === 'counted' ? dropdown : undefined}
+          />
         </View>
         <View style={[styles.fill, kind !== 'repeat' && styles.hidden]}>
-          <RepeatsScreen selectedKey={kind === 'repeat' ? active.key : undefined} />
+          <RepeatsScreen
+            selectedKey={kind === 'repeat' ? active.key : undefined}
+            header={kind === 'repeat' ? dropdown : undefined}
+          />
         </View>
       </View>
 
@@ -93,14 +109,15 @@ export default function DrillsTab() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0e1116' },
-  // Clears the status bar; the hosted screens then use contentEmbedded padding,
-  // so there is one gap here instead of the two that used to stack.
+  // Pinned: outside the scroll, so the set badge never leaves the screen.
+  pinned: { paddingTop: 52, paddingHorizontal: 16, paddingBottom: 2 },
+  // Rides the scrolling content, hence no top margin — the hosted screen's
+  // contentEmbedded padding is the only gap above it.
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    marginHorizontal: 16,
-    marginTop: 52,
+    marginBottom: 4,
     paddingHorizontal: 14,
     paddingVertical: 9,
     borderRadius: 10,

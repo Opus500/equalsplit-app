@@ -25,6 +25,7 @@ import {
   chartValueMs,
   clampRepeatLockout,
   dropInterval,
+  mergeCrossing,
   suspectIntervals,
   targetStatus,
   type RepSet,
@@ -42,7 +43,7 @@ const fmt = (ms: number, dec = 2) => (Math.max(0, ms) / 1000).toFixed(dec);
 const lockoutKey = (key: string) => `repeat_lockout_${key}`;
 
 /** @param selectedKey see DrillsScreen — same contract, same resolveKey fallback. */
-export default function RepeatsScreen({ selectedKey }: { selectedKey?: string } = {}) {
+export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: string; header?: React.ReactNode } = {}) {
   const gate = useGate();
   const v2 = useV2();
   const roster = useRoster();
@@ -165,9 +166,15 @@ export default function RepeatsScreen({ selectedKey }: { selectedKey?: string } 
       style={styles.container}
       contentContainerStyle={[styles.content, selectedKey != null && styles.contentEmbedded]}
     >
-      <View style={styles.setRow}>
-        <SetControl />
-      </View>
+      {/* Hosted: the SetControl is PINNED by DrillsTab above the scroll, and
+          `header` (the drill dropdown) scrolls with the content. Standalone: the
+          screen keeps its own inline SetControl exactly as before. */}
+      {selectedKey == null ? (
+        <View style={styles.setRow}>
+          <SetControl />
+        </View>
+      ) : null}
+      {header}
 
       <UpNextStrip />
 
@@ -205,11 +212,14 @@ export default function RepeatsScreen({ selectedKey }: { selectedKey?: string } 
         </Text>
       </Pressable>
 
-      {/* Planned count. Optional: 0 means no target and no flagging. */}
+      {/* Planned count — CONTINUOUS only. A rest set has no fixed shape worth
+          counting against: each rep is started by hand, so an extra crossing
+          closes a rep early rather than adding a boundary, and the fix is to
+          delete that split, not to reconcile against a target. */}
+      {base.variant === 'continuous' ? (
+      <>
       <View style={styles.lockRow}>
-        <Text style={styles.lockLabel}>
-          {base.variant === 'continuous' ? 'Laps' : 'Reps'}
-        </Text>
+        <Text style={styles.lockLabel}>Laps</Text>
         <Pressable
           onPress={() => !live && setTargetLaps((n) => Math.max(0, n - 1))}
           disabled={live}
@@ -231,6 +241,8 @@ export default function RepeatsScreen({ selectedKey }: { selectedKey?: string } 
           ? `Target only — the set will not stop itself at ${targetLaps}. Extra crossings get flagged for review.`
           : 'Optional. Set one to see live progress and have extra crossings flagged.'}
       </Text>
+      </>
+      ) : null}
 
       {/* Lockout, tunable live and persisted — locked during a set. */}
       <View style={styles.lockRow}>
@@ -267,11 +279,11 @@ export default function RepeatsScreen({ selectedKey }: { selectedKey?: string } 
                 : 'RUNNING'}
           </Text>
           <Text style={styles.liveCount}>
-            {targetLaps
-              ? `${base.variant === 'continuous' ? 'Lap' : 'Rep'} ${Math.min(liveIntervals.length + 1, targetLaps)} of ${targetLaps}`
-              : `${liveIntervals.length} interval${liveIntervals.length === 1 ? '' : 's'}`}
+            {targetLaps && base.variant === 'continuous'
+              ? `Lap ${Math.min(liveIntervals.length + 1, targetLaps)} of ${targetLaps}`
+              : `${liveIntervals.length} ${base.variant === 'continuous' ? 'lap' : 'rep'}${liveIntervals.length === 1 ? '' : 's'}`}
           </Text>
-          {targetLaps && liveIntervals.length > targetLaps ? (
+          {targetLaps && base.variant === 'continuous' && liveIntervals.length > targetLaps ? (
             <Text style={styles.liveOver}>
               {liveIntervals.length - targetLaps} past the target — still running, sort it at the end
             </Text>
@@ -364,6 +376,14 @@ export default function RepeatsScreen({ selectedKey }: { selectedKey?: string } 
             return null;
           })()}
 
+          {shown.variant === 'continuous' ? (
+            <Text style={styles.repairHint}>
+              Join removes a stray crossing and merges the split into its neighbour — the total
+              never changes, only where the laps divide. “End here” is the exception: it discards
+              the final split, ending the set at the previous crossing.
+            </Text>
+          ) : null}
+
           {shown.intervals.map((it, i) => (
             <View
               key={`${it.closeUs}-${i}`}
@@ -372,13 +392,56 @@ export default function RepeatsScreen({ selectedKey }: { selectedKey?: string } 
               <Text style={styles.ivIndex}>{i + 1}</Text>
               <Text style={styles.ivTime}>{fmt(it.ms)}s</Text>
               {suspects.includes(i) ? <Text style={styles.ivSuspect}>SHORT</Text> : null}
-              <Pressable
-                onPress={() => setReview(dropInterval(shown, i))}
-                hitSlop={8}
-                style={({ pressed }) => [styles.ivDrop, pressed && styles.dim]}
-              >
-                <Text style={styles.ivDropText}>Drop</Text>
-              </Pressable>
+
+              {shown.variant === 'continuous' ? (
+                <>
+                  {/* Remove the BOUNDARY, not the time. Direction matters and
+                      cannot be inferred: a short split sits between one real
+                      crossing and one spurious one, and which is which depends on
+                      whether they drifted back after finishing (merge down) or
+                      before (merge up). The total is unchanged either way. */}
+                  <Pressable
+                    onPress={() => setReview(mergeCrossing(shown, i - 1))}
+                    disabled={i === 0}
+                    hitSlop={6}
+                    accessibilityLabel={`Merge split ${i + 1} into the one above`}
+                    style={({ pressed }) => [styles.ivMerge, (i === 0 || pressed) && styles.dim]}
+                  >
+                    <Text style={styles.ivMergeText}>⌃ join</Text>
+                  </Pressable>
+                  {i === shown.intervals.length - 1 ? (
+                    // The final boundary is the only one whose removal SHOULD
+                    // shorten the set: time after the real finish isn't part of it.
+                    <Pressable
+                      onPress={() => setReview(dropInterval(shown, i))}
+                      hitSlop={6}
+                      accessibilityLabel="Discard the final split, ending the set earlier"
+                      style={({ pressed }) => [styles.ivDrop, pressed && styles.dim]}
+                    >
+                      <Text style={styles.ivDropText}>end here</Text>
+                    </Pressable>
+                  ) : (
+                    <Pressable
+                      onPress={() => setReview(mergeCrossing(shown, i))}
+                      hitSlop={6}
+                      accessibilityLabel={`Merge split ${i + 1} into the one below`}
+                      style={({ pressed }) => [styles.ivMerge, pressed && styles.dim]}
+                    >
+                      <Text style={styles.ivMergeText}>⌄ join</Text>
+                    </Pressable>
+                  )}
+                </>
+              ) : (
+                // REST splits are independent — a junk crossing closed a rep
+                // early, so there is no elapsed time to preserve. Delete.
+                <Pressable
+                  onPress={() => setReview(dropInterval(shown, i))}
+                  hitSlop={8}
+                  style={({ pressed }) => [styles.ivDrop, pressed && styles.dim]}
+                >
+                  <Text style={styles.ivDropText}>Drop</Text>
+                </Pressable>
+              )}
             </View>
           ))}
 
@@ -516,6 +579,7 @@ const styles = StyleSheet.create({
   },
   reviewTitle: { color: '#cbd5e1', fontSize: 14, fontWeight: '700' },
   reviewNum: { color: '#fff', fontWeight: '800' },
+  repairHint: { color: '#64748b', fontSize: 11, lineHeight: 16, marginBottom: 6 },
   reviewSub: { color: '#64748b', fontSize: 11, marginTop: 3, marginBottom: 8 },
   ivRow: {
     flexDirection: 'row',
@@ -527,6 +591,14 @@ const styles = StyleSheet.create({
   },
   ivIndex: { color: '#475569', fontSize: 12, fontWeight: '800', width: 18 },
   ivTime: { color: '#e2e8f0', fontSize: 16, fontWeight: '700', flex: 1, fontVariant: ['tabular-nums'] },
+  ivMerge: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#243042',
+  },
+  ivMergeText: { color: '#93c5fd', fontSize: 11, fontWeight: '800' },
   ivDrop: {
     paddingHorizontal: 10,
     paddingVertical: 6,
