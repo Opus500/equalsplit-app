@@ -28,6 +28,7 @@ import { formatTags } from '../runs/format';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
 import { DiscardBar } from '../components/DiscardBar';
+import { resolveKey } from '../ble/catalog';
 import { useRoster } from '../roster/RosterProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
@@ -39,7 +40,17 @@ const fmt = (ms: number, dec: number) => (Math.max(0, ms) / 1000).toFixed(dec);
 const secs = (ms: number) => (ms / 1000).toFixed(ms % 1000 === 0 ? 0 : 1);
 const lockoutKey = (drillKey: string) => `drill_lockout_${drillKey}_ms`;
 
-export default function DrillsScreen() {
+/**
+ * @param selectedKey Optional. When the host (DrillsTab) owns drill selection,
+ *   it passes the key and this screen hides its own picker and tightens its top
+ *   padding to sit under the host's header. ABSENT = unchanged behaviour: own
+ *   state, own picker, own full-screen padding. resolveKey() is the fallback,
+ *   verified exhaustively by scripts/verify-catalog.mjs block 1.
+ *
+ * Nothing below the picker knows this prop exists — arming, cancel, lockout
+ * persistence, the save effect and the result view are untouched.
+ */
+export default function DrillsScreen({ selectedKey }: { selectedKey?: string } = {}) {
   const v2 = useV2();
   const gate = useGate();
 
@@ -49,7 +60,10 @@ export default function DrillsScreen() {
     return v2.release;
   }, [v2.retain, v2.release]);
 
-  const [drillKey, setDrillKey] = useState<string>(DRILLS[0].key);
+  // Own state is the fallback, never removed — with no selectedKey this is
+  // exactly the previous behaviour.
+  const [ownKey, setOwnKey] = useState<string>(DRILLS[0].key);
+  const drillKey = resolveKey(selectedKey, ownKey);
   const base = useMemo(() => DRILLS.find((d) => d.key === drillKey) ?? DRILLS[0], [drillKey]);
   const [lockoutMs, setLockoutMs] = useState<number>(base.lockoutMs);
   const config: DrillConfig = useMemo(() => ({ ...base, lockoutMs }), [base, lockoutMs]);
@@ -196,7 +210,7 @@ export default function DrillsScreen() {
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[styles.content, selectedKey != null && styles.contentEmbedded]}
       keyboardShouldPersistTaps="handled"
     >
       <ConnChip />
@@ -211,12 +225,14 @@ export default function DrillsScreen() {
       {/* Stays until the next rep is armed. Discard deletes; Keep settles it. */}
       <DiscardBar />
 
-      {/* Drill picker */}
+      {/* Drill picker — hidden when the host owns selection, or the same drill
+          would be listed twice on one screen. */}
+      {selectedKey == null ? (
       <View style={styles.pickRow}>
         {DRILLS.map((d) => (
           <Pressable
             key={d.key}
-            onPress={() => setDrillKey(d.key)}
+            onPress={() => setOwnKey(d.key)}
             disabled={!idle}
             style={({ pressed }) => [
               styles.pick,
@@ -230,6 +246,7 @@ export default function DrillsScreen() {
           </Pressable>
         ))}
       </View>
+      ) : null}
       <Text style={styles.setup}>{setupLine(base)}</Text>
 
       {/* Live lockout tuning */}
@@ -441,6 +458,8 @@ function Btn({
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116' },
   content: { paddingTop: 56, paddingHorizontal: 16, paddingBottom: 24 },
+  /** Hosted under DrillsTab's header, which already clears the status bar. */
+  contentEmbedded: { paddingTop: 6 },
   chipRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
   dot: { width: 10, height: 10, borderRadius: 5 },
   dotOn: { backgroundColor: '#22c55e' },

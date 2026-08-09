@@ -30,6 +30,7 @@ import {
   type RepSet,
   type RepeatConfig,
 } from '../ble/repeats';
+import { resolveKey } from '../ble/catalog';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
@@ -40,12 +41,14 @@ const KEEP_AWAKE_TAG = 'equalsplit-repeat';
 const fmt = (ms: number, dec = 2) => (Math.max(0, ms) / 1000).toFixed(dec);
 const lockoutKey = (key: string) => `repeat_lockout_${key}`;
 
-export default function RepeatsScreen() {
+/** @param selectedKey see DrillsScreen — same contract, same resolveKey fallback. */
+export default function RepeatsScreen({ selectedKey }: { selectedKey?: string } = {}) {
   const gate = useGate();
   const v2 = useV2();
   const roster = useRoster();
 
-  const [variantKey, setVariantKey] = useState<string>(REPEATS[0].key);
+  const [ownKey, setOwnKey] = useState<string>(REPEATS[0].key);
+  const variantKey = resolveKey(selectedKey, ownKey);
   const base = useMemo(() => REPEATS.find((r) => r.key === variantKey) ?? REPEATS[0], [variantKey]);
   const [lockoutMs, setLockoutMs] = useState<number>(base.lockoutMs);
   const config: RepeatConfig = useMemo(() => ({ ...base, lockoutMs }), [base, lockoutMs]);
@@ -158,20 +161,25 @@ export default function RepeatsScreen() {
   const suspects = useMemo(() => (shown ? suspectIntervals(shown) : []), [shown]);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={[styles.content, selectedKey != null && styles.contentEmbedded]}
+    >
       <View style={styles.setRow}>
         <SetControl />
       </View>
 
       <UpNextStrip />
 
-      {/* Variant picker — locked while a set is live, because switching mid-set
-          would make the intervals already collected mean something else. */}
+      {/* Variant picker — hidden when the host owns selection. Locked while a set
+          is live either way, because switching mid-set would make the intervals
+          already collected mean something else. */}
+      {selectedKey == null ? (
       <View style={styles.pickRow}>
         {REPEATS.map((r) => (
           <Pressable
             key={r.key}
-            onPress={() => !live && setVariantKey(r.key)}
+            onPress={() => !live && setOwnKey(r.key)}
             disabled={live}
             style={({ pressed }) => [
               styles.pick,
@@ -183,6 +191,7 @@ export default function RepeatsScreen() {
           </Pressable>
         ))}
       </View>
+      ) : null}
 
       <Text style={styles.explain}>
         {base.variant === 'continuous'
@@ -411,6 +420,7 @@ export default function RepeatsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116' },
   content: { paddingTop: 56, paddingHorizontal: 16, paddingBottom: 40 },
+  contentEmbedded: { paddingTop: 6 },
   setRow: { marginBottom: 6 },
   pickRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
   pick: {
