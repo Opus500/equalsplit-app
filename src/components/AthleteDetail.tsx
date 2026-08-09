@@ -4,8 +4,9 @@
 // is now a button in here, because "who is this athlete" is a more useful answer to
 // a tap on a name than "rename this athlete".
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   type LayoutChangeEvent,
   Modal,
   type NativeScrollEvent,
@@ -17,8 +18,9 @@ import {
   View,
 } from 'react-native';
 
-import { getAthleteRuns, type Athlete, type AthleteRunRow } from '../db/database';
+import { deleteRun, getAthleteRuns, type Athlete, type AthleteRunRow } from '../db/database';
 import { runCountLabel } from '../roster/labels';
+import { useRoster } from '../roster/RosterProvider';
 import {
   MIN_SERIES_RUNS,
   buildProgression,
@@ -45,6 +47,9 @@ export function AthleteDetailModal({
   children?: React.ReactNode;
 }) {
   const [rows, setRows] = useState<AthleteRunRow[] | null>(null);
+  // Deleting a run changes the athlete's run_count, which the roster row and every
+  // picker render — refresh the provider so they don't go stale behind this sheet.
+  const roster = useRoster();
 
   useEffect(() => {
     if (!visible || !athlete) {
@@ -82,6 +87,53 @@ export function AthleteDetailModal({
 
   const graphable = prog?.series.filter((s) => s.graphable) ?? [];
   const thin = prog?.series.filter((s) => !s.graphable) ?? [];
+
+  /**
+   * Delete a run from the chart. A REAL delete through the same deleteRun() path
+   * History uses — not a chart-level exclusion — so the two can never disagree
+   * about which runs exist.
+   *
+   * For junk data (a false start, someone walking through the beam), not a bad
+   * rep. The confirm names the time and date so it can't take the wrong point.
+   *
+   * Deliberately does NOT touch the queue: revertAdvance() is for discarding the
+   * run that just happened, and un-advancing a cursor because of something deleted
+   * from last week's history would be nonsense.
+   */
+  const confirmDeleteRun = useCallback(
+    (runId: string) => {
+      const row = rows?.find((r) => r.id === runId);
+      if (!row) return;
+      const when = new Date(row.created_at).toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+      });
+      Alert.alert(
+        'Delete this run?',
+        `${(row.total_ms / 1000).toFixed(2)}s · ${row.drill_name ?? 'no drill'} · ${when}\n\n` +
+          'Deleted everywhere, including History. This cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete run',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await deleteRun(runId);
+                setRows((prev) => prev?.filter((r) => r.id !== runId) ?? null);
+                // Run counts on the roster row change too.
+                await roster.refresh();
+              } catch (e) {
+                Alert.alert('Delete failed', String(e));
+              }
+            },
+          },
+        ],
+      );
+    },
+    [rows, roster],
+  );
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
@@ -121,7 +173,7 @@ export function AthleteDetailModal({
             </View>
           ) : (
             <>
-              <ChartPager series={graphable} />
+              <ChartPager series={graphable} onDeleteRun={confirmDeleteRun} />
 
               {/* Series that exist but can't be drawn yet. Listed rather than hidden:
                   "two more runs and this becomes a chart" is actionable; a blank
@@ -197,7 +249,13 @@ export function AthleteDetailModal({
  * The dots are the only signal that more charts exist, so they are also the
  * shortcut to reach them: tappable, with hitSlop, since a 7px dot is not a target.
  */
-function ChartPager({ series }: { series: Series[] }) {
+function ChartPager({
+  series,
+  onDeleteRun,
+}: {
+  series: Series[];
+  onDeleteRun?: (runId: string) => void;
+}) {
   const [pageW, setPageW] = useState(0);
   const [page, setPage] = useState(0);
   const ref = useRef<ScrollView>(null);
@@ -220,7 +278,8 @@ function ChartPager({ series }: { series: Series[] }) {
   };
 
   if (!series.length) return null;
-  if (series.length === 1) return <ProgressionChart series={series[0]!} />;
+  if (series.length === 1)
+    return <ProgressionChart series={series[0]!} onDeleteRun={onDeleteRun} />;
 
   return (
     <View onLayout={onLayout}>
@@ -236,7 +295,7 @@ function ChartPager({ series }: { series: Series[] }) {
           >
             {series.map((s) => (
               <View key={s.drillId} style={{ width: pageW }}>
-                <ProgressionChart series={s} />
+                <ProgressionChart series={s} onDeleteRun={onDeleteRun} />
               </View>
             ))}
           </ScrollView>

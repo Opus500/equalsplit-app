@@ -8,7 +8,7 @@
 // All the geometry lives in ../roster/progression (pure, verified by
 // scripts/verify-progression.mjs) — this file only turns fractions into pixels.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { type LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
@@ -34,9 +34,22 @@ const MIN_TOUCH_W = 16;
 const shortDate = (ms: number) =>
   new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
 
-export function ProgressionChart({ series }: { series: Series }) {
+export function ProgressionChart({
+  series,
+  onDeleteRun,
+}: {
+  series: Series;
+  /** Omit to hide the delete affordance. The caller owns the confirm + the delete. */
+  onDeleteRun?: (runId: string) => void;
+}) {
   const [width, setWidth] = useState(0);
   const [sel, setSel] = useState<number | null>(null);
+
+  // A delete (or any reload) reshapes the series under us, so an index-based
+  // selection would silently point at a DIFFERENT run — the same class of bug the
+  // queue cursor avoids by keying on id. Cheapest correct fix: drop the selection
+  // whenever the series changes shape.
+  useEffect(() => setSel(null), [series.drillId, series.points.length]);
 
   const bounds = useMemo(() => yBounds(series), [series]);
   const ticks = useMemo(() => yTicks(bounds.min, bounds.max, 4), [bounds]);
@@ -202,11 +215,27 @@ export function ProgressionChart({ series }: { series: Series }) {
       {/* Fixed-height readout so selecting a point never reflows the list under it. */}
       <View style={styles.readout}>
         {shown ? (
-          <Text style={styles.readoutText} numberOfLines={1}>
-            <Text style={styles.readoutStrong}>Run {(sel ?? 0) + 1}</Text> · {formatMs(shown.elapsedMs)}s ·{' '}
-            {shortDate(shown.createdAt)}
-            {shown.isBest ? <Text style={styles.pbTag}>  ★ PB</Text> : null}
-          </Text>
+          <>
+            <Text style={styles.readoutText} numberOfLines={1}>
+              <Text style={styles.readoutStrong}>Run {(sel ?? 0) + 1}</Text> ·{' '}
+              {formatMs(shown.elapsedMs)}s · {shortDate(shown.createdAt)}
+              {shown.isBest ? <Text style={styles.pbTag}>  ★ PB</Text> : null}
+            </Text>
+            {/* For junk data — a false start, someone walking through the beam.
+                A real delete through the same path History uses, so the two can
+                never disagree about which runs exist. */}
+            {onDeleteRun ? (
+              <Pressable
+                onPress={() => onDeleteRun(shown.runId)}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Delete run ${(sel ?? 0) + 1}, ${formatMs(shown.elapsedMs)} seconds`}
+                style={({ pressed }) => [styles.delBtn, pressed && styles.delBtnPressed]}
+              >
+                <Text style={styles.delText}>Delete</Text>
+              </Pressable>
+            ) : null}
+          </>
         ) : (
           <Text style={styles.readoutHint} numberOfLines={1}>
             Tap a point for the run · ★ marks the best
@@ -279,8 +308,25 @@ const styles = StyleSheet.create({
   dotSel: { borderColor: '#fff' },
   xAxis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6, paddingRight: PAD_R },
   xLabel: { color: '#475569', fontSize: 10 },
-  readout: { minHeight: 34, justifyContent: 'center', marginTop: 8 },
-  readoutText: { color: '#cbd5e1', fontSize: 13 },
+  readout: {
+    minHeight: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginTop: 8,
+  },
+  readoutText: { color: '#cbd5e1', fontSize: 13, flex: 1 },
+  delBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#7f1d1d',
+    backgroundColor: '#1a1214',
+  },
+  delBtnPressed: { opacity: 0.6 },
+  delText: { color: '#f87171', fontSize: 12, fontWeight: '800' },
   readoutStrong: { color: '#fff', fontWeight: '800' },
   readoutHint: { color: '#475569', fontSize: 12 },
   pbTag: { color: '#fbbf24', fontWeight: '800' },
