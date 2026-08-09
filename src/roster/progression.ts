@@ -9,9 +9,16 @@
 // comparable, so putting them on one y-axis would draw a "trend" that is really just
 // the athlete alternating between two distances.
 
-/** Fewest runs in one drill before a graph is drawn. Two points make a line but not
- *  a trend — the segment between them reads as a direction the data doesn't support. */
-export const MIN_SERIES_RUNS = 3;
+/**
+ * Fewest runs in one drill before a graph is drawn.
+ *
+ * Set to 2 by the coach's call. Worth knowing what that buys: a two-point chart is
+ * a single straight segment, and a straight line reads as a *trend* even though two
+ * samples cannot establish one — one bad rep looks like a decline. The upside is
+ * that far more of a thin season is visible at all, which on real data (43 of 422
+ * runs chartable) matters more.
+ */
+export const MIN_SERIES_RUNS = 2;
 
 /** Floor on the y-axis span. Without it, an athlete whose times sit within 0.03s
  *  gets a chart that magnifies noise into a dramatic collapse. */

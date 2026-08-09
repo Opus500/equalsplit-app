@@ -111,19 +111,32 @@ console.log('\n4. unusable elapsed values are rejected, not charted as zero');
 
 console.log(`\n5. below ${MIN_SERIES_RUNS} runs: no graph, but the numbers still stand`);
 {
-  const p = buildProgression([run('d30', '30m', 4200, 0), run('d30', '30m', 4100, 1)]);
-  check('not graphable', p.series[0].graphable, false);
-  check('nothing anywhere is graphable', p.hasGraphable, false);
-  check('best is still correct', p.series[0].bestMs, 4100);
-  check('delta is still correct', p.series[0].deltaMs, -100);
+  // Derived from MIN_SERIES_RUNS, not hard-coded: the threshold is a product
+  // decision that has already moved once (3 -> 2), and a test that restates the
+  // number rather than reading it starts asserting the old policy the day it changes.
+  const seriesOf = (count) =>
+    buildProgression(
+      Array.from({ length: count }, (_, i) => run('d30', '30m', 4200 - i * 100, i)),
+    );
 
-  const p3 = buildProgression([
-    run('d30', '30m', 4200, 0),
-    run('d30', '30m', 4100, 1),
-    run('d30', '30m', 4000, 2),
-  ]);
-  check(`exactly ${MIN_SERIES_RUNS} runs IS graphable`, p3.series[0].graphable, true);
-  check('and the screen knows it has something to draw', p3.hasGraphable, true);
+  if (MIN_SERIES_RUNS > 1) {
+    const under = seriesOf(MIN_SERIES_RUNS - 1);
+    check(`${MIN_SERIES_RUNS - 1} run(s): not graphable`, under.series[0].graphable, false);
+    check('nothing anywhere is graphable', under.hasGraphable, false);
+    check('best is still correct', under.series[0].bestMs, 4200 - (MIN_SERIES_RUNS - 2) * 100);
+  }
+
+  const at = seriesOf(MIN_SERIES_RUNS);
+  check(`exactly ${MIN_SERIES_RUNS} runs IS graphable`, at.series[0].graphable, true);
+  check('and the screen knows it has something to draw', at.hasGraphable, true);
+
+  const over = seriesOf(MIN_SERIES_RUNS + 3);
+  check('comfortably above the threshold too', over.series[0].graphable, true);
+
+  // Stats are computed regardless of whether a chart is drawn.
+  const two = buildProgression([run('d30', '30m', 4200, 0), run('d30', '30m', 4100, 1)]);
+  check('best of a two-run series', two.series[0].bestMs, 4100);
+  check('delta of a two-run series', two.series[0].deltaMs, -100);
 }
 
 console.log('\n6. personal best = fastest, and a MATCHED best is still a best');

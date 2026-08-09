@@ -205,7 +205,7 @@ export function AthleteDetailModal({
                   <Text style={styles.emptyTitle}>Nothing to chart yet</Text>
                   <Text style={styles.emptyBody}>
                     {prog && prog.unlabeledRuns > 0
-                      ? `All ${prog.unlabeledRuns} of this athlete's runs were saved without a drill. Progress is tracked per drill, so a 30m and a 40yd never share an axis — set a drill on the timer and new runs will chart.`
+                      ? `All ${prog.unlabeledRuns} of this athlete's runs were saved without a drill.`
                       : 'No runs with a drill label yet.'}
                   </Text>
                 </View>
