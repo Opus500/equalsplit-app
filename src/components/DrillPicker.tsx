@@ -371,8 +371,11 @@ function RenameDrillPrompt({
               Every run keeps this label and stays in the graphs — the record is the same, only
               its name changes.
             </Text>
+            {/* NOT styles.addInput: that carries flex:1 for the picker's ROW, and
+                in this column card flex:1 means flexBasis:0 on the HEIGHT, which
+                collapsed the field to its padding — an invisible text box. */}
             <TextInput
-              style={styles.addInput}
+              style={styles.renameInput}
               value={name}
               onChangeText={setName}
               autoCapitalize="none"
@@ -552,6 +555,17 @@ const styles = StyleSheet.create({
   miniDanger: { color: '#f87171', fontSize: 12, fontWeight: '700' },
   locked: { color: '#475569', fontSize: 10, fontStyle: 'italic', maxWidth: 92, textAlign: 'right' },
   renameHint: { color: '#64748b', fontSize: 12, lineHeight: 17, marginBottom: 10 },
+  renameInput: {
+    minHeight: 44,
+    backgroundColor: '#0b0e13',
+    color: '#fff',
+    fontSize: 16,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: '#243042',
+  },
   renameActions: { flexDirection: 'row', gap: 10 },
   dim: { opacity: 0.45 },
 });
