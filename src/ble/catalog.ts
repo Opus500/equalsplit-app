@@ -26,7 +26,7 @@ const BLURBS: Record<string, string> = {
   'l-drill': 'Two gates · start on gate 1, finish on gate 2',
   shuttle: 'One gate · two crossings',
   'repeat-continuous': 'One gate · laps, gate-timed both ends',
-  'repeat-rest': 'One gate · tap to start each rep, rest untimed',
+  'repeat-rest': 'One gate · tap each rep, saved as its own run',
 };
 
 /** Counted drills first, then rep sets — oldest and most-used at the top. */

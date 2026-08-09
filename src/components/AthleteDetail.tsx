@@ -19,7 +19,13 @@ import {
 } from 'react-native';
 
 import { deleteRun, getAthleteRuns, type Athlete, type AthleteRunRow } from '../db/database';
-import { REPEAT_MODE, parseRepSetJson, savedChartValueMs } from '../ble/repeats';
+import {
+  HAND_START_ERROR_MS,
+  REPEAT_MODE,
+  parseRepSetJson,
+  runStartSource,
+  savedChartValueMs,
+} from '../ble/repeats';
 import { runCountLabel } from '../roster/labels';
 import { useRoster } from '../roster/RosterProvider';
 import {
@@ -91,10 +97,15 @@ export function AthleteDetailModal({
             drillName: r.drill_name,
             elapsedMs,
             createdAt: r.created_at,
-            // Splits stay reachable in the readout without touching the axis.
-            note: rep?.intervals.length
-              ? `${rep.intervals.length} × ${rep.intervals.map((ms) => (ms / 1000).toFixed(2)).join(' / ')}${rep.exact ? '' : '  · hand-started'}`
-              : null,
+            // Splits stay reachable in the readout without touching the axis;
+            // and a hand-started run says so, because the accuracy fact lives
+            // on the row (runStartSource) rather than only in the UI.
+            note:
+              rep?.intervals.length
+                ? `${rep.intervals.length} × ${rep.intervals.map((ms) => (ms / 1000).toFixed(2)).join(' / ')}`
+                : runStartSource(r.raw_json) === 'tap'
+                  ? `hand-started · ±${HAND_START_ERROR_MS}ms`
+                  : null,
           };
         }),
       ),

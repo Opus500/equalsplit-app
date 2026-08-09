@@ -16,11 +16,14 @@ const {
   REPEAT_MODE,
   REPEAT_REST,
   RepeatEngine,
+  RestRepEngine,
   chartValueMs,
   clampRepeatLockout,
   dropInterval,
   mergeCrossing,
   parseRepSetJson,
+  restRepRawJson,
+  runStartSource,
   savedChartValueMs,
   suspectIntervals,
   summarize,
@@ -74,12 +77,7 @@ console.log('\n2. CONTINUOUS: a 1200m is three laps from four crossings');
   check('lap times', set.intervals.map((i) => i.ms), [62_000, 64_500, 66_600]);
   check('total is the 1200m time', set.totalMs, 193_100);
   check('mean lap', set.meanMs, 64_367);
-  check('every interval is gate-timed at both ends', set.intervals.map((i) => i.startSource), [
-    'gate',
-    'gate',
-    'gate',
-  ]);
-  check('so the set is exact', set.exact, true);
+  console.log('       (every lap is gate-timed at BOTH ends — intra-clock, so exact)');
 }
 
 console.log('\n3. CONTINUOUS: end() discards the interval still open');
@@ -136,46 +134,9 @@ console.log('\n6. CONTINUOUS is wrap-safe across the uint32 micros rollover');
   check('lap time is correct across the wrap', set.intervals[0].ms, 62_000);
 }
 
-console.log('\n7. REST: rest sits OUTSIDE every interval');
-{
-  const e = new RepeatEngine(REPEAT_REST);
-  e.arm(0);
-  check('waiting for the coach, not the gate', e.state, 'resting');
-  check('a crossing before the tap does nothing', e.ingest(brk(1_000_000), 1_000), null);
 
-  e.startRep(10_000); // tap
-  e.ingest(brk(74_000_000), 74_000); // 64.0s rep
-  check('back to resting after the crossing', e.state, 'resting');
 
-  // 3 minutes of recovery — during which a stray crossing must not open anything.
-  check('a crossing during rest is ignored', e.ingest(brk(120_000_000), 120_000), null);
-
-  e.startRep(254_000); // tap for rep 2
-  e.ingest(brk(319_000_000), 319_000); // 65.0s
-  e.startRep(500_000);
-  e.ingest(brk(566_500_000), 566_500); // 66.5s
-
-  const set = e.end(600_000);
-  check('three reps', set.intervals.length, 3);
-  check('rep times exclude the rest', set.intervals.map((i) => i.ms), [64_000, 65_000, 66_500]);
-  check('every rep is tap-started', set.intervals.map((i) => i.startSource), ['tap', 'tap', 'tap']);
-  check('so the set is NOT exact', set.exact, false);
-  console.log(`       (each start carries ~${HAND_START_ERROR_MS}ms of reaction — the UI must say so)`);
-}
-
-console.log('\n8. REST: end() discards a rep that was started but never finished');
-{
-  const e = new RepeatEngine(REPEAT_REST);
-  e.arm(0);
-  e.startRep(1_000);
-  e.ingest(brk(65_000_000), 65_000);
-  e.startRep(200_000); // athlete pulls up, never crosses
-  const set = e.end(260_000);
-  check('only the finished rep is kept', set.intervals.length, 1);
-  check('and its time is right', set.intervals[0].ms, 64_000);
-}
-
-console.log('\n9. THE CHART RULE — the two variants do NOT share one');
+console.log('\n9. CONTINUOUS charts its TOTAL');
 {
   const cont = new RepeatEngine(REPEAT_CONTINUOUS);
   cont.arm(0);
@@ -184,28 +145,9 @@ console.log('\n9. THE CHART RULE — the two variants do NOT share one');
   cont.ingest(brk(126_500_000), 126_500);
   cont.ingest(brk(193_100_000), 193_100);
   const c = cont.end(200_000);
-  check('CONTINUOUS charts the TOTAL', chartValueMs(c), c.totalMs);
+  check('total, not mean', chartValueMs(c), c.totalMs);
   check('which is the real 1200m time', chartValueMs(c), 193_100);
-
-  const rest = new RepeatEngine(REPEAT_REST);
-  rest.arm(0);
-  rest.startRep(0);
-  rest.ingest(brk(64_000_000), 64_000);
-  rest.startRep(300_000);
-  rest.ingest(brk(365_000_000), 365_000);
-  rest.startRep(600_000);
-  rest.ingest(brk(666_500_000), 666_500);
-  const r = rest.end(700_000);
-  check('REST charts the MEAN', chartValueMs(r), r.meanMs);
-  check('the per-rep number a coach says out loud', chartValueMs(r), 65_167);
-  truthy('and NOT the total, which nobody ran', chartValueMs(r) !== r.totalMs);
-
-  // Why the mean, spelled out: a hand-tapped start biases every rep, so a SUM
-  // accumulates that error once per rep while the mean does not.
-  const reps = r.intervals.length;
-  console.log(
-    `       (sum would carry ~${HAND_START_ERROR_MS * reps}ms of tap bias across ${reps} reps; the mean ~${HAND_START_ERROR_MS}ms)`,
-  );
+  console.log('       (one start, and it is a gate edge, so no error accumulates)');
 }
 
 console.log('\n10. CONTINUOUS: repairing a walk-back removes a BOUNDARY, not time');
@@ -292,27 +234,6 @@ console.log('\n10d. an interior DELETE is refused for CONTINUOUS');
   console.log('       (enforced here, not remembered at the call site)');
 }
 
-console.log('\n10e. REST is NOT chained — delete is correct and merge is refused');
-{
-  const e = new RepeatEngine(REPEAT_REST);
-  e.arm(0);
-  e.startRep(0);
-  e.ingest(brk(64_000_000), 64_000); // 64.0
-  e.startRep(200_000);
-  e.ingest(brk(203_000_000), 203_000); // 3.0 — junk crossing closed the rep early
-  e.startRep(400_000);
-  e.ingest(brk(465_000_000), 465_000); // 65.0
-  const set = e.end(500_000);
-  check('three splits', set.intervals.map((i) => i.ms), [64_000, 3_000, 65_000]);
-
-  const fixed = dropInterval(set, 1);
-  check('the junk split is genuinely deleted', fixed.intervals.map((i) => i.ms), [64_000, 65_000]);
-  check('and the total drops, correctly', fixed.totalMs, 129_000);
-  console.log('       (rest sits between reps and is untimed, so there is no elapsed time to preserve)');
-
-  check('merging is refused for rest', mergeCrossing(set, 1), set);
-  check('dropping to empty is safe', dropInterval(dropInterval(fixed, 1), 0).meanMs, 0);
-}
 
 console.log('\n11. frames that must not drive the engine');
 {
@@ -349,12 +270,14 @@ console.log('\n12. degenerate sets and config guards');
   e2.setConfig(REPEAT_REST);
   check('and can once idle', e2.config.variant, 'rest');
 
-  check('startRep is inert in CONTINUOUS', (() => {
-    const c = new RepeatEngine(REPEAT_CONTINUOUS);
-    c.arm(0);
-    c.startRep(1_000);
-    return c.state;
-  })(), 'armed');
+  // A rest engine has no set to configure mid-flight either.
+  const r = new RestRepEngine(REPEAT_REST);
+  r.arm(0);
+  r.setConfig(cfg(REPEAT_REST, { lockoutMs: 9_000 }));
+  check('rest config cannot change while a rep is armed', r.config.lockoutMs, 1000);
+  r.reset();
+  r.setConfig(cfg(REPEAT_REST, { lockoutMs: 9_000 }));
+  check('and can once idle', r.config.lockoutMs, 9_000);
 
   check('lockout clamps to bounds', clampRepeatLockout('repeat-rest', 99_999), 60_000);
   check('and up to the floor', clampRepeatLockout('repeat-rest', 10), 500);
@@ -391,25 +314,11 @@ console.log('\n13. SAVED sets chart the same as live ones (storage round-trip)')
     chartValueMs(cont.set),
   );
 
-  const r = new RepeatEngine(REPEAT_REST);
-  r.arm(0);
-  r.startRep(0);
-  r.ingest(brk(64_000_000), 64_000);
-  r.startRep(300_000);
-  r.ingest(brk(365_000_000), 365_000);
-  r.startRep(600_000);
-  r.ingest(brk(666_500_000), 666_500);
-  const rest = mk(r);
-  check(
-    'REST round-trips to the same chart value',
-    savedChartValueMs(rest.raw, rest.set.totalMs),
-    chartValueMs(rest.set),
-  );
-  truthy('and it is still the mean, not the total', savedChartValueMs(rest.raw, rest.set.totalMs) !== rest.set.totalMs);
-
-  check('the intervals survive for the History expansion', parseRepSetJson(rest.raw).intervals, [
-    64_000, 65_000, 66_500,
-  ]);
+  // A LEGACY rest set (written before rest reps became ordinary runs) must still
+  // chart its mean — re-interpreting stored data would move points on an existing
+  // graph without anyone asking.
+  const legacy = '{"engine":"repeat","variant":"rest","intervals":[64000,65000,66500]}';
+  check('legacy rest set still charts its mean', savedChartValueMs(legacy, 195_500), 65_167);
 
   // A chart must never throw on one bad row.
   check('a non-rep run is not a rep set', savedChartValueMs('{"engine":"v2"}', 4200), null);
@@ -474,11 +383,10 @@ console.log('\n15. no target => behaves exactly as before, with no flagging');
 
 console.log('\n16. a SHORT set is reported but never blocked');
 {
-  const e = new RepeatEngine(REPEAT_REST);
+  const e = new RepeatEngine(REPEAT_CONTINUOUS);
   e.arm(0, 3);
-  e.startRep(0);
-  e.ingest(brk(64_000_000), 64_000);
-  e.startRep(300_000); // athlete pulls up after rep 2 is started
+  e.ingest(brk(0), 0);
+  e.ingest(brk(64_000_000), 64_000); // one lap, then they pull up
   const set = e.end(400_000);
   const st = targetStatus(set);
   check('one rep recorded', st.actual, 1);
@@ -520,13 +428,12 @@ console.log('\n17. SUSPECT hint points at the walk-back, without dropping it');
 
 console.log('\n18. FRAME ACCOUNTING makes a rejection visible instead of silent');
 {
-  // This block exists because a shipped bug was invisible: every rest crossing
-  // was swallowed and nothing anywhere said so. The pure tests all passed,
-  // because they fed one consistent clock — only the WIRING mixed two. So the
-  // engine now counts why a frame was dropped, and the count is on screen.
-  const e = new RepeatEngine(REPEAT_REST);
-  e.arm(0, null);
-  check('a fresh set starts with a clean tally', e.diag, {
+  // This block exists because a shipped bug was invisible: every rest crossing was
+  // swallowed and nothing said so. The pure tests all passed, because they fed one
+  // consistent clock — only the WIRING mixed two. So both engines now count why a
+  // frame was dropped, and the count is on screen.
+  const e = new RestRepEngine(REPEAT_REST);
+  check('a fresh engine starts with a clean tally', e.diag, {
     beam: 0,
     clears: 0,
     otherGate: 0,
@@ -540,25 +447,27 @@ console.log('\n18. FRAME ACCOUNTING makes a rejection visible instead of silent'
   // Nothing arriving vs arriving-and-rejected: the first counter separates them.
   e.ingest(clr(1_000_000), 1_000); // a clear
   e.ingest(brk(1_000_000, 2), 1_000); // the other gate
-  e.ingest(brk(2_000_000), 2_000); // right gate, but no tap yet
+  e.ingest(brk(2_000_000), 2_000); // right gate, but not armed
   check('beam frames were seen', e.diag.beam, 3);
   check('and each was attributed', [e.diag.clears, e.diag.otherGate, e.diag.notRunning], [1, 1, 1]);
-  check('none became an interval', e.diag.accepted, 0);
+  check('none became a rep', e.diag.accepted, 0);
 
-  e.startRep(10_000);
+  e.arm(10_000);
   check('the tap is counted as an open', e.diag.opened, 1);
   e.ingest(brk(10_500_000), 10_500); // inside the 1s lockout
   check('locked out', e.diag.lockedOut, 1);
   check('and the dt is reported', e.diag.lastRejectMs, 500);
 
-  e.ingest(brk(74_000_000), 74_000);
-  check('a good crossing is accepted', e.diag.accepted, 1);
+  e.arm(20_000);
+  const rep = e.ingest(brk(84_000_000), 84_000);
+  check('a good crossing closes the rep', e.diag.accepted, 1);
+  check('and its time is the tap-to-crossing span', rep.ms, 64_000);
+  check('the engine returns to idle — rest is never timed', e.state, 'idle');
 
-  // THE SHIPPED BUG, reproduced: a tap stamped on the wall clock against a frame
-  // stamped on the monotonic one. The engine cannot know, but it must SAY so.
-  const wrong = new RepeatEngine(REPEAT_REST);
-  wrong.arm(0);
-  wrong.startRep(Date.now()); // epoch ms — the mistake
+  // THE SHIPPED BUG, reproduced: a tap on the wall clock against a frame on the
+  // monotonic one. The engine cannot know, but it must SAY so.
+  const wrong = new RestRepEngine(REPEAT_REST);
+  wrong.arm(Date.now()); // epoch ms — the mistake
   wrong.ingest(brk(74_000_000), 74_000); // perfNow ms — what frames carry
   check('the crossing is rejected, as it was on device', wrong.diag.accepted, 0);
   check('by the lockout', wrong.diag.lockedOut, 1);
@@ -566,9 +475,38 @@ console.log('\n18. FRAME ACCOUNTING makes a rejection visible instead of silent'
     'and lastRejectMs is unmistakably a clock mismatch, not a long lockout',
     wrong.diag.lastRejectMs < -60_000,
   );
-  console.log(
-    `       (lastRejectMs ${wrong.diag.lastRejectMs}ms — no lockout is minutes long; that is two clocks)`,
-  );
+}
+
+console.log('\n19. REST: each rep is its OWN run, carrying its accuracy on the row');
+{
+  const e = new RestRepEngine(REPEAT_REST);
+
+  // Three 400s with recovery produce THREE reps, not one set. Nothing is
+  // accumulated between them: the engine holds no list at all.
+  const reps = [];
+  const taps = [0, 300_000, 700_000];
+  const crossings = [64_000, 365_000, 766_500];
+  taps.forEach((tap, i) => {
+    e.arm(tap);
+    reps.push(e.ingest(brk(crossings[i] * 1000), crossings[i]));
+  });
+  check('three separate reps', reps.map((r) => r.ms), [64_000, 65_000, 66_500]);
+  check('the engine accumulates nothing', Object.keys(e).includes('intervals'), false);
+
+  // Rest is the span between a crossing and the next tap, and is never measured.
+  check('idle between reps', e.state, 'idle');
+  check('a crossing during rest is ignored', e.ingest(brk(500_000_000), 500_000), null);
+
+  // The accuracy fact travels with the ROW, not just the UI.
+  const raw = restRepRawJson(reps[0]);
+  check('raw_json records the hand start', runStartSource(raw), 'tap');
+  check('and marks it inexact', JSON.parse(raw).exact, false);
+  check('and it is NOT a rep set', parseRepSetJson(raw), null);
+
+  // A pre-existing gate-timed run says nothing, and must not be claimed either way.
+  check('an ordinary run has no start source recorded', runStartSource('{"engine":"v2"}'), null);
+  check('nor does a null raw_json', runStartSource(null), null);
+  check('malformed json is not a claim', runStartSource('{not json'), null);
 }
 
 console.log('\n=============================');

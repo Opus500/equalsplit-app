@@ -1,15 +1,23 @@
-// Rep sets: single-gate interval timing (src/ble/repeats.ts).
+// Single-gate timing, two flows that share nothing but a gate and a lockout.
 //
 // A SIBLING of DrillsScreen, not a mode inside it. L Drill and Shuttle Run are
 // hardware-validated and share a save guard and a lockout persistence path; the
 // cheapest way to not break them was to not edit that file at all.
 //
-// Both gates stay paired and connected. The engine ignores every frame from the
-// gate it is not timing, so gate 2 being live costs nothing here.
+// Both gates stay paired and connected. The engines ignore every frame from the
+// gate they are not timing, so gate 2 being live costs nothing here.
 //
-// NOTHING is written until Save. The end-of-set list is the review step — and it
-// is also the discard affordance, which is why rep sets do not open the post-run
-// discard window: you already saw every interval before it was stored.
+//   CONTINUOUS  a set: laps accumulate, nothing is written until Save, and the
+//               review list repairs a spurious crossing by JOINING the split into
+//               its neighbour (the total never changes) rather than deleting time
+//               the athlete really spent running.
+//
+//   REST        each rep is its OWN run. Tap to arm, the crossing closes it, it
+//               saves immediately like any other run. No set, no mean, no review
+//               list, no lap count — those existed to make sense of a chain, and
+//               a rest rep is not one. The queue advances per rep and the DISCARD
+//               WINDOW applies per rep, which is strictly better than a review
+//               list: a bad rep is discardable on its own.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -22,57 +30,73 @@ import {
   REPEATS,
   REPEAT_LOCKOUT_BOUNDS,
   REPEAT_MODE,
-  chartValueMs,
   clampRepeatLockout,
   dropInterval,
   mergeCrossing,
+  restRepRawJson,
   suspectIntervals,
   targetStatus,
   type RepSet,
   type RepeatConfig,
 } from '../ble/repeats';
+import { DRILL_MODE } from '../ble/drills';
 import { resolveKey } from '../ble/catalog';
+import { DiscardBar } from '../components/DiscardBar';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
 import { getSetting, saveRun, setSetting, type Drill } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
+import { usePendingRun } from '../runs/PendingRunProvider';
 
 const KEEP_AWAKE_TAG = 'equalsplit-repeat';
 const fmt = (ms: number, dec = 2) => (Math.max(0, ms) / 1000).toFixed(dec);
 const lockoutKey = (key: string) => `repeat_lockout_${key}`;
 
 /** @param selectedKey see DrillsScreen — same contract, same resolveKey fallback. */
-export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: string; header?: React.ReactNode } = {}) {
+export default function RepeatsScreen({
+  selectedKey,
+  header,
+}: { selectedKey?: string; header?: React.ReactNode } = {}) {
   const gate = useGate();
   const v2 = useV2();
   const roster = useRoster();
+  const pending = usePendingRun();
 
   const [ownKey, setOwnKey] = useState<string>(REPEATS[0].key);
   const variantKey = resolveKey(selectedKey, ownKey);
   const base = useMemo(() => REPEATS.find((r) => r.key === variantKey) ?? REPEATS[0], [variantKey]);
   const [lockoutMs, setLockoutMs] = useState<number>(base.lockoutMs);
   const config: RepeatConfig = useMemo(() => ({ ...base, lockoutMs }), [base, lockoutMs]);
+  const isRest = base.variant === 'rest';
 
-  // Planned laps/reps. A TARGET, not a terminal condition — the set never
-  // auto-ends, because a junk crossing hitting the count early would stop timing
-  // and every lap run afterwards would be lost with no way to recover it.
-  // 0 = no target, and then nothing is flagged at all.
+  /** CONTINUOUS only. A TARGET, never a terminal condition. 0 = none. */
   const [targetLaps, setTargetLaps] = useState(0);
   const [drill, setDrill] = useState<Drill | null>(null);
   const [drillOpen, setDrillOpen] = useState(false);
-  // The finished set being reviewed. Local, so dropping an interval never
-  // reaches the provider (or the database) until Save.
+  /** CONTINUOUS only: the finished set under review. Local, so joining or ending
+   *  early never reaches the provider (or the database) until Save. */
   const [review, setReview] = useState<RepSet | null>(null);
   const [dbg, setDbg] = useState('');
   const [saving, setSaving] = useState(false);
   const reviewedRef = useRef<RepSet | null>(null);
+  const savedRepRef = useRef<unknown>(null);
 
-  const idle = v2.repeatState === 'idle';
-  const live = !idle;
+  const live = isRest ? v2.restState !== 'idle' : v2.repeatState !== 'idle';
   const connected = gate.status === 'connected';
 
-  // Load the tuned lockout for this variant (persisted, per variant key).
+  // Refs so the rest-rep save effect reads whoever/whatever was current when the
+  // crossing landed, without churning its dependencies.
+  const athleteRef = useRef(roster.currentAthlete);
+  athleteRef.current = roster.currentAthlete;
+  const drillRef = useRef(drill);
+  drillRef.current = drill;
+  const pendingRef = useRef(pending);
+  pendingRef.current = pending;
+  const rosterRef = useRef(roster);
+  rosterRef.current = roster;
+
+  // Persisted, tuned per variant.
   useEffect(() => {
     (async () => {
       try {
@@ -85,13 +109,51 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
     })();
   }, [base]);
 
-  // Hand a finished set to the local review state exactly once.
+  // CONTINUOUS: hand a finished set to local review exactly once.
   useEffect(() => {
     const set = v2.lastRepSet;
     if (!set || reviewedRef.current === set) return;
     reviewedRef.current = set;
     setReview(set);
     v2.clearLastRepSet();
+  }, [v2]);
+
+  // REST: a closed rep IS a run. Save it immediately, like every other timing
+  // screen — durability first, and the discard window is what un-does it.
+  useEffect(() => {
+    const rep = v2.lastRestRep;
+    if (!rep || savedRepRef.current === rep) return;
+    savedRepRef.current = rep;
+    v2.clearLastRestRep();
+    const who = athleteRef.current;
+    const dr = drillRef.current;
+    saveRun({
+      // DRILL_MODE, not a mode of its own: one time from an app-parameterized
+      // drill is a shape that already exists.
+      mode: DRILL_MODE,
+      totalMs: rep.ms,
+      split1Ms: 0,
+      split2Ms: 0,
+      status: 'valid',
+      athleteId: who?.id ?? null,
+      drillId: dr?.id ?? null,
+      // Carries startSource:'tap' and exact:false, so the accuracy fact lives on
+      // the ROW and History and the chart both read it from one helper.
+      rawJson: restRepRawJson(rep),
+    })
+      .then((runId) => {
+        setDbg(`saved ${fmt(rep.ms)}s ✓ (hand-started)`);
+        rosterRef.current.completeRun();
+        pendingRef.current.offerRun({
+          runId,
+          totalMs: rep.ms,
+          athleteName: who?.display_name ?? null,
+          drillName: dr?.name ?? null,
+          standalone: false,
+          savedAt: Date.now(),
+        });
+      })
+      .catch((e) => setDbg(`SAVE FAILED: ${String(e)}`));
   }, [v2]);
 
   useEffect(() => {
@@ -112,10 +174,16 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
   const doArm = useCallback(() => {
     setReview(null);
     setDbg('');
-    v2.armRepeat(config, targetLaps || null);
-  }, [v2, config, targetLaps]);
+    if (isRest) {
+      // A new rep starting settles the previous rep's discard window.
+      pending.settleForNextRep();
+      v2.armRestRep(config);
+    } else {
+      v2.armRepeat(config, targetLaps || null);
+    }
+  }, [v2, config, targetLaps, isRest, pending]);
 
-  const doSave = useCallback(async () => {
+  const doSaveSet = useCallback(async () => {
     if (!review || saving) return;
     if (!review.intervals.length) {
       setReview(null);
@@ -126,8 +194,6 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
     try {
       await saveRun({
         mode: REPEAT_MODE,
-        // The honest sum. chartValueMs decides what the GRAPH plots — total for
-        // continuous, mean for rest — from this plus the variant in raw_json.
         totalMs: review.totalMs,
         split1Ms: 0,
         split2Ms: 0,
@@ -136,16 +202,16 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
         drillId: drill?.id ?? null,
         rawJson: JSON.stringify({
           engine: 'repeat',
-          variant: review.variant,
+          variant: 'continuous',
           gateId: review.gateId,
           targetLaps: review.targetLaps,
           intervals: review.intervals.map((i) => i.ms),
-          startSources: review.intervals.map((i) => i.startSource),
           lockoutMs: review.lockoutMs,
-          exact: review.exact,
+          startSource: 'gate',
+          exact: true,
         }),
       });
-      setDbg(`saved ${review.intervals.length} interval(s) ✓`);
+      setDbg(`saved ${review.intervals.length} lap(s) ✓`);
       setReview(null);
       roster.completeRun();
     } catch (e) {
@@ -157,8 +223,6 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
 
   const liveIntervals = v2.repeatIntervals;
   const shown = review ?? null;
-  // A hint only — which interval is junk stays the coach's call, since a
-  // genuinely fast last lap trips the same test.
   const suspects = useMemo(() => (shown ? suspectIntervals(shown) : []), [shown]);
 
   return (
@@ -166,9 +230,6 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
       style={styles.container}
       contentContainerStyle={[styles.content, selectedKey != null && styles.contentEmbedded]}
     >
-      {/* Hosted: the SetControl is PINNED by DrillsTab above the scroll, and
-          `header` (the drill dropdown) scrolls with the content. Standalone: the
-          screen keeps its own inline SetControl exactly as before. */}
       {selectedKey == null ? (
         <View style={styles.setRow}>
           <SetControl />
@@ -178,73 +239,70 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
 
       <UpNextStrip />
 
-      {/* Variant picker — hidden when the host owns selection. Locked while a set
-          is live either way, because switching mid-set would make the intervals
-          already collected mean something else. */}
+      {/* REST reps are ordinary runs, so they get the ordinary post-run control. */}
+      {isRest ? <DiscardBar /> : null}
+
       {selectedKey == null ? (
-      <View style={styles.pickRow}>
-        {REPEATS.map((r) => (
-          <Pressable
-            key={r.key}
-            onPress={() => !live && setOwnKey(r.key)}
-            disabled={live}
-            style={({ pressed }) => [
-              styles.pick,
-              r.key === base.key && styles.pickOn,
-              (live || pressed) && r.key !== base.key && styles.dim,
-            ]}
-          >
-            <Text style={[styles.pickText, r.key === base.key && styles.pickTextOn]}>{r.title}</Text>
-          </Pressable>
-        ))}
-      </View>
+        <View style={styles.pickRow}>
+          {REPEATS.map((r) => (
+            <Pressable
+              key={r.key}
+              onPress={() => !live && setOwnKey(r.key)}
+              disabled={live}
+              style={({ pressed }) => [
+                styles.pick,
+                r.key === base.key && styles.pickOn,
+                (live || pressed) && r.key !== base.key && styles.dim,
+              ]}
+            >
+              <Text style={[styles.pickText, r.key === base.key && styles.pickTextOn]}>{r.title}</Text>
+            </Pressable>
+          ))}
+        </View>
       ) : null}
 
       <Text style={styles.explain}>
-        {base.variant === 'continuous'
-          ? 'First crossing starts the clock. Each crossing after it closes a lap. Gate-timed at both ends.'
-          : `Tap Start rep, athlete goes from standing, the crossing ends it. Rest is never timed. Hand-started — about ±${HAND_START_ERROR_MS}ms per rep, not gate-accurate.`}
+        {isRest
+          ? `Tap Start rep, athlete goes from standing, the crossing ends it and saves it as its own run. Rest is never timed. Hand-started — about ±${HAND_START_ERROR_MS}ms, not gate-accurate.`
+          : 'First crossing starts the clock. Each crossing after it closes a lap. Gate-timed at both ends.'}
       </Text>
 
       <Pressable style={styles.tagBar} onPress={() => !live && setDrillOpen(true)} disabled={live}>
         <Text style={[styles.tagBarText, !drill && styles.tagBarPlaceholder]} numberOfLines={1}>
-          {drill?.name || '＋  Drill (e.g. 1200m, 400m ×3)'}
+          {drill?.name || (isRest ? '＋  Drill (e.g. 400m)' : '＋  Drill (e.g. 1200m)')}
         </Text>
       </Pressable>
 
-      {/* Planned count — CONTINUOUS only. A rest set has no fixed shape worth
-          counting against: each rep is started by hand, so an extra crossing
-          closes a rep early rather than adding a boundary, and the fix is to
-          delete that split, not to reconcile against a target. */}
-      {base.variant === 'continuous' ? (
-      <>
-      <View style={styles.lockRow}>
-        <Text style={styles.lockLabel}>Laps</Text>
-        <Pressable
-          onPress={() => !live && setTargetLaps((n) => Math.max(0, n - 1))}
-          disabled={live}
-          style={({ pressed }) => [styles.step, (live || pressed) && styles.dim]}
-        >
-          <Text style={styles.stepText}>−</Text>
-        </Pressable>
-        <Text style={styles.lockValue}>{targetLaps || '—'}</Text>
-        <Pressable
-          onPress={() => !live && setTargetLaps((n) => Math.min(50, n + 1))}
-          disabled={live}
-          style={({ pressed }) => [styles.step, (live || pressed) && styles.dim]}
-        >
-          <Text style={styles.stepText}>＋</Text>
-        </Pressable>
-      </View>
-      <Text style={styles.lockHint}>
-        {targetLaps
-          ? `Target only — the set will not stop itself at ${targetLaps}. Extra crossings get flagged for review.`
-          : 'Optional. Set one to see live progress and have extra crossings flagged.'}
-      </Text>
-      </>
+      {/* Lap target — CONTINUOUS only. A rest rep is one time; there is no chain
+          to reconcile against a count. */}
+      {!isRest ? (
+        <>
+          <View style={styles.lockRow}>
+            <Text style={styles.lockLabel}>Laps</Text>
+            <Pressable
+              onPress={() => !live && setTargetLaps((n) => Math.max(0, n - 1))}
+              disabled={live}
+              style={({ pressed }) => [styles.step, (live || pressed) && styles.dim]}
+            >
+              <Text style={styles.stepText}>−</Text>
+            </Pressable>
+            <Text style={styles.lockValue}>{targetLaps || '—'}</Text>
+            <Pressable
+              onPress={() => !live && setTargetLaps((n) => Math.min(50, n + 1))}
+              disabled={live}
+              style={({ pressed }) => [styles.step, (live || pressed) && styles.dim]}
+            >
+              <Text style={styles.stepText}>＋</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.lockHint}>
+            {targetLaps
+              ? `Target only — the set will not stop itself at ${targetLaps}. Extra crossings get flagged for review.`
+              : 'Optional. Set one to see live progress and have extra crossings flagged.'}
+          </Text>
+        </>
       ) : null}
 
-      {/* Lockout, tunable live and persisted — locked during a set. */}
       <View style={styles.lockRow}>
         <Text style={styles.lockLabel}>Lockout</Text>
         <Pressable
@@ -264,34 +322,38 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
         </Pressable>
       </View>
       <Text style={styles.lockHint}>
-        Ignores a second break within this window, so one crossing is one interval. Raise it if a
-        walk-back through the beam is registering as a lap.
+        Ignores a second break within this window, so one crossing is one time.
+        {isRest ? '' : ' Raise it if a walk-back through the beam registers as a lap.'}
       </Text>
 
-      {/* Live set */}
       {live ? (
         <View style={styles.liveCard}>
           <Text style={styles.liveKicker}>
-            {v2.repeatState === 'armed'
-              ? 'WAITING FOR THE FIRST CROSSING'
-              : v2.repeatState === 'resting'
-                ? 'RESTING — TAP START REP'
+            {isRest
+              ? 'REP RUNNING — CROSSING ENDS IT'
+              : v2.repeatState === 'armed'
+                ? 'WAITING FOR THE FIRST CROSSING'
                 : 'RUNNING'}
           </Text>
-          <Text style={styles.liveCount}>
-            {targetLaps && base.variant === 'continuous'
-              ? `Lap ${Math.min(liveIntervals.length + 1, targetLaps)} of ${targetLaps}`
-              : `${liveIntervals.length} ${base.variant === 'continuous' ? 'lap' : 'rep'}${liveIntervals.length === 1 ? '' : 's'}`}
-          </Text>
-          {targetLaps && base.variant === 'continuous' && liveIntervals.length > targetLaps ? (
-            <Text style={styles.liveOver}>
-              {liveIntervals.length - targetLaps} past the target — still running, sort it at the end
-            </Text>
-          ) : null}
-          {liveIntervals.length ? (
-            <Text style={styles.liveList} numberOfLines={2}>
-              {liveIntervals.map((i) => `${fmt(i.ms)}s`).join('  ·  ')}
-            </Text>
+          {!isRest ? (
+            <>
+              <Text style={styles.liveCount}>
+                {targetLaps
+                  ? `Lap ${Math.min(liveIntervals.length + 1, targetLaps)} of ${targetLaps}`
+                  : `${liveIntervals.length} lap${liveIntervals.length === 1 ? '' : 's'}`}
+              </Text>
+              {targetLaps && liveIntervals.length > targetLaps ? (
+                <Text style={styles.liveOver}>
+                  {liveIntervals.length - targetLaps} past the target — still running, sort it at
+                  the end
+                </Text>
+              ) : null}
+              {liveIntervals.length ? (
+                <Text style={styles.liveList} numberOfLines={2}>
+                  {liveIntervals.map((i) => `${fmt(i.ms)}s`).join('  ·  ')}
+                </Text>
+              ) : null}
+            </>
           ) : null}
         </View>
       ) : null}
@@ -303,23 +365,17 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
             disabled={!connected}
             style={({ pressed }) => [styles.btn, styles.btnGo, (!connected || pressed) && styles.dim]}
           >
-            <Text style={styles.btnText}>Start set</Text>
+            <Text style={styles.btnText}>{isRest ? 'Start rep' : 'Start set'}</Text>
+          </Pressable>
+        ) : isRest ? (
+          <Pressable
+            onPress={v2.cancelRestRep}
+            style={({ pressed }) => [styles.btn, pressed && styles.dim]}
+          >
+            <Text style={styles.btnTextMuted}>Cancel rep</Text>
           </Pressable>
         ) : (
           <>
-            {base.variant === 'rest' ? (
-              <Pressable
-                onPress={v2.startRep}
-                disabled={v2.repeatState !== 'resting'}
-                style={({ pressed }) => [
-                  styles.btn,
-                  styles.btnGo,
-                  (v2.repeatState !== 'resting' || pressed) && styles.dim,
-                ]}
-              >
-                <Text style={styles.btnText}>Start rep</Text>
-              </Pressable>
-            ) : null}
             <Pressable
               onPress={v2.endRepeat}
               style={({ pressed }) => [styles.btn, styles.btnEnd, pressed && styles.dim]}
@@ -336,29 +392,22 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
         )}
       </View>
 
-      {/* Review: the only place an interval can be dropped, and the last moment
-          before anything is written. */}
+      {/* CONTINUOUS review — the last moment before anything is written. */}
       {shown ? (
         <View style={styles.review}>
           <Text style={styles.reviewTitle}>
-            {shown.intervals.length} interval{shown.intervals.length === 1 ? '' : 's'} ·{' '}
-            {shown.variant === 'continuous' ? 'total' : 'avg'}{' '}
-            <Text style={styles.reviewNum}>{fmt(chartValueMs(shown))}s</Text>
+            {shown.intervals.length} lap{shown.intervals.length === 1 ? '' : 's'} · total{' '}
+            <Text style={styles.reviewNum}>{fmt(shown.totalMs)}s</Text>
           </Text>
-          <Text style={styles.reviewSub}>
-            total {fmt(shown.totalMs)}s · avg {fmt(shown.meanMs)}s
-            {shown.exact ? '' : ` · hand-started, ±${HAND_START_ERROR_MS}ms per rep`}
-          </Text>
+          <Text style={styles.reviewSub}>avg {fmt(shown.meanMs)}s</Text>
 
-          {/* The target's whole job: flag the excess so junk can be dropped until
-              the count matches. It never blocks saving — a short set is real. */}
           {(() => {
             const st = targetStatus(shown);
             if (st.excess > 0) {
               return (
                 <View style={styles.flagCard}>
                   <Text style={styles.flagText}>
-                    {st.actual} recorded, {st.target} planned — drop {st.excess} to match.
+                    {st.actual} recorded, {st.target} planned — join {st.excess} to match.
                     {suspects.length ? ' Marked ones look short enough to be walk-backs.' : ''}
                   </Text>
                 </View>
@@ -376,13 +425,11 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
             return null;
           })()}
 
-          {shown.variant === 'continuous' ? (
-            <Text style={styles.repairHint}>
-              Join removes a stray crossing and merges the split into its neighbour — the total
-              never changes, only where the laps divide. “End here” is the exception: it discards
-              the final split, ending the set at the previous crossing.
-            </Text>
-          ) : null}
+          <Text style={styles.repairHint}>
+            Join removes a stray crossing and merges the split into its neighbour — the total never
+            changes, only where the laps divide. “End here” is the exception: it discards the final
+            split, ending the set at the previous crossing.
+          </Text>
 
           {shown.intervals.map((it, i) => (
             <View
@@ -392,54 +439,32 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
               <Text style={styles.ivIndex}>{i + 1}</Text>
               <Text style={styles.ivTime}>{fmt(it.ms)}s</Text>
               {suspects.includes(i) ? <Text style={styles.ivSuspect}>SHORT</Text> : null}
-
-              {shown.variant === 'continuous' ? (
-                <>
-                  {/* Remove the BOUNDARY, not the time. Direction matters and
-                      cannot be inferred: a short split sits between one real
-                      crossing and one spurious one, and which is which depends on
-                      whether they drifted back after finishing (merge down) or
-                      before (merge up). The total is unchanged either way. */}
-                  <Pressable
-                    onPress={() => setReview(mergeCrossing(shown, i - 1))}
-                    disabled={i === 0}
-                    hitSlop={6}
-                    accessibilityLabel={`Merge split ${i + 1} into the one above`}
-                    style={({ pressed }) => [styles.ivMerge, (i === 0 || pressed) && styles.dim]}
-                  >
-                    <Text style={styles.ivMergeText}>⌃ join</Text>
-                  </Pressable>
-                  {i === shown.intervals.length - 1 ? (
-                    // The final boundary is the only one whose removal SHOULD
-                    // shorten the set: time after the real finish isn't part of it.
-                    <Pressable
-                      onPress={() => setReview(dropInterval(shown, i))}
-                      hitSlop={6}
-                      accessibilityLabel="Discard the final split, ending the set earlier"
-                      style={({ pressed }) => [styles.ivDrop, pressed && styles.dim]}
-                    >
-                      <Text style={styles.ivDropText}>end here</Text>
-                    </Pressable>
-                  ) : (
-                    <Pressable
-                      onPress={() => setReview(mergeCrossing(shown, i))}
-                      hitSlop={6}
-                      accessibilityLabel={`Merge split ${i + 1} into the one below`}
-                      style={({ pressed }) => [styles.ivMerge, pressed && styles.dim]}
-                    >
-                      <Text style={styles.ivMergeText}>⌄ join</Text>
-                    </Pressable>
-                  )}
-                </>
-              ) : (
-                // REST splits are independent — a junk crossing closed a rep
-                // early, so there is no elapsed time to preserve. Delete.
+              <Pressable
+                onPress={() => setReview(mergeCrossing(shown, i - 1))}
+                disabled={i === 0}
+                hitSlop={6}
+                accessibilityLabel={`Join lap ${i + 1} into the one above`}
+                style={({ pressed }) => [styles.ivMerge, (i === 0 || pressed) && styles.dim]}
+              >
+                <Text style={styles.ivMergeText}>⌃ join</Text>
+              </Pressable>
+              {i === shown.intervals.length - 1 ? (
                 <Pressable
                   onPress={() => setReview(dropInterval(shown, i))}
-                  hitSlop={8}
+                  hitSlop={6}
+                  accessibilityLabel="Discard the final split, ending the set earlier"
                   style={({ pressed }) => [styles.ivDrop, pressed && styles.dim]}
                 >
-                  <Text style={styles.ivDropText}>Drop</Text>
+                  <Text style={styles.ivDropText}>end here</Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={() => setReview(mergeCrossing(shown, i))}
+                  hitSlop={6}
+                  accessibilityLabel={`Join lap ${i + 1} into the one below`}
+                  style={({ pressed }) => [styles.ivMerge, pressed && styles.dim]}
+                >
+                  <Text style={styles.ivMergeText}>⌄ join</Text>
                 </Pressable>
               )}
             </View>
@@ -453,7 +478,7 @@ export default function RepeatsScreen({ selectedKey, header }: { selectedKey?: s
               <Text style={styles.btnTextMuted}>Discard set</Text>
             </Pressable>
             <Pressable
-              onPress={doSave}
+              onPress={doSaveSet}
               disabled={saving || !shown.intervals.length}
               style={({ pressed }) => [
                 styles.btn,
@@ -541,20 +566,8 @@ const styles = StyleSheet.create({
   },
   liveKicker: { color: '#93c5fd', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
   liveCount: { color: '#fff', fontSize: 24, fontWeight: '800', marginTop: 4 },
-  liveList: { color: '#93c5fd', fontSize: 13, marginTop: 6, fontVariant: ['tabular-nums'] },
   liveOver: { color: '#fbbf24', fontSize: 11, marginTop: 4, lineHeight: 15 },
-  flagCard: {
-    backgroundColor: '#2a1f10',
-    borderColor: '#b45309',
-    borderWidth: 1,
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    marginTop: 8,
-  },
-  flagText: { color: '#fbbf24', fontSize: 12, lineHeight: 17, fontWeight: '600' },
-  ivRowSuspect: { backgroundColor: '#2a1f10', borderRadius: 6 },
-  ivSuspect: { color: '#fbbf24', fontSize: 10, fontWeight: '800' },
+  liveList: { color: '#93c5fd', fontSize: 13, marginTop: 6, fontVariant: ['tabular-nums'] },
   actions: { flexDirection: 'row', gap: 10, marginTop: 16 },
   btn: {
     flex: 1,
@@ -581,16 +594,29 @@ const styles = StyleSheet.create({
   reviewNum: { color: '#fff', fontWeight: '800' },
   repairHint: { color: '#64748b', fontSize: 11, lineHeight: 16, marginBottom: 6 },
   reviewSub: { color: '#64748b', fontSize: 11, marginTop: 3, marginBottom: 8 },
+  flagCard: {
+    backgroundColor: '#2a1f10',
+    borderColor: '#b45309',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  flagText: { color: '#fbbf24', fontSize: 12, lineHeight: 17, fontWeight: '600' },
   ivRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
     paddingVertical: 9,
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#243042',
   },
+  ivRowSuspect: { backgroundColor: '#2a1f10', borderRadius: 6 },
   ivIndex: { color: '#475569', fontSize: 12, fontWeight: '800', width: 18 },
   ivTime: { color: '#e2e8f0', fontSize: 16, fontWeight: '700', flex: 1, fontVariant: ['tabular-nums'] },
+  ivSuspect: { color: '#fbbf24', fontSize: 10, fontWeight: '800' },
   ivMerge: {
     paddingHorizontal: 8,
     paddingVertical: 6,

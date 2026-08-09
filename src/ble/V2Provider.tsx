@@ -48,12 +48,16 @@ import {
 } from './drills';
 import {
   RepeatEngine,
+  RestRepEngine,
   REPEAT_CONTINUOUS,
+  REPEAT_REST,
   type RepeatConfig,
   type RepInterval,
   type RepSet,
   type RepeatDiag,
   type RepeatState,
+  type RestRep,
+  type RestRepState,
   emptyDiag,
 } from './repeats';
 import { GATE_ID_ALL } from './v2constants';
@@ -157,8 +161,14 @@ export type V2ContextValue = {
   lastRepSet: RepSet | null;
   /** targetLaps is a TARGET, never a terminal condition — see repeats.ts. */
   armRepeat: (config: RepeatConfig, targetLaps?: number | null) => void;
-  /** REST variant only: the coach taps, the athlete goes. */
-  startRep: () => void;
+  // Repeats with rest: each rep is its OWN run, so there is no set to end and
+  // nothing to review. Tap to arm, the crossing closes it, the screen saves it.
+  restState: RestRepState;
+  /** the rep just closed, awaiting save on the screen */
+  lastRestRep: RestRep | null;
+  armRestRep: (config: RepeatConfig) => void;
+  cancelRestRep: () => void;
+  clearLastRestRep: () => void;
   /** Explicit end — never a timeout. One gate cannot tell finishing a lap from
    *  walking back through the beam, so the coach says when the set is over. */
   endRepeat: () => void;
@@ -186,6 +196,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const engineRef = useRef(new V2RunEngine(START_ID, FINISH_ID));
   const drillRef = useRef(new DrillEngine(DRILL_L_DRILL));
   const repeatRef = useRef(new RepeatEngine(REPEAT_CONTINUOUS));
+  const restRef = useRef(new RestRepEngine(REPEAT_REST));
   const observerRef = useRef(new StandaloneObserver());
   // Live mirror of the opt-in flag so the event-stream closure reads it fresh.
   const logStandaloneRef = useRef(logStandalone);
@@ -219,6 +230,8 @@ export function V2Provider({ children }: { children: ReactNode }) {
   const [repeatIntervals, setRepeatIntervals] = useState<RepInterval[]>([]);
   const [lastRepSet, setLastRepSet] = useState<RepSet | null>(null);
   const [repeatDiag, setRepeatDiag] = useState<RepeatDiag>(emptyDiag());
+  const [restState, setRestState] = useState<RestRepState>('idle');
+  const [lastRestRep, setLastRestRep] = useState<RestRep | null>(null);
 
   // Live mirrors (refs) so the async bring-up reads current values, not stale.
   const discoveredRef = useRef<Record<string, number>>({}); // mac -> lastSeenMs
@@ -371,9 +384,15 @@ export function V2Provider({ children }: { children: ReactNode }) {
 
     // Rep sets — single gate, open-ended, ended by a button not a frame.
     const repeat = repeatRef.current;
+    const rest = restRef.current;
+    rest.onOpen = () => setRestState(rest.state);
+    rest.onRep = (rep) => {
+      setLastRestRep(rep);
+      setRestState(rest.state);
+      pushLog(`rest rep: ${rep.ms}ms (hand-started)`);
+    };
     repeat.onOpen = () => setRepeatState(repeat.state);
-    repeat.onInterval = (interval, count) =>
-      pushLog(`rep ${count}: ${interval.ms}ms (${interval.startSource}-started)`);
+    repeat.onInterval = (interval, count) => pushLog(`lap ${count}: ${interval.ms}ms`);
 
     // Standalone (B1) observer — passive; only arms on a button press when opted
     // in and all app engines are idle (see the 'button' case below).
@@ -473,7 +492,10 @@ export function V2Provider({ children }: { children: ReactNode }) {
           // fall through untouched even though it is connected and advertising.
           if (repeat.ingest(f, atMs)) setRepeatIntervals([...repeat.intervals]);
           setRepeatState(repeat.state);
-          setRepeatDiag({ ...repeat.diag });
+          // Only one of the two is ever armed, so whichever is live owns the tally.
+          rest.ingest(f, atMs);
+          setRestState(rest.state);
+          setRepeatDiag({ ...(rest.state !== 'idle' || rest.diag.beam > repeat.diag.beam ? rest.diag : repeat.diag) });
           observer.onBeam(f.edge, f.gateId, f.micros, atMs);
           break;
         case 'button':
@@ -848,12 +870,36 @@ export function V2Provider({ children }: { children: ReactNode }) {
     [pushLog],
   );
 
-  const startRep = useCallback(() => {
-    // Same clock as the frames — see armRepeat.
-    repeatRef.current.startRep(perfNow());
-    setRepeatState(repeatRef.current.state);
-    setRepeatDiag({ ...repeatRef.current.diag });
+  // --- repeats with rest: one tap, one crossing, one run --------------------
+  const armRestRep = useCallback(
+    (config: RepeatConfig) => {
+      // Same mutual exclusion as every other engine: one owns the gates.
+      observerRef.current.reset();
+      engineRef.current.reset();
+      setEngineState(engineRef.current.state);
+      setRunning(null);
+      drillRef.current.reset();
+      setDrillState(drillRef.current.state);
+      repeatRef.current.reset();
+      setRepeatState(repeatRef.current.state);
+      setLastRestRep(null);
+      restRef.current.setConfig(config);
+      // perfNow, NOT Date.now: this must be the clock the BLE layer stamps frames
+      // with, or the crossing fails its lockout by ~1.8e12 ms.
+      restRef.current.arm(perfNow());
+      setRestState(restRef.current.state);
+      setRepeatDiag({ ...restRef.current.diag });
+      pushLog(`rep armed: ${config.title} on gate ${config.gateId} (hand start)`);
+    },
+    [pushLog],
+  );
+
+  const cancelRestRep = useCallback(() => {
+    restRef.current.reset();
+    setRestState(restRef.current.state);
   }, []);
+
+  const clearLastRestRep = useCallback(() => setLastRestRep(null), []);
 
   const endRepeat = useCallback(() => {
     if (repeatRef.current.state === 'idle') return;
@@ -964,11 +1010,15 @@ export function V2Provider({ children }: { children: ReactNode }) {
     repeatIntervals,
     lastRepSet,
     armRepeat,
-    startRep,
     endRepeat,
     cancelRepeat,
     clearLastRepSet,
     repeatDiag,
+    restState,
+    lastRestRep,
+    armRestRep,
+    cancelRestRep,
+    clearLastRestRep,
     lastStandaloneRun,
     changeSet,
     restoreDefaults,

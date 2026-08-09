@@ -33,7 +33,7 @@ import {
 } from '../db/database';
 import { useSettings } from '../settings/SettingsProvider';
 import { formatTags } from '../runs/format';
-import { REPEAT_MODE, parseRepSetJson } from '../ble/repeats';
+import { REPEAT_MODE, parseRepSetJson, runStartSource } from '../ble/repeats';
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { runShareLine, sessionShareText, shareText } from '../share';
@@ -246,6 +246,9 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
             // A rep set is ONE entry with its intervals folded away — a 3x400
             // listed as three rows would read as three separate efforts.
             const repSet = item.mode === REPEAT_MODE ? parseRepSetJson(item.raw_json) : null;
+            // A hand-started run is valid but not gate-accurate, and the row
+            // has to say so — the fact travels in raw_json, not just the UI.
+            const handStarted = runStartSource(item.raw_json) === 'tap';
             const open = expanded === item.id;
             return (
               <View>
@@ -293,6 +296,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                     )}
                   </View>
                 ) : null}
+                {handStarted ? <Text style={styles.handTag}>hand</Text> : null}
                 <Text style={styles.runTotal}>{fmt(totalOf(item))}s</Text>
                 <Pressable
                   onPress={() =>
@@ -318,10 +322,8 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                     style={({ pressed }) => [styles.repToggle, pressed && { opacity: 0.6 }]}
                   >
                     <Text style={styles.repToggleText}>
-                      {open ? '▾' : '▸'}  {repSet.intervals.length} ×{' '}
-                      {repSet.variant === 'continuous' ? 'lap' : 'rep'} · avg{' '}
+                      {open ? '▾' : '▸'}  {repSet.intervals.length} × lap · avg{' '}
                       {fmt(Math.round(item.total_ms / repSet.intervals.length))}s
-                      {repSet.exact ? '' : ' · hand-started'}
                     </Text>
                   </Pressable>
                   {open
@@ -562,6 +564,7 @@ function RenameModal({
 }
 
 const styles = StyleSheet.create({
+  handTag: { color: '#fbbf24', fontSize: 9, fontWeight: '800', marginRight: 4 },
   repToggle: { paddingVertical: 7, paddingHorizontal: 14, marginTop: -4 },
   repToggleText: { color: '#94a3b8', fontSize: 11, fontWeight: '700' },
   repRow: {
