@@ -1,20 +1,54 @@
-// Tap-to-place reordering. Pure JS — no gesture-handler, no reanimated.
+// Tap-to-place reordering. Pure JS — no gesture-handler, no reanimated, and no
+// native rebuild.
 //
-// Tap a row to pick it up; the gaps between rows become drop slots; tap a slot to
-// place it. Tap the picked row again to cancel.
+// The failure mode of naive tap-to-place is that it reads as two disconnected
+// taps: you tap a name, something invisible happens, you tap again and hope. Five
+// things fix that here, all with core RN:
 //
-// Chosen over drag-and-drop deliberately: a long-press-drag on a phone held in one
-// hand at the side of a track is a fiddly gesture, and it would have cost two
-// native dependencies. Two taps are also interruptible — you can look up at the
-// athletes mid-reorder and come back to it.
+//  1. LayoutAnimation on every move — the row visibly TRAVELS to its new position
+//     instead of the list teleporting. This is the single biggest difference; it
+//     is what connects the two taps into one action.
+//  2. Slots become explicit, labelled drop zones ("→ 3") only while a move is
+//     live, so a tap lands where you can see it will land.
+//  3. Everything except the picked row dims, so the subject of the move is
+//     unmistakable without any motion.
+//  4. Nudge arrows on the picked row. Moving someone ONE place — the common case —
+//     becomes a single repeatable tap, never a two-tap round trip.
+//  5. The moved row stays highlighted briefly after landing, so you can confirm
+//     where it went without re-reading the whole list.
 //
-// The slot -> index conversion is slotToIndex() in ../roster/queue, verified
-// exhaustively (all 20 from/slot pairs on a 4-lineup) by scripts/verify-queue.mjs.
+// Deliberately NOT used: haptics. expo-haptics is not a dependency and would need
+// a native rebuild; core `Vibration` on iOS is a full buzz, not a light tick, and
+// would feel worse than silence for a UI nudge.
 
-import { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import {
+  LayoutAnimation,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  UIManager,
+  View,
+} from 'react-native';
 
 import { slotToIndex } from '../roster/queue';
+
+// Android needs this opt-in; iOS animates without it. Guarded so it runs once.
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
+
+/** Short and eased — long enough to read the movement, not long enough to wait on. */
+const MOVE_ANIM = {
+  duration: 220,
+  update: { type: LayoutAnimation.Types.easeInEaseOut },
+  delete: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+  create: { type: LayoutAnimation.Types.easeInEaseOut, property: LayoutAnimation.Properties.opacity },
+};
+
+/** How long the just-moved row stays highlighted. */
+const LANDED_MS = 1100;
 
 export type ReorderItem = {
   id: string;
@@ -35,72 +69,142 @@ export function ReorderList({
   onRemove?: (id: string) => void;
   emptyText?: string;
 }) {
-  const [picked, setPicked] = useState<number | null>(null);
+  const [pickedId, setPickedId] = useState<string | null>(null);
+  const [landedId, setLandedId] = useState<string | null>(null);
+  const landedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // A pick is an index, so any change to the list length invalidates it.
-  if (picked != null && picked >= items.length) setPicked(null);
+  useEffect(
+    () => () => {
+      if (landedTimer.current) clearTimeout(landedTimer.current);
+    },
+    [],
+  );
+
+  // The pick is held as an ID, not an index — the same reason the queue cursor is.
+  // A removal or an external change can't leave it pointing at a different athlete.
+  const picked = pickedId != null ? items.findIndex((it) => it.id === pickedId) : -1;
+  const isPicking = picked >= 0;
+
+  const flashLanded = (id: string) => {
+    setLandedId(id);
+    if (landedTimer.current) clearTimeout(landedTimer.current);
+    landedTimer.current = setTimeout(() => setLandedId(null), LANDED_MS);
+  };
+
+  const move = (from: number, to: number, keepPicked: boolean) => {
+    const id = items[from]?.id;
+    if (id == null || to === from) return;
+    LayoutAnimation.configureNext(MOVE_ANIM);
+    onMove(from, to);
+    if (!keepPicked) setPickedId(null);
+    flashLanded(id);
+  };
 
   const place = (slot: number) => {
-    if (picked == null) return;
-    onMove(picked, slotToIndex(picked, slot));
-    setPicked(null);
+    if (!isPicking) return;
+    move(picked, slotToIndex(picked, slot), false);
+  };
+
+  // Nudge keeps the row picked, so "up three" is three taps on one control rather
+  // than three pick-and-place cycles.
+  const nudge = (delta: number) => {
+    if (!isPicking) return;
+    const to = picked + delta;
+    if (to < 0 || to >= items.length) return;
+    move(picked, to, true);
   };
 
   if (!items.length) return <Text style={styles.empty}>{emptyText}</Text>;
 
   return (
     <View>
-      {picked != null ? (
-        <Text style={styles.banner}>
-          Moving <Text style={styles.bannerName}>{items[picked]!.label}</Text> — tap a line to
-          place, or tap them again to cancel
-        </Text>
+      {isPicking ? (
+        <View style={styles.banner}>
+          <Text style={styles.bannerText} numberOfLines={1}>
+            Moving <Text style={styles.bannerName}>{items[picked]!.label}</Text>
+          </Text>
+          <Pressable onPress={() => setPickedId(null)} hitSlop={10}>
+            <Text style={styles.bannerCancel}>Cancel</Text>
+          </Pressable>
+        </View>
       ) : (
         <Text style={styles.hint}>Tap an athlete to move them</Text>
       )}
 
-      {items.map((it, i) => (
-        <View key={it.id}>
-          <Slot active={picked != null} index={i} pickedIndex={picked} onPress={() => place(i)} />
-          <Pressable
-            onPress={() => setPicked(picked === i ? null : i)}
-            style={({ pressed }) => [
-              styles.row,
-              it.current && styles.rowCurrent,
-              picked === i && styles.rowPicked,
-              pressed && styles.dim,
-            ]}
-          >
-            <Text style={styles.pos}>{i + 1}</Text>
-            <View style={styles.textCol}>
-              <Text style={[styles.name, picked === i && styles.namePicked]} numberOfLines={1}>
-                {it.label}
-              </Text>
-              {it.sub ? (
-                <Text style={styles.sub} numberOfLines={1}>
-                  {it.sub}
+      {items.map((it, i) => {
+        const isPicked = i === picked;
+        return (
+          <View key={it.id}>
+            <Slot active={isPicking} index={i} pickedIndex={picked} onPress={() => place(i)} />
+            <Pressable
+              onPress={() => setPickedId(isPicked ? null : it.id)}
+              style={({ pressed }) => [
+                styles.row,
+                it.current && styles.rowCurrent,
+                landedId === it.id && styles.rowLanded,
+                isPicked && styles.rowPicked,
+                // Dimming everything else makes the subject obvious with no motion.
+                isPicking && !isPicked && styles.rowMuted,
+                pressed && styles.dim,
+              ]}
+            >
+              <Text style={[styles.pos, isPicked && styles.posPicked]}>{i + 1}</Text>
+              <View style={styles.textCol}>
+                <Text style={[styles.name, isPicked && styles.namePicked]} numberOfLines={1}>
+                  {it.label}
                 </Text>
+                {it.sub ? (
+                  <Text style={styles.sub} numberOfLines={1}>
+                    {it.sub}
+                  </Text>
+                ) : null}
+              </View>
+              {it.current ? <Text style={styles.upNow}>UP</Text> : null}
+
+              {isPicked ? (
+                <View style={styles.nudgeGroup}>
+                  <Pressable
+                    onPress={() => nudge(-1)}
+                    disabled={picked === 0}
+                    hitSlop={6}
+                    accessibilityLabel={`Move ${it.label} up one`}
+                    style={({ pressed }) => [
+                      styles.nudge,
+                      (picked === 0 || pressed) && styles.dim,
+                    ]}
+                  >
+                    <Text style={styles.nudgeText}>↑</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => nudge(1)}
+                    disabled={picked === items.length - 1}
+                    hitSlop={6}
+                    accessibilityLabel={`Move ${it.label} down one`}
+                    style={({ pressed }) => [
+                      styles.nudge,
+                      (picked === items.length - 1 || pressed) && styles.dim,
+                    ]}
+                  >
+                    <Text style={styles.nudgeText}>↓</Text>
+                  </Pressable>
+                </View>
+              ) : isPicking ? null : onRemove ? (
+                <Pressable
+                  onPress={() => onRemove(it.id)}
+                  hitSlop={8}
+                  style={({ pressed }) => [styles.removeBtn, pressed && styles.dim]}
+                >
+                  <Text style={styles.removeText}>Remove</Text>
+                </Pressable>
               ) : null}
-            </View>
-            {it.current ? <Text style={styles.upNow}>UP</Text> : null}
-            {picked === i ? (
-              <Text style={styles.grabbed}>moving</Text>
-            ) : onRemove ? (
-              <Pressable
-                onPress={() => onRemove(it.id)}
-                hitSlop={8}
-                style={({ pressed }) => [styles.removeBtn, pressed && styles.dim]}
-              >
-                <Text style={styles.removeText}>Remove</Text>
-              </Pressable>
-            ) : null}
-          </Pressable>
-        </View>
-      ))}
+            </Pressable>
+          </View>
+        );
+      })}
 
       {/* The final slot, below the last row. */}
       <Slot
-        active={picked != null}
+        active={isPicking}
         index={items.length}
         pickedIndex={picked}
         onPress={() => place(items.length)}
@@ -111,11 +215,15 @@ export function ReorderList({
 }
 
 /**
- * A drop target between two rows. Rendered at full height only while something is
- * picked up, so the list doesn't sit permanently spaced out by invisible gaps.
+ * A drop target between two rows.
  *
- * The two slots adjacent to the picked row are "leave it where it is" — shown
- * muted rather than hidden, so the list doesn't reflow as you look at it.
+ * Only takes space while a move is live, so the list isn't permanently spaced out
+ * by invisible gaps. It states the POSITION the athlete would take, which is the
+ * difference between "tap somewhere and hope" and knowing where the tap lands.
+ *
+ * The two slots either side of the picked row mean "leave it where it is" and are
+ * labelled as such rather than hidden — hiding them would reflow the list under
+ * the finger mid-decision.
  */
 function Slot({
   active,
@@ -126,19 +234,24 @@ function Slot({
 }: {
   active: boolean;
   index: number;
-  pickedIndex: number | null;
+  pickedIndex: number;
   onPress: () => void;
   last?: boolean;
 }) {
   if (!active) return <View style={last ? undefined : styles.gap} />;
-  const inert = pickedIndex != null && (index === pickedIndex || index === pickedIndex + 1);
+  const inert = index === pickedIndex || index === pickedIndex + 1;
   return (
     <Pressable
       onPress={onPress}
       disabled={inert}
-      hitSlop={{ top: 4, bottom: 4 }}
+      accessibilityRole="button"
+      accessibilityLabel={inert ? 'Current position' : `Move to position ${slotToIndex(pickedIndex, index) + 1}`}
       style={({ pressed }) => [styles.slot, pressed && !inert && styles.slotPressed]}
     >
+      <View style={[styles.slotLine, inert && styles.slotLineInert]} />
+      <Text style={[styles.slotLabel, inert && styles.slotLabelInert]}>
+        {inert ? 'here now' : `→ ${slotToIndex(pickedIndex, index) + 1}`}
+      </Text>
       <View style={[styles.slotLine, inert && styles.slotLineInert]} />
     </Pressable>
   );
@@ -148,23 +261,35 @@ const styles = StyleSheet.create({
   empty: { color: '#64748b', fontSize: 13, textAlign: 'center', paddingVertical: 22, lineHeight: 19 },
   hint: { color: '#475569', fontSize: 11, marginBottom: 8 },
   banner: {
-    color: '#93c5fd',
-    fontSize: 12,
-    lineHeight: 17,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
     backgroundColor: '#16233a',
     borderRadius: 8,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1d4ed8',
   },
+  bannerText: { color: '#93c5fd', fontSize: 12, flex: 1 },
   bannerName: { fontWeight: '800', color: '#dbeafe' },
+  bannerCancel: { color: '#60a5fa', fontSize: 13, fontWeight: '800' },
   gap: { height: 8 },
-  // Tall enough to be a real target between two rows without pushing the list
-  // off screen while reordering.
-  slot: { height: 30, justifyContent: 'center', paddingHorizontal: 4 },
-  slotPressed: { opacity: 0.6 },
-  slotLine: { height: 3, borderRadius: 2, backgroundColor: '#3b82f6' },
+  // 40pt: a real target between two rows, and tall enough that the label reads.
+  slot: {
+    height: 40,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 4,
+  },
+  slotPressed: { opacity: 0.55 },
+  slotLine: { flex: 1, height: 2, borderRadius: 1, backgroundColor: '#3b82f6' },
   slotLineInert: { backgroundColor: '#1c2432' },
+  slotLabel: { color: '#60a5fa', fontSize: 11, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  slotLabelInert: { color: '#334155', fontWeight: '600' },
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -177,7 +302,9 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
   },
   rowCurrent: { borderColor: '#3b82f6' },
-  rowPicked: { borderColor: '#60a5fa', backgroundColor: '#16233a' },
+  rowMuted: { opacity: 0.4 },
+  rowPicked: { borderColor: '#60a5fa', backgroundColor: '#16233a', borderWidth: 2 },
+  rowLanded: { borderColor: '#34d399', backgroundColor: '#132a22' },
   pos: {
     color: '#475569',
     fontSize: 12,
@@ -185,12 +312,24 @@ const styles = StyleSheet.create({
     width: 18,
     fontVariant: ['tabular-nums'],
   },
+  posPicked: { color: '#60a5fa' },
   textCol: { flex: 1, minWidth: 0 },
   name: { color: '#e2e8f0', fontSize: 15, fontWeight: '700' },
   namePicked: { color: '#fff' },
   sub: { color: '#64748b', fontSize: 11, marginTop: 2 },
   upNow: { color: '#60a5fa', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
-  grabbed: { color: '#60a5fa', fontSize: 11, fontWeight: '700', fontStyle: 'italic' },
+  nudgeGroup: { flexDirection: 'row', gap: 6 },
+  nudge: {
+    width: 38,
+    height: 38,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: '#1d4ed8',
+    backgroundColor: '#0b1220',
+  },
+  nudgeText: { color: '#93c5fd', fontSize: 17, fontWeight: '800' },
   removeBtn: {
     paddingHorizontal: 9,
     paddingVertical: 6,

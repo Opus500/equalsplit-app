@@ -294,6 +294,24 @@ slots**, and `reorder()` splices the item out before reinserting, so every slot 
 `verify-queue.mjs` block 7f checks **all 20 (from, slot) pairs** on a four-athlete lineup,
 that nobody is lost or duplicated, and that both slots adjacent to the picked row are no-ops.
 
+**Making two taps feel like one action**, all with core RN (no gesture-handler, no reanimated,
+no native rebuild):
+
+| | why |
+|---|---|
+| `LayoutAnimation` on every move | the row visibly **travels**; the list doesn't teleport. The single biggest fix — it is what joins the two taps |
+| slots labelled `→ 3` | the tap lands where you can see it will land, instead of tapping a name and hoping |
+| every other row dims | the subject of the move is unmistakable, with no motion needed |
+| **nudge arrows** ↑ ↓ on the picked row | moving someone one place — the common case — is one repeatable tap, not a two-tap round trip. The pick survives, so "up three" is three taps on one control |
+| moved row flashes green ~1.1s | confirms where it landed without re-reading the list |
+| explicit **Cancel** in the banner | re-tapping the same row is not discoverable on its own |
+
+The pick is held as an **athlete id, not an index** — the same reason the queue cursor is — so
+an external change can't leave it pointing at a different person.
+
+**No haptics.** `expo-haptics` isn't a dependency and would need a native rebuild; core
+`Vibration` on iOS is a full buzz rather than a light tick and would feel worse than silence.
+
 `LineupEditorModal` is the same component for both callers, differing only in persistence:
 
 | | live lineup | template |
