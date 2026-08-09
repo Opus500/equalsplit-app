@@ -25,7 +25,7 @@ import {
   setSetting,
   type Drill,
 } from '../db/database';
-import { formatTags } from '../components/TagPicker';
+import { formatTags } from '../runs/format';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { UpNextStrip } from '../components/UpNextStrip';
 import { DiscardBar } from '../components/DiscardBar';

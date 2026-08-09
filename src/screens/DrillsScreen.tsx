@@ -24,7 +24,7 @@ import {
   type DrillConfig,
 } from '../ble/drills';
 import { getSetting, saveRun, setSetting } from '../db/database';
-import { formatTags } from '../components/TagPicker';
+import { formatTags } from '../runs/format';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
 import { DiscardBar } from '../components/DiscardBar';

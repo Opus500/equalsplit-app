@@ -12,7 +12,7 @@ import { useGate } from '../ble/GateProvider';
 import { useV2 } from '../ble/V2Provider';
 import type { V2Run } from '../ble/v2';
 import { findOrCreateDrill, getSetting, listDrills, saveRun, setSetting, type Drill } from '../db/database';
-import { formatTags } from '../components/TagPicker';
+import { formatTags } from '../runs/format';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';

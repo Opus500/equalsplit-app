@@ -32,7 +32,7 @@ import {
   type SessionRow,
 } from '../db/database';
 import { useSettings } from '../settings/SettingsProvider';
-import { formatTags } from '../components/TagPicker';
+import { formatTags } from '../runs/format';
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { runShareLine, sessionShareText, shareText } from '../share';

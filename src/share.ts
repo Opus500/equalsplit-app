@@ -2,7 +2,7 @@
 // module, so it works in the current dev client; the iOS sheet also offers Copy).
 
 import { Share } from 'react-native';
-import { formatTags } from './components/TagPicker';
+import { formatTags } from './runs/format';
 
 const secs = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(2)}s`;
 
