@@ -148,10 +148,12 @@ the athlete alternating distances, not their progress.
 
 | Rule | Call |
 |---|---|
-| Threshold | `MIN_SERIES_RUNS = 3`. Two points draw a line but not a trend |
+| Threshold | `MIN_SERIES_RUNS = 2` (coach's call; was 3). A two-point chart is one straight segment, which reads as a trend two samples cannot establish — accepted to make a thin season visible at all |
 | Below threshold | Listed as "+N to chart" with best time — actionable, not hidden |
 | y-axis | **Never zero-based** (a 100ms gain would occupy 2.4% of the plot); floored at `MIN_Y_SPAN_MS = 200` so a 10ms wobble isn't dramatised |
 | y direction | Time increases **upward**, so improvement FALLS. Flipping it would put 4.0s above 4.4s on an axis labelled in seconds |
+| Density | **Fit to width, never scroll** — the chart sits inside the horizontally-paging drill ScrollView, so a scrollable plot would fight the page swipe. Marks shrink with spacing; under 7pt only the line, PB and latest are drawn |
+| Width math | `plotW = width − CARD_PAD*2 − AXIS_W`. `onLayout` reports the **border** box, so the card's own padding must come off — double-counting it drew the last point ~14pt outside the card |
 | x-axis | Run **order**, not wall-clock — a layoff would otherwise squash a season into the left edge. Dates are on the axis labels |
 | Unlabeled runs | Counted, never charted. An "untagged" bucket would mix a 10m and a 40yd — the exact prohibition |
 | `suspect` / `invalid` runs | Excluded and counted. A false trigger lands as an impossibly fast time, i.e. a PB that never happened |
