@@ -25,6 +25,8 @@ import {
   chartValueMs,
   clampRepeatLockout,
   dropInterval,
+  suspectIntervals,
+  targetStatus,
   type RepSet,
   type RepeatConfig,
 } from '../ble/repeats';
@@ -48,6 +50,11 @@ export default function RepeatsScreen() {
   const [lockoutMs, setLockoutMs] = useState<number>(base.lockoutMs);
   const config: RepeatConfig = useMemo(() => ({ ...base, lockoutMs }), [base, lockoutMs]);
 
+  // Planned laps/reps. A TARGET, not a terminal condition — the set never
+  // auto-ends, because a junk crossing hitting the count early would stop timing
+  // and every lap run afterwards would be lost with no way to recover it.
+  // 0 = no target, and then nothing is flagged at all.
+  const [targetLaps, setTargetLaps] = useState(0);
   const [drill, setDrill] = useState<Drill | null>(null);
   const [drillOpen, setDrillOpen] = useState(false);
   // The finished set being reviewed. Local, so dropping an interval never
@@ -101,8 +108,8 @@ export default function RepeatsScreen() {
   const doArm = useCallback(() => {
     setReview(null);
     setDbg('');
-    v2.armRepeat(config);
-  }, [v2, config]);
+    v2.armRepeat(config, targetLaps || null);
+  }, [v2, config, targetLaps]);
 
   const doSave = useCallback(async () => {
     if (!review || saving) return;
@@ -127,6 +134,7 @@ export default function RepeatsScreen() {
           engine: 'repeat',
           variant: review.variant,
           gateId: review.gateId,
+          targetLaps: review.targetLaps,
           intervals: review.intervals.map((i) => i.ms),
           startSources: review.intervals.map((i) => i.startSource),
           lockoutMs: review.lockoutMs,
@@ -145,6 +153,9 @@ export default function RepeatsScreen() {
 
   const liveIntervals = v2.repeatIntervals;
   const shown = review ?? null;
+  // A hint only — which interval is junk stays the coach's call, since a
+  // genuinely fast last lap trips the same test.
+  const suspects = useMemo(() => (shown ? suspectIntervals(shown) : []), [shown]);
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -185,6 +196,33 @@ export default function RepeatsScreen() {
         </Text>
       </Pressable>
 
+      {/* Planned count. Optional: 0 means no target and no flagging. */}
+      <View style={styles.lockRow}>
+        <Text style={styles.lockLabel}>
+          {base.variant === 'continuous' ? 'Laps' : 'Reps'}
+        </Text>
+        <Pressable
+          onPress={() => !live && setTargetLaps((n) => Math.max(0, n - 1))}
+          disabled={live}
+          style={({ pressed }) => [styles.step, (live || pressed) && styles.dim]}
+        >
+          <Text style={styles.stepText}>−</Text>
+        </Pressable>
+        <Text style={styles.lockValue}>{targetLaps || '—'}</Text>
+        <Pressable
+          onPress={() => !live && setTargetLaps((n) => Math.min(50, n + 1))}
+          disabled={live}
+          style={({ pressed }) => [styles.step, (live || pressed) && styles.dim]}
+        >
+          <Text style={styles.stepText}>＋</Text>
+        </Pressable>
+      </View>
+      <Text style={styles.lockHint}>
+        {targetLaps
+          ? `Target only — the set will not stop itself at ${targetLaps}. Extra crossings get flagged for review.`
+          : 'Optional. Set one to see live progress and have extra crossings flagged.'}
+      </Text>
+
       {/* Lockout, tunable live and persisted — locked during a set. */}
       <View style={styles.lockRow}>
         <Text style={styles.lockLabel}>Lockout</Text>
@@ -220,8 +258,15 @@ export default function RepeatsScreen() {
                 : 'RUNNING'}
           </Text>
           <Text style={styles.liveCount}>
-            {liveIntervals.length} interval{liveIntervals.length === 1 ? '' : 's'}
+            {targetLaps
+              ? `${base.variant === 'continuous' ? 'Lap' : 'Rep'} ${Math.min(liveIntervals.length + 1, targetLaps)} of ${targetLaps}`
+              : `${liveIntervals.length} interval${liveIntervals.length === 1 ? '' : 's'}`}
           </Text>
+          {targetLaps && liveIntervals.length > targetLaps ? (
+            <Text style={styles.liveOver}>
+              {liveIntervals.length - targetLaps} past the target — still running, sort it at the end
+            </Text>
+          ) : null}
           {liveIntervals.length ? (
             <Text style={styles.liveList} numberOfLines={2}>
               {liveIntervals.map((i) => `${fmt(i.ms)}s`).join('  ·  ')}
@@ -284,10 +329,40 @@ export default function RepeatsScreen() {
             {shown.exact ? '' : ` · hand-started, ±${HAND_START_ERROR_MS}ms per rep`}
           </Text>
 
+          {/* The target's whole job: flag the excess so junk can be dropped until
+              the count matches. It never blocks saving — a short set is real. */}
+          {(() => {
+            const st = targetStatus(shown);
+            if (st.excess > 0) {
+              return (
+                <View style={styles.flagCard}>
+                  <Text style={styles.flagText}>
+                    {st.actual} recorded, {st.target} planned — drop {st.excess} to match.
+                    {suspects.length ? ' Marked ones look short enough to be walk-backs.' : ''}
+                  </Text>
+                </View>
+              );
+            }
+            if (st.short > 0) {
+              return (
+                <View style={styles.flagCard}>
+                  <Text style={styles.flagText}>
+                    {st.actual} of {st.target} — saving anyway keeps what was run.
+                  </Text>
+                </View>
+              );
+            }
+            return null;
+          })()}
+
           {shown.intervals.map((it, i) => (
-            <View key={`${it.closeUs}-${i}`} style={styles.ivRow}>
+            <View
+              key={`${it.closeUs}-${i}`}
+              style={[styles.ivRow, suspects.includes(i) && styles.ivRowSuspect]}
+            >
               <Text style={styles.ivIndex}>{i + 1}</Text>
               <Text style={styles.ivTime}>{fmt(it.ms)}s</Text>
+              {suspects.includes(i) ? <Text style={styles.ivSuspect}>SHORT</Text> : null}
               <Pressable
                 onPress={() => setReview(dropInterval(shown, i))}
                 hitSlop={8}
@@ -394,6 +469,19 @@ const styles = StyleSheet.create({
   liveKicker: { color: '#93c5fd', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
   liveCount: { color: '#fff', fontSize: 24, fontWeight: '800', marginTop: 4 },
   liveList: { color: '#93c5fd', fontSize: 13, marginTop: 6, fontVariant: ['tabular-nums'] },
+  liveOver: { color: '#fbbf24', fontSize: 11, marginTop: 4, lineHeight: 15 },
+  flagCard: {
+    backgroundColor: '#2a1f10',
+    borderColor: '#b45309',
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginTop: 8,
+  },
+  flagText: { color: '#fbbf24', fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  ivRowSuspect: { backgroundColor: '#2a1f10', borderRadius: 6 },
+  ivSuspect: { color: '#fbbf24', fontSize: 10, fontWeight: '800' },
   actions: { flexDirection: 'row', gap: 10, marginTop: 16 },
   btn: {
     flex: 1,

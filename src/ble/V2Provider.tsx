@@ -153,7 +153,8 @@ export type V2ContextValue = {
   repeatIntervals: RepInterval[];
   /** the finished set, awaiting review-and-save on the screen. */
   lastRepSet: RepSet | null;
-  armRepeat: (config: RepeatConfig) => void;
+  /** targetLaps is a TARGET, never a terminal condition — see repeats.ts. */
+  armRepeat: (config: RepeatConfig, targetLaps?: number | null) => void;
   /** REST variant only: the coach taps, the athlete goes. */
   startRep: () => void;
   /** Explicit end — never a timeout. One gate cannot tell finishing a lap from
@@ -815,7 +816,7 @@ export function V2Provider({ children }: { children: ReactNode }) {
 
   // --- rep sets -------------------------------------------------------------
   const armRepeat = useCallback(
-    (config: RepeatConfig) => {
+    (config: RepeatConfig, targetLaps: number | null = null) => {
       // Same mutual exclusion the drills use: one timing engine owns the gates.
       observerRef.current.reset();
       engineRef.current.reset();
@@ -826,10 +827,13 @@ export function V2Provider({ children }: { children: ReactNode }) {
       setLastRepSet(null);
       repeatRef.current.reset();
       repeatRef.current.setConfig(config);
-      repeatRef.current.arm(Date.now());
+      repeatRef.current.arm(Date.now(), targetLaps);
       setRepeatState(repeatRef.current.state);
       setRepeatIntervals([]);
-      pushLog(`rep set armed: ${config.title} on gate ${config.gateId} (lockout ${config.lockoutMs}ms)`);
+      pushLog(
+        `rep set armed: ${config.title} on gate ${config.gateId} (lockout ${config.lockoutMs}ms` +
+          `${targetLaps ? `, target ${targetLaps}` : ''})`,
+      );
     },
     [pushLog],
   );

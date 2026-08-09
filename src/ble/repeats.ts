@@ -108,6 +108,17 @@ export type RepInterval = {
 export type RepSet = {
   variant: RepeatVariant;
   gateId: number;
+  /**
+   * How many laps/reps were planned, or null if the coach didn't say.
+   *
+   * A TARGET, never a terminal condition. Auto-ending at the count would be a
+   * data-loss bug: one junk crossing ends the set after two real laps, and
+   * everything run afterwards is never captured at all. The review list can drop
+   * a spurious interval; it cannot invent one that was never recorded. So the
+   * count only drives live progress and the excess flag — the coach still ends
+   * the set.
+   */
+  targetLaps: number | null;
   intervals: RepInterval[];
   /** sum of the intervals. For CONTINUOUS this is the real total (a 1200m time);
    *  for REST it is a sum of efforts with the rest excluded, which is not a time
@@ -124,6 +135,60 @@ export type RepSet = {
 export function summarize(intervals: RepInterval[]): { totalMs: number; meanMs: number } {
   const totalMs = intervals.reduce((n, i) => n + i.ms, 0);
   return { totalMs, meanMs: intervals.length ? Math.round(totalMs / intervals.length) : 0 };
+}
+
+/** Below this fraction of the median, an interval is probably a walk-back rather
+ *  than a lap. Only ever a HINT for the review list — never dropped automatically. */
+export const SUSPECT_RATIO = 0.5;
+
+export type TargetStatus = {
+  target: number | null;
+  actual: number;
+  /** intervals beyond the target — the junk to drop. 0 when none, or no target. */
+  excess: number;
+  /** fewer than planned. Informational only; it never blocks saving, because a
+   *  short set is a real thing that happened (athlete pulled up) and refusing to
+   *  store it would lose the reps that DID happen. */
+  short: number;
+};
+
+export function targetStatus(set: RepSet): TargetStatus {
+  const actual = set.intervals.length;
+  const target = set.targetLaps ?? null;
+  if (target == null || target <= 0) return { target: null, actual, excess: 0, short: 0 };
+  return {
+    target,
+    actual,
+    excess: Math.max(0, actual - target),
+    short: Math.max(0, target - actual),
+  };
+}
+
+function median(ns: number[]): number {
+  if (!ns.length) return 0;
+  const a = [...ns].sort((x, y) => x - y);
+  const mid = a.length >> 1;
+  return a.length % 2 ? a[mid]! : Math.round((a[mid - 1]! + a[mid]!) / 2);
+}
+
+/**
+ * Indices that look like junk crossings rather than laps — conspicuously shorter
+ * than the rest of the set. A walk-back through the beam produces a few seconds
+ * between two real laps; a real lap does not.
+ *
+ * A HINT for the review list only. Which interval to drop stays the coach's call:
+ * a genuinely fast last lap would trip the same test, and auto-dropping it would
+ * delete the best rep of the session.
+ */
+export function suspectIntervals(set: RepSet): number[] {
+  const ms = set.intervals.map((i) => i.ms);
+  if (ms.length < 3) return [];
+  const cut = median(ms) * SUSPECT_RATIO;
+  const out: number[] = [];
+  ms.forEach((v, i) => {
+    if (v < cut) out.push(i);
+  });
+  return out;
 }
 
 /** Drop a spurious crossing from a finished set, before it is saved. Pure, so the
@@ -158,6 +223,7 @@ export type SavedRepSet = {
   variant: RepeatVariant;
   /** interval times in ms, in order */
   intervals: number[];
+  targetLaps: number | null;
   exact: boolean;
 };
 
@@ -169,10 +235,14 @@ export function parseRepSetJson(raw: string | null | undefined): SavedRepSet | n
     const v = JSON.parse(raw);
     if (v?.engine !== 'repeat') return null;
     const variant: RepeatVariant = v.variant === 'rest' ? 'rest' : 'continuous';
+    const targetLaps =
+      typeof v.targetLaps === 'number' && Number.isFinite(v.targetLaps) && v.targetLaps > 0
+        ? v.targetLaps
+        : null;
     const intervals = Array.isArray(v.intervals)
       ? v.intervals.filter((n: unknown): n is number => typeof n === 'number' && Number.isFinite(n))
       : [];
-    return { variant, intervals, exact: v.exact === true };
+    return { variant, intervals, targetLaps, exact: v.exact === true };
   } catch {
     return null;
   }
@@ -200,6 +270,8 @@ export class RepeatEngine {
   config: RepeatConfig;
   intervals: RepInterval[] = [];
 
+  /** planned lap/rep count for the live set, or null. Never ends anything. */
+  targetLaps: number | null = null;
   /** gate micros of the open interval's start (CONTINUOUS) */
   private openUs = 0;
   /** phone ms of the open interval's start (REST — a tap, so phone clock) */
@@ -221,8 +293,9 @@ export class RepeatEngine {
   }
 
   /** Begin a set. CONTINUOUS waits for the first crossing; REST waits for a tap. */
-  arm(atMs: number): void {
+  arm(atMs: number, targetLaps: number | null = null): void {
     this.intervals = [];
+    this.targetLaps = targetLaps && targetLaps > 0 ? Math.round(targetLaps) : null;
     this.startedAtMs = atMs;
     this.openUs = 0;
     this.openAtMs = 0;
@@ -257,6 +330,7 @@ export class RepeatEngine {
     return {
       variant: this.config.variant,
       gateId: this.config.gateId,
+      targetLaps: this.targetLaps,
       intervals,
       ...summarize(intervals),
       lockoutMs: this.config.lockoutMs,

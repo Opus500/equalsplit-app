@@ -21,7 +21,9 @@ const {
   dropInterval,
   parseRepSetJson,
   savedChartValueMs,
+  suspectIntervals,
   summarize,
+  targetStatus,
 } = await import('../src/ble/repeats.ts');
 
 let failures = 0;
@@ -331,6 +333,103 @@ console.log('\n13. SAVED sets chart the same as live ones (storage round-trip)')
   check('malformed JSON', savedChartValueMs('{not json', 4200), null);
   check('rep set with no intervals falls back to the total', savedChartValueMs('{"engine":"repeat","variant":"rest","intervals":[]}', 4200), 4200);
   check('garbage intervals are filtered', parseRepSetJson('{"engine":"repeat","intervals":[1,"x",null,2]}').intervals, [1, 2]);
+}
+
+console.log('\n14. LAP TARGET is a target, NOT a terminal condition');
+{
+  // The whole point: hitting the count must not end anything. A junk crossing
+  // would otherwise end the set after two real laps, and every lap the athlete
+  // ran afterwards would never be captured at all — the review list can drop an
+  // interval, it cannot invent one that was never recorded.
+  const e = new RepeatEngine(REPEAT_CONTINUOUS);
+  e.arm(0, 3);
+  e.ingest(brk(0), 0); // t0
+  e.ingest(brk(62_000_000), 62_000); // lap 1
+  e.ingest(brk(66_000_000), 66_000); // JUNK: walked back through
+  e.ingest(brk(130_000_000), 130_000); // lap 2
+  check('the set is STILL running at the target count', e.state, 'running');
+  e.ingest(brk(195_000_000), 195_000); // lap 3 — captured because nothing auto-ended
+  const set = e.end(200_000);
+
+  check('every crossing was captured', set.intervals.length, 4);
+  console.log('       (auto-ending at 3 would have stopped before the real lap 3 — unrecoverable)');
+
+  const st = targetStatus(set);
+  check('target carried through', st.target, 3);
+  check('actual', st.actual, 4);
+  check('one too many — flagged, not fixed', st.excess, 1);
+
+  // The coach drops the junk and the count matches.
+  const fixed = dropInterval(set, 1);
+  check('after dropping, the count matches', targetStatus(fixed).excess, 0);
+  check('and the laps are the real ones', fixed.intervals.map((i) => i.ms), [62_000, 64_000, 65_000]);
+}
+
+console.log('\n15. no target => behaves exactly as before, with no flagging');
+{
+  const e = new RepeatEngine(REPEAT_CONTINUOUS);
+  e.arm(0); // no count given
+  e.ingest(brk(0), 0);
+  e.ingest(brk(62_000_000), 62_000);
+  e.ingest(brk(126_000_000), 126_000);
+  const set = e.end(130_000);
+  check('no target stored', set.targetLaps, null);
+  const st = targetStatus(set);
+  check('nothing flagged', [st.target, st.excess, st.short], [null, 0, 0]);
+
+  // A zero or negative count is the same as not setting one.
+  const z = new RepeatEngine(REPEAT_CONTINUOUS);
+  z.arm(0, 0);
+  check('zero is no target', z.end(1).targetLaps, null);
+  const n = new RepeatEngine(REPEAT_CONTINUOUS);
+  n.arm(0, -2);
+  check('negative is no target', n.end(1).targetLaps, null);
+}
+
+console.log('\n16. a SHORT set is reported but never blocked');
+{
+  const e = new RepeatEngine(REPEAT_REST);
+  e.arm(0, 3);
+  e.startRep(0);
+  e.ingest(brk(64_000_000), 64_000);
+  e.startRep(300_000); // athlete pulls up after rep 2 is started
+  const set = e.end(400_000);
+  const st = targetStatus(set);
+  check('one rep recorded', st.actual, 1);
+  check('two short', st.short, 2);
+  check('but nothing is excess', st.excess, 0);
+  console.log('       (a short set really happened — refusing to save it would lose the rep that did)');
+}
+
+console.log('\n17. SUSPECT hint points at the walk-back, without dropping it');
+{
+  const e = new RepeatEngine(REPEAT_CONTINUOUS);
+  e.arm(0, 3);
+  e.ingest(brk(0), 0);
+  e.ingest(brk(62_000_000), 62_000); // 62.0
+  e.ingest(brk(66_000_000), 66_000); // 4.0 — the walk-back
+  e.ingest(brk(130_000_000), 130_000); // 64.0
+  e.ingest(brk(195_000_000), 195_000); // 65.0
+  const set = e.end(200_000);
+  check('the short one is flagged', suspectIntervals(set), [1]);
+  check('and it is still in the set', set.intervals.length, 4);
+
+  // A clean set flags nothing, including one with a genuinely quick last lap.
+  const clean = new RepeatEngine(REPEAT_CONTINUOUS);
+  clean.arm(0, 3);
+  clean.ingest(brk(0), 0);
+  clean.ingest(brk(66_000_000), 66_000);
+  clean.ingest(brk(130_000_000), 130_000);
+  clean.ingest(brk(188_000_000), 188_000); // 58s — a fast finish, not junk
+  check('a fast last lap is NOT flagged', suspectIntervals(clean.end(190_000)), []);
+
+  // Too few intervals to have a reliable median: hint nothing rather than guess.
+  const two = new RepeatEngine(REPEAT_CONTINUOUS);
+  two.arm(0, 1);
+  two.ingest(brk(0), 0);
+  two.ingest(brk(62_000_000), 62_000);
+  two.ingest(brk(66_000_000), 66_000);
+  check('under three intervals, no hint', suspectIntervals(two.end(70_000)), []);
 }
 
 console.log('\n=============================');
