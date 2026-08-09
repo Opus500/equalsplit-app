@@ -41,8 +41,6 @@ type PendingRunContextValue = {
   offerRun: (run: PendingRun) => void;
   /** The next rep has STARTED. Screens call this from their run-start path. */
   settleForNextRep: () => void;
-  /** Coach cleared it by hand — which also means "keep this run". */
-  dismiss: () => void;
   /** Delete the pending run and put its athlete back up. */
   discard: () => Promise<void>;
 };
@@ -132,7 +130,6 @@ export function PendingRunProvider({ children }: { children: ReactNode }) {
     state,
     offerRun,
     settleForNextRep: useCallback(() => close('next-rep'), [close]),
-    dismiss: useCallback(() => close('dismissed'), [close]),
     discard,
   };
 

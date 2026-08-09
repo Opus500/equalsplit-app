@@ -4,8 +4,10 @@
 // unlabelled "Discard" is one glance away from binning the wrong rep — a false
 // trigger followed by the real run is exactly the sequence where that bites.
 //
-// "Keep" is not decoration: it is how the coach clears the bar from the screen
-// deliberately, and it settles the run permanently.
+// There is no "Keep": keeping is already the default. The bar settles on its own
+// when the next rep is armed, and every other close path keeps the run too, so a
+// Keep button only offered a slower way to do nothing. Discard is the sole action
+// because it is the only one that changes anything.
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -13,7 +15,7 @@ import { usePendingRun } from '../runs/PendingRunProvider';
 import { describe } from '../runs/pending';
 
 export function DiscardBar() {
-  const { state, discard, dismiss } = usePendingRun();
+  const { state, discard } = usePendingRun();
 
   if (state.lastReason === 'discarded') {
     return (
@@ -34,16 +36,6 @@ export function DiscardBar() {
           {describe(p)}
         </Text>
       </View>
-
-      <Pressable
-        onPress={dismiss}
-        hitSlop={8}
-        accessibilityRole="button"
-        accessibilityLabel={`Keep ${describe(p)}`}
-        style={({ pressed }) => [styles.btn, pressed && styles.dim]}
-      >
-        <Text style={styles.keepText}>Keep</Text>
-      </Pressable>
 
       <Pressable
         onPress={discard}
@@ -87,7 +79,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   btnDiscard: { borderColor: '#7f1d1d', backgroundColor: '#1a1214' },
-  keepText: { color: '#94a3b8', fontSize: 13, fontWeight: '800' },
   discardText: { color: '#f87171', fontSize: 13, fontWeight: '800' },
   dim: { opacity: 0.6 },
 });

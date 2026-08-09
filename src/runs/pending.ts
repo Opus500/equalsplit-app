@@ -5,7 +5,8 @@
 // The window is NOT on a timer. It stays open until the next rep starts, because a
 // fixed duration means glancing away costs you the chance to bin a bad rep. What
 // closes it instead is any event that means "you are no longer looking at this run":
-// the next rep, an explicit dismiss, the gates dropping, or the app backgrounding.
+// the next rep, the gates dropping, or the app backgrounding. There is no Keep:
+// keeping is the default, so a button for it only offered a slower way to wait.
 //
 // Closing the window KEEPS the run. The run was written durably the moment it
 // finished (see saveRun) — discard is a delete by id, never a deferred insert — so
@@ -14,8 +15,6 @@
 export type SettleReason =
   /** the next rep started — the previous run is history now */
   | 'next-rep'
-  /** the coach cleared it by hand, which also MEANS "keep this run" */
-  | 'dismissed'
   /** a newer run took the window */
   | 'superseded'
   /** gates dropped: no more reps are coming, so a live control would go stale */

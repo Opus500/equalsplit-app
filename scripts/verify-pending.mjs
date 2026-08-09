@@ -45,7 +45,7 @@ console.log('\n1. a finished run opens the window, and it STAYS open');
 
 console.log('\n2. every close path KEEPS the run; only discard destroys it');
 {
-  for (const reason of ['next-rep', 'dismissed', 'disconnected', 'backgrounded']) {
+  for (const reason of ['next-rep', 'disconnected', 'backgrounded']) {
     const s = settle(offer(EMPTY_PENDING, mkRun('r1', 'Nadia')), reason);
     check(`${reason}: window closed`, isOpen(s), false);
     check(`${reason}: recorded as why`, s.lastReason, reason);
@@ -100,8 +100,8 @@ console.log('\n6. standalone (B1) runs never take the window, and never close on
 console.log('\n7. settling when nothing is pending is inert');
 {
   check('no spurious reason appears', settle(EMPTY_PENDING, 'next-rep'), EMPTY_PENDING);
-  const closed = settle(offer(EMPTY_PENDING, mkRun('r1', 'Nadia')), 'dismissed');
-  check('and settling twice does not overwrite the first reason', settle(closed, 'next-rep').lastReason, 'dismissed');
+  const closed = settle(offer(EMPTY_PENDING, mkRun('r1', 'Nadia')), 'backgrounded');
+  check('and settling twice does not overwrite the first reason', settle(closed, 'next-rep').lastReason, 'backgrounded');
 }
 
 console.log('\n8. the confirmation line can be dismissed without reopening anything');
