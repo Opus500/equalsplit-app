@@ -10,6 +10,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -90,6 +91,32 @@ export default function RosterScreen() {
     },
     [load],
   );
+
+  // Session-scoped: clearQueue() writes an empty live queue and nothing else.
+  // Templates are separate rows in queue_templates, and no run references the
+  // lineup — so this can't reach either. The confirm says so, because "clear"
+  // next to a list of names reads like it might delete the people.
+  const confirmClearLineup = useCallback(() => {
+    const n = roster.queue.athleteIds.length;
+    if (!n) return;
+    Alert.alert(
+      'Clear lineup?',
+      `Removes all ${n} athlete${n === 1 ? '' : 's'} from today's lineup.\n\n` +
+        'Nobody is deleted, no runs are affected, and saved templates are untouched — ' +
+        'this only empties the running order.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear lineup',
+          style: 'destructive',
+          onPress: () => {
+            roster.clearQueue();
+            setLineupOpen(false);
+          },
+        },
+      ],
+    );
+  }, [roster]);
 
   const toggleArchive = useCallback(
     async (a: Athlete) => {
@@ -229,6 +256,19 @@ export default function RosterScreen() {
         onRemove={roster.removeAthleteFromQueue}
         onClose={() => setLineupOpen(false)}
         note="Whoever is UP keeps their turn wherever you move them — the cursor follows the athlete, not the position."
+        footer={
+          roster.queue.athleteIds.length ? (
+            <Pressable
+              onPress={confirmClearLineup}
+              style={({ pressed }) => [styles.clearBtn, pressed && styles.dim]}
+            >
+              <Text style={styles.clearBtnText}>Clear lineup</Text>
+              <Text style={styles.clearBtnHint}>
+                Empties today’s lineup only. Saved templates and every run are untouched.
+              </Text>
+            </Pressable>
+          ) : null
+        }
       />
 
       <TemplateManagerModal visible={templatesOpen} onClose={() => setTemplatesOpen(false)} />
@@ -423,6 +463,17 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
   },
   tmplBtnText: { color: '#94a3b8', fontSize: 12, fontWeight: '700' },
+  clearBtn: {
+    marginTop: 28,
+    backgroundColor: '#1a1214',
+    borderWidth: 1,
+    borderColor: '#7f1d1d',
+    borderRadius: 10,
+    paddingVertical: 13,
+    paddingHorizontal: 14,
+  },
+  clearBtnText: { color: '#f87171', fontSize: 14, fontWeight: '800' },
+  clearBtnHint: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 4 },
   addBtn: {
     backgroundColor: '#1d4ed8',
     borderRadius: 12,
