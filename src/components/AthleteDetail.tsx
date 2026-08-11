@@ -11,6 +11,7 @@ import {
   Modal,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -18,7 +19,14 @@ import {
   View,
 } from 'react-native';
 
-import { deleteRun, getAthleteRuns, type Athlete, type AthleteRunRow } from '../db/database';
+import {
+  deleteRun,
+  getAthleteRuns,
+  setRunNote,
+  type Athlete,
+  type AthleteRunRow,
+} from '../db/database';
+import { seriesTimeSource } from '../video/timing';
 import {
   HAND_START_ERROR_MS,
   REPEAT_MODE,
@@ -32,6 +40,8 @@ import {
   MIN_SERIES_RUNS,
   buildProgression,
   formatMs,
+  seriesTitle,
+  seriesUid,
   type Progression,
   type Series,
 } from '../roster/progression';
@@ -54,6 +64,10 @@ export function AthleteDetailModal({
   children?: React.ReactNode;
 }) {
   const [rows, setRows] = useState<AthleteRunRow[] | null>(null);
+  // Lifted out of the chart so the run list below can drive the highlight and the
+  // two can never disagree about which run is selected. Keyed on the run id, not
+  // an index, so a delete can't silently retarget it.
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   // Deleting a run changes the athlete's run_count, which the roster row and every
   // picker render — refresh the provider so they don't go stale behind this sheet.
   const roster = useRoster();
@@ -97,6 +111,11 @@ export function AthleteDetailModal({
             drillName: r.drill_name,
             elapsedMs,
             createdAt: r.created_at,
+            // Drill AND source. A gate time and a video time of the same distance
+            // are not comparable — the bias between them is systematic — so they
+            // are kept in separate series rather than trusted to a naming habit.
+            timeSource: seriesTimeSource(r.raw_json),
+            userNote: r.note,
             // Splits stay reachable in the readout without touching the axis;
             // and a hand-started run says so, because the accuracy fact lives
             // on the row (runStartSource) rather than only in the UI.
@@ -150,6 +169,7 @@ export function AthleteDetailModal({
               try {
                 await deleteRun(runId);
                 setRows((prev) => prev?.filter((r) => r.id !== runId) ?? null);
+                setSelectedRunId((cur) => (cur === runId ? null : cur));
                 // Run counts on the roster row change too.
                 await roster.refresh();
               } catch (e) {
@@ -161,6 +181,51 @@ export function AthleteDetailModal({
       );
     },
     [rows, roster],
+  );
+
+  /**
+   * Add or edit the coach's note on a run.
+   *
+   * Alert.prompt rather than an inline TextInput: it is a system control, so it
+   * cannot be laid out wrong, and the last inline field added to this app shipped
+   * invisible because a row style carrying flex:1 was reused in a column. That is
+   * a poor trade when the editor can't be checked on a device first. Swapping it
+   * for an inline field later touches only this function.
+   */
+  const editNote = useCallback(
+    (runId: string) => {
+      const row = rows?.find((r) => r.id === runId);
+      if (!row) return;
+      const save = async (text: string | undefined) => {
+        try {
+          const next = text?.trim() ? text.trim() : null;
+          await setRunNote(runId, next);
+          setRows((prev) => prev?.map((r) => (r.id === runId ? { ...r, note: next } : r)) ?? null);
+        } catch (e) {
+          Alert.alert('Could not save note', String(e));
+        }
+      };
+      if (Platform.OS !== 'ios') {
+        // Android has no Alert.prompt. iOS-first app; rather than ship a silently
+        // dead button, say so plainly until an inline editor exists.
+        Alert.alert('Notes need iOS for now', 'The note editor is not built for Android yet.');
+        return;
+      }
+      Alert.prompt(
+        row.note ? 'Edit note' : 'Add a note',
+        `${(row.total_ms / 1000).toFixed(2)}s · ${row.drill_name ?? 'no drill'}`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          ...(row.note
+            ? [{ text: 'Clear', style: 'destructive' as const, onPress: () => void save('') }]
+            : []),
+          { text: 'Save', onPress: (text?: string) => void save(text) },
+        ],
+        'plain-text',
+        row.note ?? '',
+      );
+    },
+    [rows],
   );
 
   return (
@@ -201,7 +266,13 @@ export function AthleteDetailModal({
             </View>
           ) : (
             <>
-              <ChartPager series={graphable} onDeleteRun={confirmDeleteRun} />
+              <ChartPager
+                series={graphable}
+                onDeleteRun={confirmDeleteRun}
+                onEditNote={editNote}
+                selectedRunId={selectedRunId}
+                onSelectRun={setSelectedRunId}
+              />
 
               {/* Series that exist but can't be drawn yet. Listed rather than hidden:
                   "two more runs and this becomes a chart" is actionable; a blank
@@ -212,9 +283,9 @@ export function AthleteDetailModal({
                     {graphable.length ? 'OTHER DRILLS — NOT ENOUGH DATA YET' : 'NOT ENOUGH DATA YET'}
                   </Text>
                   {thin.map((s) => (
-                    <View key={s.drillId} style={styles.thinRow}>
+                    <View key={seriesUid(s)} style={styles.thinRow}>
                       <Text style={styles.thinName} numberOfLines={1}>
-                        {s.drillName}
+                        {seriesTitle(s)}
                       </Text>
                       <Text style={styles.thinCount}>
                         {s.points.length} run{s.points.length === 1 ? '' : 's'} · best{' '}
@@ -280,9 +351,15 @@ export function AthleteDetailModal({
 function ChartPager({
   series,
   onDeleteRun,
+  onEditNote,
+  selectedRunId,
+  onSelectRun,
 }: {
   series: Series[];
   onDeleteRun?: (runId: string) => void;
+  onEditNote?: (runId: string) => void;
+  selectedRunId: string | null;
+  onSelectRun: (runId: string | null) => void;
 }) {
   const [pageW, setPageW] = useState(0);
   const [page, setPage] = useState(0);
@@ -306,8 +383,31 @@ function ChartPager({
   };
 
   if (!series.length) return null;
+
+  // The list always describes the chart currently on screen — "that series only".
+  const current = series[Math.min(page, series.length - 1)];
+  const runList = current ? (
+    <RunList
+      series={current}
+      selectedRunId={selectedRunId}
+      onSelectRun={onSelectRun}
+      onDeleteRun={onDeleteRun}
+      onEditNote={onEditNote}
+    />
+  ) : null;
+
   if (series.length === 1)
-    return <ProgressionChart series={series[0]!} onDeleteRun={onDeleteRun} />;
+    return (
+      <>
+        <ProgressionChart
+          series={series[0]!}
+          onDeleteRun={onDeleteRun}
+          selectedRunId={selectedRunId}
+          onSelectRun={onSelectRun}
+        />
+        {runList}
+      </>
+    );
 
   return (
     <View onLayout={onLayout}>
@@ -321,9 +421,17 @@ function ChartPager({
             onMomentumScrollEnd={onEnd}
             decelerationRate="fast"
           >
+            {/* seriesUid, not drillId: since the source split one drill can produce
+                both a gate and a video series, and duplicate keys would let React
+                reuse the wrong chart's state. */}
             {series.map((s) => (
-              <View key={s.drillId} style={{ width: pageW }}>
-                <ProgressionChart series={s} onDeleteRun={onDeleteRun} />
+              <View key={seriesUid(s)} style={{ width: pageW }}>
+                <ProgressionChart
+                  series={s}
+                  onDeleteRun={onDeleteRun}
+                  selectedRunId={selectedRunId}
+                  onSelectRun={onSelectRun}
+                />
               </View>
             ))}
           </ScrollView>
@@ -331,7 +439,7 @@ function ChartPager({
           <View style={styles.dots}>
             {series.map((s, i) => (
               <Pressable
-                key={s.drillId}
+                key={seriesUid(s)}
                 onPress={() => goTo(i)}
                 hitSlop={10}
                 accessibilityRole="button"
@@ -345,14 +453,174 @@ function ChartPager({
               {page + 1} / {series.length}
             </Text>
           </View>
+
+          {runList}
         </>
       ) : null}
     </View>
   );
 }
 
+/**
+ * The runs behind the chart above — that series only, newest first.
+ *
+ * The chart answers "what is the shape"; this answers "which run was that, and
+ * what happened". Tapping a row selects it in both places (selection is lifted and
+ * keyed on run id), so the readout and the list can never point at different runs.
+ *
+ * Newest first, against the chart's oldest-left ordering: a coach scanning a list
+ * is looking for what just happened, while a chart has to read left-to-right in
+ * time. Same data, different questions.
+ *
+ * The expanded row is also where a video will hang later — one more line under the
+ * note, next to the existing actions. Nothing here assumes there is only ever a
+ * time, which is why the actions are a row rather than a pair of fixed buttons.
+ */
+function RunList({
+  series,
+  selectedRunId,
+  onSelectRun,
+  onDeleteRun,
+  onEditNote,
+}: {
+  series: Series;
+  selectedRunId: string | null;
+  onSelectRun: (runId: string | null) => void;
+  onDeleteRun?: (runId: string) => void;
+  onEditNote?: (runId: string) => void;
+}) {
+  const points = useMemo(() => [...series.points].reverse(), [series.points]);
+
+  return (
+    <View style={styles.listCard}>
+      <Text style={styles.listTitle} numberOfLines={1}>
+        {seriesTitle(series).toUpperCase()} · {points.length} RUN{points.length === 1 ? '' : 'S'}
+      </Text>
+
+      {points.map((p) => {
+        const open = p.runId === selectedRunId;
+        return (
+          <View key={p.runId}>
+            <Pressable
+              onPress={() => onSelectRun(open ? null : p.runId)}
+              style={({ pressed }) => [styles.runRow, open && styles.runRowOn, pressed && styles.dim]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: open }}
+              accessibilityLabel={`${formatMs(p.elapsedMs)} seconds, ${listDate(p.createdAt)}${
+                p.isBest ? ', personal best' : ''
+              }`}
+            >
+              <Text style={[styles.runTime, p.isBest && styles.runTimeBest]}>
+                {formatMs(p.elapsedMs)}s
+              </Text>
+              {p.isBest ? <Text style={styles.pb}>PB</Text> : null}
+              <View style={styles.runMid}>
+                <Text style={styles.runDate}>{listDate(p.createdAt)}</Text>
+                {/* The derived shape (a rep set's splits, a hand start) and the
+                    coach's own words are different things and read as different
+                    things — never concatenated into one ambiguous line. */}
+                {p.note ? (
+                  <Text style={styles.runMeta} numberOfLines={1}>
+                    {p.note}
+                  </Text>
+                ) : null}
+                {p.userNote ? (
+                  <Text style={styles.runNote} numberOfLines={open ? 0 : 1}>
+                    {p.userNote}
+                  </Text>
+                ) : null}
+              </View>
+            </Pressable>
+
+            {open ? (
+              <View style={styles.runActions}>
+                {onEditNote ? (
+                  <Pressable
+                    onPress={() => onEditNote(p.runId)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={styles.actionText}>{p.userNote ? 'Edit note' : 'Add note'}</Text>
+                  </Pressable>
+                ) : null}
+                {onDeleteRun ? (
+                  <Pressable
+                    onPress={() => onDeleteRun(p.runId)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={[styles.actionText, styles.actionDanger]}>Delete run</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+const listDate = (ms: number) =>
+  new Date(ms).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: '2-digit' });
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116' },
+  listCard: {
+    backgroundColor: '#131a24',
+    borderRadius: 12,
+    paddingVertical: 6,
+    marginTop: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#243042',
+  },
+  listTitle: {
+    color: '#64748b',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    paddingHorizontal: 14,
+    paddingTop: 6,
+    paddingBottom: 8,
+  },
+  runRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    // 44 is the minimum comfortable tap target, and these are tapped with a thumb
+    // at the side of a track.
+    minHeight: 44,
+    paddingVertical: 6,
+  },
+  runRowOn: { backgroundColor: '#1b2532' },
+  runTime: {
+    color: '#e2e8f0',
+    fontSize: 15,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+    minWidth: 58,
+  },
+  runTimeBest: { color: '#34d399' },
+  pb: { color: '#34d399', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  runMid: { flex: 1, minWidth: 0 },
+  runDate: { color: '#94a3b8', fontSize: 12 },
+  runMeta: { color: '#64748b', fontSize: 11, marginTop: 1 },
+  runNote: { color: '#cbd5e1', fontSize: 12, marginTop: 2, fontStyle: 'italic' },
+  runActions: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingBottom: 10,
+    paddingTop: 2,
+    backgroundColor: '#1b2532',
+  },
+  actionBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#243042',
+  },
+  actionText: { color: '#cbd5e1', fontSize: 13, fontWeight: '600' },
+  actionDanger: { color: '#f87171' },
   dots: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, marginTop: 2 },
   dotHit: { paddingHorizontal: 5, paddingVertical: 8 },
   dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#334155' },

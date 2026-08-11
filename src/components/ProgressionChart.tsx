@@ -14,11 +14,12 @@
 // marks instead (see DENSE_SPACING), which also keeps a whole season readable at
 // once — the thing the chart is actually for.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { type LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
   formatMs,
+  seriesTitle,
   xFraction,
   yBounds,
   yFraction,
@@ -51,19 +52,30 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 export function ProgressionChart({
   series,
   onDeleteRun,
+  selectedRunId,
+  onSelectRun,
 }: {
   series: Series;
   /** Omit to hide the delete affordance. The caller owns the confirm + the delete. */
   onDeleteRun?: (runId: string) => void;
+  /** Pass to CONTROL the selection (the run list below the chart does). Leave
+   *  undefined and the chart keeps its own. */
+  selectedRunId?: string | null;
+  onSelectRun?: (runId: string | null) => void;
 }) {
   const [width, setWidth] = useState(0);
-  const [sel, setSel] = useState<number | null>(null);
+  const [ownSel, setOwnSel] = useState<string | null>(null);
 
-  // A delete (or any reload) reshapes the series under us, so an index-based
-  // selection would silently point at a DIFFERENT run — the same class of bug the
-  // queue cursor avoids by keying on id. Cheapest correct fix: drop the selection
-  // whenever the series changes shape.
-  useEffect(() => setSel(null), [series.drillId, series.points.length]);
+  // Selection is keyed on the run ID, not its index — the same rule the queue
+  // cursor follows. An index survives a reshape while pointing at a DIFFERENT run;
+  // an id that no longer exists simply resolves to nothing. That makes the old
+  // "clear the selection whenever the series changes" effect unnecessary, and it
+  // is what lets the run list below drive this without the two drifting apart.
+  const selId = selectedRunId !== undefined ? selectedRunId : ownSel;
+  const setSelId = (id: string | null) => {
+    if (onSelectRun) onSelectRun(id);
+    else setOwnSel(id);
+  };
 
   const bounds = useMemo(() => yBounds(series), [series]);
   const ticks = useMemo(() => yTicks(bounds.min, bounds.max, 4), [bounds]);
@@ -118,10 +130,18 @@ export function ProgressionChart({
 
   const onLayout = (e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width);
 
+  // An id that no longer exists (its run was deleted) resolves to -1 and reads as
+  // "nothing selected" — no reset effect needed.
+  const sel = selId == null ? null : (() => {
+    const i = series.points.findIndex((p) => p.runId === selId);
+    return i >= 0 ? i : null;
+  })();
   const shown = sel != null ? pts[sel] : null;
+  const selectIndex = (i: number | null) =>
+    setSelId(i == null ? null : (series.points[i]?.runId ?? null));
   const step = (d: number) => {
     const base = sel == null ? (d > 0 ? -1 : n) : sel;
-    setSel(clamp(base + d, 0, n - 1));
+    selectIndex(clamp(base + d, 0, n - 1));
   };
 
   // Columns tile EXACTLY (no overlap), so every point stays reachable by tap even
@@ -132,7 +152,7 @@ export function ProgressionChart({
     <View style={styles.wrap} onLayout={onLayout}>
       <View style={styles.headRow}>
         <Text style={styles.drill} numberOfLines={1}>
-          {series.drillName}
+          {seriesTitle(series)}
         </Text>
         <Text style={styles.runCount}>
           {n} run{n === 1 ? '' : 's'}
@@ -220,7 +240,7 @@ export function ProgressionChart({
               {pts.map((p, i) => (
                 <Pressable
                   key={`hit-${p.runId}`}
-                  onPress={() => setSel(sel === i ? null : i)}
+                  onPress={() => selectIndex(sel === i ? null : i)}
                   accessibilityRole="button"
                   accessibilityLabel={`Run ${i + 1} of ${n}, ${formatMs(p.elapsedMs)} seconds, ${shortDate(
                     p.createdAt,
