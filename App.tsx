@@ -19,8 +19,9 @@ import RosterScreen from './src/screens/RosterScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DebugScreen from './src/screens/DebugScreen';
+import VideoSpikeScreen from './src/screens/VideoSpikeScreen'; // SPIKE — dies with the branch
 
-type Tab = 'timer' | 'drills' | 'roster' | 'history' | 'settings' | 'debug';
+type Tab = 'timer' | 'drills' | 'roster' | 'history' | 'settings' | 'debug' | 'video';
 
 export default function App() {
   useEffect(() => {
@@ -91,6 +92,12 @@ function AppShell() {
             <DebugScreen onBack={() => setTab('settings')} />
           </View>
         )}
+        {/* SPIKE. Mounts on demand so the player is torn down when you leave. */}
+        {tab === 'video' && (
+          <View style={styles.fill}>
+            <VideoSpikeScreen />
+          </View>
+        )}
       </View>
 
       <View style={styles.tabBar}>
@@ -98,6 +105,7 @@ function AppShell() {
         <TabButton label="Drills" active={tab === 'drills'} onPress={() => setTab('drills')} />
         <TabButton label="Roster" active={tab === 'roster'} onPress={() => setTab('roster')} />
         <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
+        <TabButton label="Video" active={tab === 'video'} onPress={() => setTab('video')} />
         <TabButton
           label="Settings"
           active={tab === 'settings' || tab === 'debug'}
