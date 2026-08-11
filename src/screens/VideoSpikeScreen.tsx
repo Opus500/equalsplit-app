@@ -45,11 +45,20 @@ async function settle(player: VideoPlayer, timeoutMs = 1500): Promise<number> {
 
 export default function VideoSpikeScreen() {
   const [log, setLog] = useState<string[]>(['Pick an iPhone clip to begin.', '']);
+  // `uri` is the exported COPY's path, and is null for a ph:// source — only
+  // expo-video-thumbnails needs it. `loaded` is the real "a clip is in the
+  // player" flag, true for both routes.
   const [uri, setUri] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // The true frame grid, recovered by probing. Test 1 fills it; the rest use it.
   const grid = useRef<number[]>([]);
+  // The previous run's grid, so a copied file can be diffed against the ph://
+  // original of the same clip. That comparison is a measurement of whether the
+  // picker altered the file, not an inference from codec or extension.
+  const previous = useRef<{ mode: string; grid: number[] } | null>(null);
+  const mode = useRef<string>('copied file');
 
   const player = useVideoPlayer(null, (p) => {
     p.muted = true;
@@ -60,63 +69,109 @@ export default function VideoSpikeScreen() {
     setLog((prev) => [...prev, ...lines]);
   }, []);
 
+  // Re-entrancy is tracked in a ref, not state: a state read would be the stale
+  // pre-render value inside these closures, so the buttons would re-enable
+  // mid-sequence. `guard` wraps only what a BUTTON calls — the probes below stay
+  // plain async functions so `Run all` can await them without tripping the latch
+  // it is itself holding.
+  const running = useRef(false);
   const guard = useCallback(
     (fn: () => Promise<void>) => async () => {
-      if (busy) return;
+      if (running.current) return;
+      running.current = true;
       setBusy(true);
       try {
         await fn();
       } catch (e) {
         say(`!! ${e instanceof Error ? e.message : String(e)}`, '');
       } finally {
+        running.current = false;
         setBusy(false);
       }
     },
-    [busy, say],
+    [say],
   );
 
   // ------------------------------------------------------------- pick
 
-  const pick = guard(async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      say('Photo library permission denied.', '');
-      return;
-    }
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['videos'],
-      allowsEditing: false,
-      // Transcoding would re-encode to constant frame rate and destroy the very
-      // property we are here to measure.
-      videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
+  // `direct` loads ph://<localIdentifier> straight into the player: no export, no
+  // file copy, so the picker CANNOT have transcoded it. That makes it the control
+  // against which the copied file is judged. It may fail on slo-mo, which Photos
+  // stores as an AVComposition rather than an AVURLAsset — expo-video casts to
+  // AVURLAsset and throws if that fails. Failing here is itself a result.
+  const pickWith = (direct: boolean) =>
+    guard(async () => {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        say('Photo library permission denied.', '');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['videos'],
+        allowsEditing: false,
+        // Transcoding would re-encode to constant frame rate and destroy the very
+        // property we are here to measure.
+        videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
+        // REQUIRED with Passthrough. That preset streams the original bytes via
+        // PHAssetResourceManager, whose isNetworkAccessAllowed is bound to exactly
+        // this flag; left false it throws PHPhotosError 3164 (networkAccessRequired)
+        // — including for local clips, because it prefers the .fullSizeVideo
+        // resource, which for any asset Photos considers adjusted (slo-mo counts)
+        // is rendered on demand rather than stored.
+        shouldDownloadFromNetwork: true,
+      });
+      if (res.canceled || !res.assets[0]) return;
+
+      const asset = res.assets[0];
+      const source = direct && asset.assetId ? `ph://${asset.assetId}` : asset.uri;
+      if (direct && !asset.assetId) {
+        say('No assetId — limited library permission? Falling back to the copy.', '');
+      }
+
+      if (grid.current.length) previous.current = { mode: mode.current, grid: grid.current };
+      grid.current = [];
+      mode.current = direct ? 'ph:// direct' : 'copied file';
+      setUri(direct ? null : asset.uri);
+      setLoaded(false);
+      await player.replaceAsync(source);
+      setLoaded(true);
+      await new Promise((r) => setTimeout(r, 400)); // let tracks load
+
+      const track = player.videoTrack ?? player.availableVideoTracks[0] ?? null;
+      const ext = asset.uri.split('.').pop()?.toUpperCase() ?? '?';
+      const pickerSec = asset.duration != null ? asset.duration / 1000 : null;
+      const drift = pickerSec != null ? player.duration - pickerSec : null;
+
+      setLog([
+        `=== CLIP (${direct ? 'ph:// direct — export impossible' : 'copied file'}) ===`,
+        `source          ${source.slice(-48)}`,
+        `file ext        ${ext}          ${ext === 'MP4' ? '<- .mp4 means TRANSCODED' : '(passthrough keeps the original)'}`,
+        `codec           ${track?.mimeType ?? '?'}   ${track?.mimeType === 'video/avc' ? '<- H.264: every export preset outputs this' : ''}`,
+        `size            ${track?.size ? `${track.size.width}x${track.size.height}` : '?'}`,
+        `file size       ${asset.fileSize ?? '?'} bytes`,
+        `nominal fps     ${track?.frameRate ?? '?'}`,
+        `picker duration ${pickerSec != null ? `${pickerSec.toFixed(4)}s` : '?'}`,
+        `player duration ${player.duration.toFixed(4)}s`,
+        drift != null && Math.abs(drift) > 0.05
+          ? `  !! durations disagree by ${drift.toFixed(3)}s — suspect a RENDERED slo-mo`
+          : '  durations agree',
+        '',
+        'Slo-mo warning: the .fullSizeVideo resource is the RENDERED version —',
+        '~30fps with duration stretched ~8x. Timing read off that is 8x too long.',
+        'The .video original is 240fps real-time, which is what we want.',
+        '',
+        'NOTE: nominal fps is AVAssetTrack.nominalFrameRate — an average.',
+        'It is NOT a promise that frames are evenly spaced. Test 1 checks.',
+        '',
+      ]);
     });
-    if (res.canceled || !res.assets[0]) return;
 
-    const asset = res.assets[0];
-    setUri(asset.uri);
-    grid.current = [];
-    await player.replaceAsync(asset.uri);
-    await new Promise((r) => setTimeout(r, 400)); // let tracks load
-
-    const track = player.videoTrack ?? player.availableVideoTracks[0] ?? null;
-    setLog([
-      '=== CLIP ===',
-      `uri            ${asset.uri.slice(-44)}`,
-      `picker duration ${asset.duration ?? '?'}ms`,
-      `player duration ${player.duration.toFixed(4)}s`,
-      `size           ${track?.size ? `${track.size.width}x${track.size.height}` : '?'}`,
-      `nominal fps    ${track?.frameRate ?? '?'}`,
-      `codec          ${track?.mimeType ?? '?'}`,
-      '',
-      'NOTE: nominal fps is AVAssetTrack.nominalFrameRate — an average.',
-      'It is NOT a promise that frames are evenly spaced. Test 1 checks.',
-      '',
-    ]);
-  });
+  const pick = pickWith(false);
+  const pickDirect = pickWith(true);
 
   // ------------------------------------------------- 1. real frame grid
 
-  const probeGrid = guard(async () => {
+  const probeGrid = async () => {
     const track = player.videoTrack ?? player.availableVideoTracks[0] ?? null;
     const fps = track?.frameRate ?? 30;
     const step = 1 / fps;
@@ -165,11 +220,38 @@ export default function VideoSpikeScreen() {
       ...distinct.slice(0, 8).map((t, i) => `    [${i}] ${t.toFixed(6)}s`),
       '',
     );
-  });
+
+    // THE DECISIVE CHECK. A CFR verdict above could be real, or it could be the
+    // picker having handed back a re-encoded copy. Diffing the same clip's grid
+    // against the ph:// original settles it, because ph:// cannot be exported.
+    const prev = previous.current;
+    if (prev && prev.mode !== mode.current && prev.grid.length) {
+      const n = Math.min(prev.grid.length, distinct.length, 20);
+      let worst = 0;
+      for (let i = 0; i < n; i += 1) {
+        worst = Math.max(worst, Math.abs(prev.grid[i]! - distinct[i]!));
+      }
+      say(
+        `  --- vs previous pick (${prev.mode}) ---`,
+        `  compared ${n} frames, largest disagreement ${ms(worst)}`,
+        worst < 0.0005
+          ? '  Grids MATCH: the picker did not alter the file. CFR above is real.'
+          : '  Grids DIFFER: the file was altered in transit. A CFR reading from',
+        worst < 0.0005 ? '' : '  the copied file is an artefact, not a property of your camera.',
+        '',
+      );
+    } else if (!prev) {
+      say(
+        '  (Pick the SAME clip the other way and re-run to diff the grids —',
+        '   that is what separates a real CFR clip from a transcoded one.)',
+        '',
+      );
+    }
+  };
 
   // ------------------------------------- 2 + 3. player seek accuracy
 
-  const probeSeek = guard(async () => {
+  const probeSeek = async () => {
     if (grid.current.length < 6) {
       say('Run test 1 first — it establishes the frame grid this compares against.', '');
       return;
@@ -231,13 +313,23 @@ export default function VideoSpikeScreen() {
       reportsFrame >= 5 || echoes < 5 ? '' : '    clock; use thumbnail actualTime as the source of truth.',
       '',
     );
-  });
+  };
 
   // ------------------------------------------ 3. expo-video-thumbnails
 
-  const probeLegacy = guard(async () => {
-    if (!uri || grid.current.length < 3) {
+  const probeLegacy = async () => {
+    if (grid.current.length < 3) {
       say('Run test 1 first.', '');
+      return;
+    }
+    if (!uri) {
+      say(
+        '=== 3. expo-video-thumbnails ===',
+        '  Skipped: this is a ph:// source and expo-video-thumbnails builds an',
+        '  AVURLAsset directly, so it cannot read one. That is itself a finding —',
+        '  it only works on an exported copy. Re-pick with "Pick copy" to run it.',
+        '',
+      );
       return;
     }
     const frameStart = grid.current[1]!;
@@ -268,11 +360,11 @@ export default function VideoSpikeScreen() {
       '  a full-resolution JPEG to disk on every call, with no maxWidth.',
       '',
     );
-  });
+  };
 
   // --------------------------------------------------- 4. scrub cost
 
-  const probeCost = guard(async () => {
+  const probeCost = async () => {
     if (grid.current.length < 31) {
       say('Run test 1 first.', '');
       return;
@@ -293,7 +385,7 @@ export default function VideoSpikeScreen() {
       say(`  ${label.padEnd(16)} single ${String(one).padStart(5)}ms   batch of 30 ${String(thirty).padStart(5)}ms (${(thirty / 30).toFixed(1)}ms/frame)`);
     }
     say('', '  Batching matters: one generator, one decode session.', '');
-  });
+  };
 
   const runAll = guard(async () => {
     await probeGrid();
@@ -305,7 +397,7 @@ export default function VideoSpikeScreen() {
   return (
     <View style={styles.root}>
       <View style={styles.videoBox}>
-        {uri ? (
+        {loaded ? (
           <VideoView player={player} style={styles.video} nativeControls={false} contentFit="contain" />
         ) : (
           <Text style={styles.placeholder}>no clip</Text>
@@ -313,14 +405,15 @@ export default function VideoSpikeScreen() {
       </View>
 
       <View style={styles.row}>
-        <Btn label="Pick clip" onPress={pick} busy={busy} />
-        <Btn label="Run all" onPress={runAll} busy={busy || !uri} />
+        <Btn label="Pick copy" onPress={pick} busy={busy} />
+        <Btn label="Pick ph://" onPress={pickDirect} busy={busy} />
+        <Btn label="Run all" onPress={runAll} busy={busy || !loaded} />
       </View>
       <View style={styles.row}>
-        <Btn label="1 grid" onPress={probeGrid} busy={busy || !uri} />
-        <Btn label="2 seek" onPress={probeSeek} busy={busy || !uri} />
-        <Btn label="3 thumbs" onPress={probeLegacy} busy={busy || !uri} />
-        <Btn label="4 cost" onPress={probeCost} busy={busy || !uri} />
+        <Btn label="1 grid" onPress={guard(probeGrid)} busy={busy || !loaded} />
+        <Btn label="2 seek" onPress={guard(probeSeek)} busy={busy || !loaded} />
+        <Btn label="3 thumbs" onPress={guard(probeLegacy)} busy={busy || !loaded} />
+        <Btn label="4 cost" onPress={guard(probeCost)} busy={busy || !loaded} />
       </View>
 
       <ScrollView style={styles.logBox} contentContainerStyle={styles.logPad}>
