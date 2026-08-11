@@ -8,6 +8,14 @@
 // label text, and two drills never share an axis. A 30m and a 40yd dash are not
 // comparable, so putting them on one y-axis would draw a "trend" that is really just
 // the athlete alternating between two distances.
+//
+// The same rule now extends to HOW the time was produced. A gate fires on the first
+// thing through the beam; a coach judging a video frame reads the torso. At 8 m/s
+// that is a systematic ~37ms in one direction — a bias, not noise, so it never
+// averages out no matter how many runs accumulate. Mixing them would draw a step
+// change on the day the coach picked up their phone instead of the gates. So the
+// group key is drill AND source, and the split is structural rather than a naming
+// convention someone has to remember.
 
 /**
  * Fewest runs in one drill before a graph is drawn.
@@ -27,17 +35,32 @@ export const MIN_Y_SPAN_MS = 200;
 /** Fraction of the span added above and below so points never touch the frame. */
 const Y_PAD = 0.12;
 
+/**
+ * How the time was produced. Declared here rather than imported: this module is
+ * deliberately import-free so the verify scripts can load it standalone, the same
+ * reason migrations.ts restates ENGINE_DRILL_LABELS. The canonical definition —
+ * and the raw_json reader that produces it — is src/video/timing.ts.
+ */
+export type TimeSource = 'gate' | 'hand' | 'video';
+
 export type ProgressionRun = {
   id: string;
   drillId: string | null;
   drillName: string | null;
   elapsedMs: number;
   createdAt: number;
+  /** Absent means gate — every run predating the field is gate-timed. Callers
+   *  should pass seriesTimeSource(raw_json), which already folds unknown to gate. */
+  timeSource?: TimeSource | null;
   /** Optional extra shown in the chart readout when this point is selected —
    *  a rep set's individual splits, say. The chart plots ONE value per run, so
    *  this is how a multi-interval run keeps its detail reachable without putting
    *  several points on an axis that means "one effort per point". */
   note?: string | null;
+  /** The coach's own note on the run. Distinct from `note` above, which is a
+   *  DERIVED description of the run's shape — this one is typed by a person and
+   *  is the only field here that round-trips to storage. */
+  userNote?: string | null;
 };
 
 export type SeriesPoint = {
@@ -48,11 +71,16 @@ export type SeriesPoint = {
   isBest: boolean;
   /** see ProgressionRun.note */
   note: string | null;
+  /** see ProgressionRun.userNote */
+  userNote: string | null;
 };
 
 export type Series = {
   drillId: string;
   drillName: string;
+  /** what produced these times. Every point in a series shares it — that is the
+   *  whole point of the split. */
+  timeSource: TimeSource;
   /** chronological, oldest first */
   points: SeriesPoint[];
   bestMs: number;
@@ -110,7 +138,10 @@ function slope(values: number[]): number {
 export function buildProgression(runs: ProgressionRun[]): Progression {
   let unlabeledRuns = 0;
   let invalidRuns = 0;
-  const groups = new Map<string, { name: string; runs: ProgressionRun[] }>();
+  const groups = new Map<
+    string,
+    { drillId: string; source: TimeSource; name: string; runs: ProgressionRun[] }
+  >();
 
   for (const r of runs) {
     if (!isUsable(r)) {
@@ -121,10 +152,15 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
       unlabeledRuns++;
       continue;
     }
-    let g = groups.get(r.drillId);
+    // Drill AND source. Absent folds to gate: every run recorded before the field
+    // existed is gate-timed, and a fourth "unknown" bucket would split the whole
+    // of an existing season in half for no gain.
+    const source: TimeSource = r.timeSource ?? 'gate';
+    const key = `${r.drillId}|${source}`;
+    let g = groups.get(key);
     if (!g) {
-      g = { name: r.drillName?.trim() || 'Untitled drill', runs: [] };
-      groups.set(r.drillId, g);
+      g = { drillId: r.drillId, source, name: r.drillName?.trim() || 'Untitled drill', runs: [] };
+      groups.set(key, g);
     }
     // A later row carrying a name wins over a blank one, so a renamed drill shows
     // its current name even if some joined rows came back null.
@@ -133,7 +169,7 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
   }
 
   const series: Series[] = [];
-  for (const [drillId, g] of groups) {
+  for (const g of groups.values()) {
     // Chronological. `id` breaks ties so two runs sharing a timestamp order
     // deterministically — otherwise the chart could reshuffle between renders.
     const sorted = [...g.runs].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
@@ -141,14 +177,16 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
     const bestMs = Math.min(...times);
     const worstMs = Math.max(...times);
     series.push({
-      drillId,
+      drillId: g.drillId,
       drillName: g.name,
+      timeSource: g.source,
       points: sorted.map((r) => ({
         runId: r.id,
         elapsedMs: r.elapsedMs,
         createdAt: r.createdAt,
         isBest: r.elapsedMs === bestMs,
         note: r.note ?? null,
+        userNote: r.userNote ?? null,
       })),
       bestMs,
       worstMs,
@@ -176,6 +214,31 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
     totalRuns: runs.length,
     hasGraphable: series.some((s) => s.graphable),
   };
+}
+
+/**
+ * Display title for a series.
+ *
+ * A gate series reads exactly as it always did — no suffix — so nothing about an
+ * existing chart changes. The suffix appears only on times that are NOT gate-timed,
+ * which is where the coach needs to be told, and it doubles as the visible reason
+ * two series of the same drill now sit side by side in the pager.
+ */
+export function seriesTitle(s: Series): string {
+  if (s.timeSource === 'gate') return s.drillName;
+  return `${s.drillName} · ${s.timeSource === 'video' ? 'video' : 'hand start'}`;
+}
+
+/**
+ * Stable unique identity for a series — for React keys and for "did the series
+ * change?" comparisons.
+ *
+ * drillId ALONE is no longer unique: since the source split, one drill can produce
+ * a gate series and a video series at the same time. Keying a list on drillId would
+ * give React duplicate keys and let it reuse the wrong chart's state.
+ */
+export function seriesUid(s: Series): string {
+  return `${s.drillId}|${s.timeSource}`;
 }
 
 /**
