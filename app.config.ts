@@ -6,6 +6,9 @@ const BLUETOOTH_REASON =
 const PHOTOS_REASON =
   'EqualSplit reads a video you recorded so you can mark the start and finish frames of a run.';
 
+const CAMERA_REASON =
+  'EqualSplit records a rep so you can mark the start and finish frames and time it.';
+
 const config: ExpoConfig = {
   name: 'EqualSplit',
   slug: 'equalsplit-app',
@@ -21,6 +24,10 @@ const config: ExpoConfig = {
     infoPlist: {
       NSBluetoothAlwaysUsageDescription: BLUETOOTH_REASON,
       NSBluetoothPeripheralUsageDescription: BLUETOOTH_REASON,
+      // NSCameraUsageDescription is NOT set here. expo-image-picker's plugin owns
+      // that key and its createPermissionsPlugin DELETES it when passed
+      // cameraPermission: false, overwriting anything set here. So it is declared
+      // on that plugin below instead — one key, one owner.
     },
   },
   android: {
@@ -55,13 +62,15 @@ const config: ExpoConfig = {
     // the plugin no-ops on Info.plist, which is what we want — we frame-step a
     // local clip, we never play media in the background.
     'expo-video',
-    // Camera/microphone explicitly refused: capture is the system camera's job
-    // (it gives 120/240fps slo-mo for free), so we only ever read the library.
+    // SPIKE: cameraPermission is no longer false. VisionCamera v5 ships no config
+    // plugin, and this plugin owns NSCameraUsageDescription — passing false here
+    // strips the key regardless of what ios.infoPlist says, so the camera silently
+    // fails to open. Microphone stays refused: the spike records enableAudio false.
     [
       'expo-image-picker',
       {
         photosPermission: PHOTOS_REASON,
-        cameraPermission: false,
+        cameraPermission: CAMERA_REASON,
         microphonePermission: false,
       },
     ],

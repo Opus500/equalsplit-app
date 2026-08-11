@@ -20,8 +20,9 @@ import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DebugScreen from './src/screens/DebugScreen';
 import VideoSpikeScreen from './src/screens/VideoSpikeScreen'; // SPIKE — dies with the branch
+import VisionSpikeScreen from './src/screens/VisionSpikeScreen'; // SPIKE — dies with the branch
 
-type Tab = 'timer' | 'drills' | 'roster' | 'history' | 'settings' | 'debug' | 'video';
+type Tab = 'timer' | 'drills' | 'roster' | 'history' | 'settings' | 'debug' | 'video' | 'cam';
 
 export default function App() {
   useEffect(() => {
@@ -98,6 +99,12 @@ function AppShell() {
             <VideoSpikeScreen />
           </View>
         )}
+        {/* SPIKE. Must unmount on leave — a live capture session holds the camera. */}
+        {tab === 'cam' && (
+          <View style={styles.fill}>
+            <VisionSpikeScreen />
+          </View>
+        )}
       </View>
 
       <View style={styles.tabBar}>
@@ -106,6 +113,7 @@ function AppShell() {
         <TabButton label="Roster" active={tab === 'roster'} onPress={() => setTab('roster')} />
         <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
         <TabButton label="Video" active={tab === 'video'} onPress={() => setTab('video')} />
+        <TabButton label="Cam" active={tab === 'cam'} onPress={() => setTab('cam')} />
         <TabButton
           label="Settings"
           active={tab === 'settings' || tab === 'debug'}
