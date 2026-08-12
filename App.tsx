@@ -19,7 +19,7 @@ import RosterScreen from './src/screens/RosterScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DebugScreen from './src/screens/DebugScreen';
-import VideoMarkScreen from './src/screens/VideoMarkScreen';
+import VideoTab from './src/screens/VideoTab';
 
 type Tab = 'timer' | 'drills' | 'roster' | 'history' | 'settings' | 'debug' | 'video';
 
@@ -97,7 +97,7 @@ function AppShell() {
             in-progress state worth preserving — an unsaved mark is cheap to redo. */}
         {tab === 'video' && (
           <View style={styles.fill}>
-            <VideoMarkScreen />
+            <VideoTab />
           </View>
         )}
       </View>

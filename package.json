@@ -18,6 +18,7 @@
     "expo-image": "~56.0.11",
     "expo-image-picker": "~56.0.23",
     "expo-keep-awake": "~56.0.3",
+    "expo-media-library": "~56.0.10",
     "expo-sqlite": "~56.0.5",
     "expo-status-bar": "~56.0.4",
     "expo-video": "~56.1.4",

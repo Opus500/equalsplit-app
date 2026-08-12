@@ -18,6 +18,7 @@ import {
   type MigrationDb,
 } from './migrations';
 import { EMPTY_QUEUE, type QueueState } from '../roster/queue';
+import { VIDEO_MODE } from '../video/timing';
 
 export const DEFAULT_REACTION_OFFSET_MS = 150;
 
@@ -428,6 +429,39 @@ export async function updateRunAthlete(runId: string, athleteId: string | null):
 }
 
 // Delete a run; if its session is left empty, remove the session too.
+export type VideoRunRow = {
+  id: string;
+  total_ms: number;
+  created_at: number;
+  raw_json: string | null;
+  athlete_name: string | null;
+  drill_name: string | null;
+};
+
+/**
+ * Every video-timed run, newest first.
+ *
+ * Backs the video library: a list of files with sizes and dates is close to
+ * useless for deciding what to delete, so each clip is shown against the run it
+ * belongs to. The clip id lives inside raw_json rather than in a column — there is
+ * one video mode and few enough rows that scanning them costs nothing, and adding
+ * a column would put the same fact in two places where they could disagree.
+ */
+export async function listVideoRuns(): Promise<VideoRunRow[]> {
+  const db = await getDb();
+  return db.getAllAsync<VideoRunRow>(
+    `SELECT r.id, r.total_ms, r.created_at, r.raw_json,
+            a.display_name AS athlete_name,
+            d.name         AS drill_name
+       FROM runs r
+       LEFT JOIN athletes a ON a.id = r.athlete_id
+       LEFT JOIN drills   d ON d.id = r.drill_id
+      WHERE r.mode = ?
+      ORDER BY r.created_at DESC`,
+    [VIDEO_MODE],
+  );
+}
+
 /**
  * Set (or clear) the coach's note on a run.
  *

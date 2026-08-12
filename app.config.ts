@@ -6,6 +6,9 @@ const BLUETOOTH_REASON =
 const PHOTOS_REASON =
   'EqualSplit reads a video you recorded so you can mark the start and finish frames of a run.';
 
+const SAVE_PHOTOS_REASON =
+  'EqualSplit saves a run video back to your camera roll when you export it.';
+
 const config: ExpoConfig = {
   name: 'EqualSplit',
   slug: 'equalsplit-app',
@@ -66,6 +69,20 @@ const config: ExpoConfig = {
         photosPermission: PHOTOS_REASON,
         cameraPermission: false,
         microphonePermission: false,
+      },
+    ],
+    // Export to camera roll. photosPermission is passed the SAME string as the
+    // picker above, deliberately: both plugins run createPermissionsPlugin over
+    // NSPhotoLibraryUsageDescription, so whichever executes last wins. Passing
+    // false here would DELETE the key the picker needs for import, and omitting it
+    // would let this plugin overwrite the message with its generic default.
+    // Identical strings make plugin order irrelevant.
+    [
+      'expo-media-library',
+      {
+        photosPermission: PHOTOS_REASON,
+        savePhotosPermission: SAVE_PHOTOS_REASON,
+        isAccessMediaLocationEnabled: false,
       },
     ],
   ],
