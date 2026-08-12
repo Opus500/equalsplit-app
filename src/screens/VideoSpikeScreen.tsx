@@ -36,6 +36,11 @@ import { useVideoPlayer, VideoView, type VideoPlayer } from 'expo-video';
 import * as ImagePicker from 'expo-image-picker';
 import * as VideoThumbnails from 'expo-video-thumbnails';
 
+// The REAL pure module, not a reimplementation — so what test D proves about the
+// frame grid is proved about the code that will ship, the same way
+// verify-migration.mjs rehearses the actual migration rather than a copy of it.
+import { emptyGrid, ingestFrames, isVariableRate, measuredFps } from '../video/timing';
+
 // ---------------------------------------------------------------- helpers
 
 const sleep = (n: number) => new Promise((r) => setTimeout(r, n));
@@ -332,10 +337,140 @@ export default function VideoSpikeScreen() {
     );
   }, [uri, player, say]);
 
+  // ------------------------- D. SEQUENTIAL single-frame calls
+
+  /** One frame, one call. Returns ms taken and the actualTime, or null on failure. */
+  const oneFrame = useCallback(
+    async (t: number, maxWidth?: number): Promise<{ ms: number; actual: number } | null> => {
+      const t0 = Date.now();
+      try {
+        const [th] = await player.generateThumbnailsAsync(
+          [t],
+          maxWidth ? { maxWidth, maxHeight: maxWidth } : undefined,
+        );
+        return th ? { ms: Date.now() - t0, actual: th.actualTime } : null;
+      } catch {
+        return null;
+      }
+    },
+    [player],
+  );
+
+  const sequential = useCallback(async () => {
+    const step = 1 / fps.current;
+    say(
+      '=== D. SEQUENTIAL SINGLE-FRAME CALLS ===',
+      `preview ${preview ? 'ON' : 'OFF'}`,
+      '  Batches die above n=1, so this is the whole plan: loop one at a time.',
+      '',
+    );
+
+    // --- D1: consecutive frames, as frame-stepping near a mark would ask.
+    const t0 = Date.now();
+    const results: { ms: number; actual: number }[] = [];
+    let failed = 0;
+    for (let i = 0; i < 30; i += 1) {
+      const r = await oneFrame(1.0 + i * step, 160);
+      if (r) results.push(r);
+      else failed += 1;
+    }
+    const wall = Date.now() - t0;
+    const per = results.length ? results.reduce((a, b) => a + b.ms, 0) / results.length : 0;
+
+    // Fed through the SHIPPING grid code, so a pass here is a pass for the module.
+    let grid = emptyGrid();
+    grid = ingestFrames(grid, { from: 1.0, to: 1.0 + 30 * step }, results.map((r) => r.actual));
+    const mfps = measuredFps(grid);
+
+    say(
+      '  D1 consecutive frames (stepping):',
+      `    ${results.length}/30 succeeded, ${failed} failed`,
+      `    per call  ${per.toFixed(1)}ms      total ${wall}ms`,
+      `    distinct frames ${grid.frames.length}`,
+      `    measured fps    ${mfps ? mfps.toFixed(3) : 'n/a'}   nominal ${fps.current.toFixed(3)}`,
+      `    variable rate   ${isVariableRate(grid) ? 'YES — 1/fps stepping would drift' : 'no, constant'}`,
+      '',
+    );
+
+    if (!results.length) {
+      say('  Sequential does NOT work either. That is rung 4: the Swift module.', '');
+      return;
+    }
+
+    // --- D2: scattered across the clip, as a filmstrip would ask.
+    // The comparison is the point. expo-video builds a NEW AVAssetImageGenerator on
+    // every call, so no decode session survives between them — if that is true,
+    // a neighbouring frame costs the same as one a minute away, because both pay
+    // the full decode from the preceding keyframe.
+    const t1 = Date.now();
+    const scattered: number[] = [];
+    let sFailed = 0;
+    for (let i = 0; i < 30; i += 1) {
+      const r = await oneFrame((i * player.duration) / 30, 160);
+      if (r) scattered.push(r.ms);
+      else sFailed += 1;
+    }
+    const sWall = Date.now() - t1;
+    const sPer = scattered.length ? scattered.reduce((a, b) => a + b, 0) / scattered.length : 0;
+
+    say(
+      '  D2 scattered across the clip (filmstrip):',
+      `    ${scattered.length}/30 succeeded, ${sFailed} failed`,
+      `    per call  ${sPer.toFixed(1)}ms      total ${sWall}ms`,
+      sPer > per * 1.6
+        ? '    Scattered is MUCH dearer -> neighbouring frames do reuse something.'
+        : '    Scattered costs about the same as consecutive -> NO decode reuse.',
+      sPer > per * 1.6 ? '' : '    Every call pays keyframe-to-target. Stepping is as dear as scrubbing.',
+      '',
+    );
+
+    // --- D3: does tile size change the cost? Decides whether small tiles are cheap.
+    say('  D3 cost by tile size (10 calls each):');
+    for (const w of [64, 160, 0]) {
+      const t2 = Date.now();
+      let ok = 0;
+      for (let i = 0; i < 10; i += 1) {
+        if (await oneFrame(1.0 + i * step * 7, w || undefined)) ok += 1;
+      }
+      const el = Date.now() - t2;
+      say(`    ${(w ? `maxSize ${w}` : 'full size').padEnd(14)} ${ok}/10  ${(el / 10).toFixed(1)}ms each`);
+    }
+
+    // --- D4: can single calls run CONCURRENTLY? Each JS call builds its own
+    // generator, so this both probes the batch failure's mechanism and offers a
+    // straight multiplier on filmstrip build time if it holds.
+    const t3 = Date.now();
+    const par = await Promise.all(
+      [0, 1, 2, 3, 4].map((i) => oneFrame(1.0 + i * step * 11, 160)),
+    );
+    const parOk = par.filter(Boolean).length;
+    say(
+      '',
+      `  D4 five calls in PARALLEL: ${parOk}/5 in ${Date.now() - t3}ms`,
+      parOk === 5
+        ? '    Concurrency is fine -> a filmstrip can fan out and divide the wall time.'
+        : '    Parallel fails like a batch -> the fault is concurrent generators on the',
+      parOk === 5 ? '' : '    shared player asset. Sequential is the only safe shape.',
+      '',
+    );
+
+    // --- What this means for the actual screen.
+    const cheapest = Math.min(per, sPer);
+    say(
+      '  PROJECTION at the measured rate:',
+      `    20-tile filmstrip   ${((cheapest * 20) / 1000).toFixed(1)}s`,
+      `    60-tile filmstrip   ${((cheapest * 60) / 1000).toFixed(1)}s`,
+      `    12-frame step window ${((cheapest * 12) / 1000).toFixed(1)}s`,
+      parOk === 5 ? `    ...divided by ~${parOk} if fanned out` : '',
+      '',
+    );
+  }, [player, preview, oneFrame, say]);
+
   const runAll = guard(async () => {
     await sweep();
     await playerOnly();
     await legacy();
+    await sequential();
   });
 
   return (
@@ -361,6 +496,7 @@ export default function VideoSpikeScreen() {
         <Btn label="A sweep" onPress={guard(sweep)} off={busy || !loaded} />
         <Btn label="B player" onPress={guard(playerOnly)} off={busy || !loaded} />
         <Btn label="C thumbs" onPress={guard(legacy)} off={busy || !loaded} />
+        <Btn label="D seq" onPress={guard(sequential)} off={busy || !loaded} />
       </View>
 
       <ScrollView style={styles.logBox} contentContainerStyle={styles.logPad}>
