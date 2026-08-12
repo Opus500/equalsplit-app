@@ -443,10 +443,11 @@ export default function VideoSpikeScreen() {
     const par = await Promise.all(
       [0, 1, 2, 3, 4].map((i) => oneFrame(1.0 + i * step * 11, 160)),
     );
+    const parWall = Date.now() - t3;
     const parOk = par.filter(Boolean).length;
     say(
       '',
-      `  D4 five calls in PARALLEL: ${parOk}/5 in ${Date.now() - t3}ms`,
+      `  D4 five calls in PARALLEL: ${parOk}/5 in ${parWall}ms`,
       parOk === 5
         ? '    Concurrency is fine -> a filmstrip can fan out and divide the wall time.'
         : '    Parallel fails like a batch -> the fault is concurrent generators on the',
@@ -455,16 +456,53 @@ export default function VideoSpikeScreen() {
     );
 
     // --- What this means for the actual screen.
+    // MEASURED speedup, not the fan-out width. An earlier version of this printed
+    // "divided by ~5", which was wrong: five concurrent calls returning in 77ms
+    // against a 27.7ms serial cost is 1.8x, not 5x — the hardware decoder
+    // serialises most of the work. Run E for the actual knee.
     const cheapest = Math.min(per, sPer);
+    const parSpeedup = parOk === 5 && parWall > 0 ? (cheapest * 5) / parWall : 1;
     say(
       '  PROJECTION at the measured rate:',
-      `    20-tile filmstrip   ${((cheapest * 20) / 1000).toFixed(1)}s`,
-      `    60-tile filmstrip   ${((cheapest * 60) / 1000).toFixed(1)}s`,
-      `    12-frame step window ${((cheapest * 12) / 1000).toFixed(1)}s`,
-      parOk === 5 ? `    ...divided by ~${parOk} if fanned out` : '',
+      `    measured fan-out speedup at width 5: ${parSpeedup.toFixed(2)}x`,
+      `    20-tile filmstrip   ${((cheapest * 20) / 1000).toFixed(2)}s  ->  ${((cheapest * 20) / parSpeedup / 1000).toFixed(2)}s fanned out`,
+      `    60-tile filmstrip   ${((cheapest * 60) / 1000).toFixed(2)}s  ->  ${((cheapest * 60) / parSpeedup / 1000).toFixed(2)}s fanned out`,
+      `    12-frame step window ${((cheapest * 12) / 1000).toFixed(2)}s  ->  ${((cheapest * 12) / parSpeedup / 1000).toFixed(2)}s fanned out`,
       '',
     );
   }, [player, preview, oneFrame, say]);
+
+  // ------------------------------- E. where does fan-out stop paying?
+
+  const fanOut = useCallback(async () => {
+    const step = 1 / fps.current;
+    say(
+      '=== E. FAN-OUT WIDTH ===',
+      '  12 calls at each width, chunked. Width 1 is the serial baseline.',
+      '  Looking for the knee: one hardware decoder means this flattens early,',
+      '  and past the knee the only thing wider buys is memory pressure.',
+      '',
+    );
+    let baseline = 0;
+    for (const width of [1, 2, 4, 8, 12]) {
+      const t0 = Date.now();
+      let ok = 0;
+      for (let i = 0; i < 12; i += width) {
+        const chunk = [];
+        for (let j = 0; j < width && i + j < 12; j += 1) {
+          chunk.push(oneFrame(1.0 + (i + j) * step * 5, 160));
+        }
+        ok += (await Promise.all(chunk)).filter(Boolean).length;
+      }
+      const el = Date.now() - t0;
+      if (width === 1) baseline = el;
+      say(
+        `  width ${String(width).padStart(2)}  ${ok}/12  ${String(el).padStart(5)}ms total  ` +
+          `${(el / 12).toFixed(1)}ms/call  ${baseline ? `${(baseline / el).toFixed(2)}x` : ''}`,
+      );
+    }
+    say('', '  Pick the smallest width within ~10% of the best — wider costs memory', '  for nothing.', '');
+  }, [oneFrame, say]);
 
   const runAll = guard(async () => {
     await sweep();
@@ -497,6 +535,7 @@ export default function VideoSpikeScreen() {
         <Btn label="B player" onPress={guard(playerOnly)} off={busy || !loaded} />
         <Btn label="C thumbs" onPress={guard(legacy)} off={busy || !loaded} />
         <Btn label="D seq" onPress={guard(sequential)} off={busy || !loaded} />
+        <Btn label="E fan" onPress={guard(fanOut)} off={busy || !loaded} />
       </View>
 
       <ScrollView style={styles.logBox} contentContainerStyle={styles.logPad}>
