@@ -21,8 +21,9 @@ const {
   seriesTimeSource,
   seriesKey,
   timeFromMarks,
-  videoDecimals,
+  VIDEO_DECIMALS,
   formatVideoSeconds,
+  formatVideoTime,
   parallaxErrorMs,
   BODY_PART_BIAS_MS,
   emptyGrid,
@@ -139,12 +140,19 @@ console.log('\n5. THE +/- COMES FROM THE CLIP, not a constant');
   const mixed = timeFromMarks({ pts: 0, frameDurSec: 1 / 30 }, { pts: 2, frameDurSec: 1 / 240 });
   truthy('a mixed-rate pair lands between the two', mixed.quantSdMs < sd(30) && mixed.quantSdMs > sd(240));
 
-  // Decimals are earned, never assumed.
-  check('30fps cannot honestly show hundredths', videoDecimals(sd(30)), 1);
-  check('60fps can', videoDecimals(sd(60)), 2);
-  check('240fps can, but not thousandths', videoDecimals(sd(240)), 2);
-  check('a 30fps time prints as 4.2s', formatVideoSeconds(4213, videoDecimals(sd(30))), '4.2');
-  check('a 240fps time prints as 4.21s', formatVideoSeconds(4213, videoDecimals(sd(240))), '4.21');
+  // Display shows two decimals ALWAYS, with the uncertainty beside it. Rounding a
+  // 30fps time to 4.2s was arithmetically defensible and practically worse: a
+  // tenth is too coarse to read, and rounding HIDES the uncertainty instead of
+  // stating it. The +/- is what licenses the second digit.
+  check('two decimals, whatever the frame rate', VIDEO_DECIMALS, 2);
+  check('a 30fps time prints as 4.21s', formatVideoSeconds(4213), '4.21');
+  check('and so does a 240fps one', formatVideoSeconds(4213), '4.21');
+
+  const slow = timeFromMarks({ pts: 0, frameDurSec: 1 / 30 }, { pts: 4.213, frameDurSec: 1 / 30 });
+  const fast = timeFromMarks({ pts: 0, frameDurSec: 1 / 240 }, { pts: 4.213, frameDurSec: 1 / 240 });
+  check('the same digits, but the honesty rides alongside', formatVideoTime(slow), '4.21s ± 14ms');
+  check('and a faster clip says a smaller number', formatVideoTime(fast), '4.21s ± 2ms');
+  truthy('so the two are distinguishable where it matters', formatVideoTime(slow) !== formatVideoTime(fast));
 }
 
 console.log('\n6. THE ERRORS THAT DO NOT SHRINK are kept out of the computed figure');

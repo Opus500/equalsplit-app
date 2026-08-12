@@ -43,6 +43,7 @@ import {
   BODY_PART_BIAS_MS,
   emptyGrid,
   formatVideoSeconds,
+  formatVideoTime,
   isVariableRate,
   markAt,
   measuredFps,
@@ -82,6 +83,18 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   const [startAt, setStartAt] = useState(0);
   const [finishAt, setFinishAt] = useState(0);
   const [dragging, setDragging] = useState<Which | null>(null);
+  /** Which mark the step arrows drive. Start by default, so the arrows work the
+   *  moment a clip lands rather than waiting for a handle to be touched. */
+  const [active, setActive] = useState<Which>('start');
+  /**
+   * The clip's frame duration, as STATE rather than a memo.
+   *
+   * It was `useMemo(..., [clip, player])`, which evaluated on the render that set
+   * the clip — before replaceAsync had resolved and before the tracks existed. So
+   * player.videoTrack was null, it fell back to 30fps, and nothing ever
+   * recomputed it: a 24fps clip was probed on a 30fps grid for its whole life.
+   */
+  const [frameDur, setFrameDur] = useState(1 / 30);
   const [drill, setDrill] = useState<Drill | null>(null);
   const [pickingDrill, setPickingDrill] = useState(false);
   const [pickingAthlete, setPickingAthlete] = useState(false);
@@ -109,7 +122,6 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   });
 
   const duration = player.duration || 0;
-  const frameDur = useMemo(() => (clip ? nominalFrameDur(player) : 1 / 30), [clip, player]);
 
   // Latest values for the pan responder, which is created once and would
   // otherwise close over the first render's state.
@@ -155,8 +167,24 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
       // Let the tracks load before anything reads duration or frame rate.
       await new Promise((r) => setTimeout(r, 400));
       const d = player.duration || 0;
-      setStartAt(0);
-      setFinishAt(d);
+      const dur = nominalFrameDur(player);
+      setFrameDur(dur);
+      setActive('start');
+
+      // Marks land on REAL frames, and the grid around them is probed now rather
+      // than on first use. Two bugs lived here: finishAt was set to `duration`
+      // exactly, which is past the last frame — extraction has nothing to return
+      // there, so the anchor failed, the grid stayed empty and the Finish arrows
+      // silently did nothing. And with no grid at all, neither arrow could resolve
+      // a frame until a handle had been dragged.
+      const endAt = Math.max(0, d - dur * 1.5);
+      let g = emptyGrid();
+      g = (await probeGridAround(player, g, 0, dur)).grid;
+      g = (await probeGridAround(player, g, endAt, dur)).grid;
+      setGrid(g);
+      setStartAt(markAt(g, 0)?.pts ?? 0);
+      setFinishAt(markAt(g, endAt)?.pts ?? endAt);
+      player.currentTime = dur / 2;
     } catch (e) {
       Alert.alert('Could not import that clip', String(e));
     } finally {
@@ -215,7 +243,6 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   // every move, which is what "see it change as they scrub" needs; the moment the
   // finger lifts it is replaced by the frame-accurate one.
   const liveMs = timing ? timing.elapsedMs : (finishAt - startAt) * 1000;
-  const decimals = timing ? timing.decimals : 1;
 
   // ------------------------------------------------------------ drag
 
@@ -238,6 +265,9 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
         // compounds, and is why a 20pt drag crossed most of the strip.
         dragBase.current = which === 'start' ? live.current.startAt : live.current.finishAt;
         dragSeeks.current = { n: 0, ms: 0, lastAt: 0, lastT: -1 };
+        // Touching a handle also makes it the one the arrows drive — otherwise the
+        // coach drags one mark and then nudges the other.
+        setActive(which);
         // Scrubbing mode plus a LOOSE tolerance for the duration of the drag. A
         // zero-tolerance seek must decode from the preceding keyframe, which is the
         // ~25ms we measured — fine once, ruinous at 60Hz. While a finger is moving
@@ -297,19 +327,26 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   const finishPan = useMemo(() => responderFor('finish'), [settleAt, frameDur]);
 
   const step = useCallback(
-    async (which: Which, delta: number) => {
+    async (delta: number) => {
+      const which = active;
       const at = which === 'start' ? startAt : finishAt;
       const r = await probeGridAround(player, grid, at, frameDur);
       setGrid(r.grid);
       const m = stepFrames(r.grid, at, delta);
       if (!m) return;
-      if (which === 'start') setStartAt(m.pts);
-      else setFinishAt(m.pts);
+      // The handles cannot cross by stepping either, not just by dragging.
+      if (which === 'start') {
+        if (m.pts >= finishAt) return;
+        setStartAt(m.pts);
+      } else {
+        if (m.pts <= startAt) return;
+        setFinishAt(m.pts);
+      }
       const t0 = Date.now();
       player.currentTime = seekTimeFor(m);
-      setPerf(`probe ${r.ms}ms / ${r.calls} calls · seek ${Date.now() - t0}ms`);
+      setPerf(`probe ${r.ms}ms/${r.calls} · seek ${Date.now() - t0}ms`);
     },
-    [startAt, finishAt, grid, player, frameDur],
+    [active, startAt, finishAt, grid, player, frameDur],
   );
 
   // ------------------------------------------------------------- save
@@ -325,12 +362,8 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
    * split1/split2 are 0: a video run is one time, and mode is what says so.
    */
   const save = useCallback(
-    async (keepVideo: boolean) => {
+    async () => {
       if (!timing || !clip || !startMark || !finishMark) return;
-      if (!drill) {
-        Alert.alert('Pick a drill first', 'Without one the run cannot be charted.');
-        return;
-      }
       setBusy('Saving…');
       try {
         await saveRun({
@@ -339,7 +372,10 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
           split1Ms: 0,
           split2Ms: 0,
           athleteId,
-          drillType: drill.name,
+          // Optional, exactly as for any other run. An unlabelled run is a valid
+          // state — it simply does not reach the charts until a drill is assigned,
+          // which History can already do.
+          drillType: drill?.name ?? null,
           rawJson: videoRunRawJson({
             startPts: startMark.pts,
             endPts: finishMark.pts,
@@ -348,12 +384,11 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
             // actually observed between the marks.
             fps: measuredFps(grid) ?? 1 / frameDur,
             quantSdMs: timing.quantSdMs,
-            clipId: keepVideo ? clip.id : null,
+            // The clip ALWAYS stays with the run now. There is no discard path, so
+            // no run can end up referencing a video that was thrown away.
+            clipId: clip.id,
           }),
         });
-        // Only after the row is safely written. Discarding first would risk losing
-        // the video to a failed save.
-        if (!keepVideo) deleteClip(clip.id);
         // Advance the lineup ONLY when this run belongs to whoever is up. Marking
         // an old clip for someone three places back must not move the cursor —
         // that would skip a live athlete's turn on the strength of a desk job.
@@ -361,8 +396,8 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
         onSaved?.(timing.elapsedMs);
         Alert.alert(
           'Time recorded',
-          `${formatVideoSeconds(timing.elapsedMs, timing.decimals)}s · ${drill.name}\n\n` +
-            (keepVideo ? 'Video kept in the app.' : 'Video discarded, time kept.'),
+          `${formatVideoTime(timing)}${drill ? ` · ${drill.name}` : ''}\n\n` +
+            (drill ? 'Video kept with the run.' : 'No drill yet — assign one in History to chart it.'),
         );
         setClip(null);
         setTiles([]);
@@ -406,9 +441,12 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
             the thing being judged. */}
         {clip ? (
           <View style={styles.readout}>
-            <Text style={styles.elapsed}>{formatVideoSeconds(liveMs, decimals)}s</Text>
+            <Text style={styles.elapsed}>{formatVideoSeconds(liveMs)}s</Text>
+            {/* The ± is what licenses the second decimal. At 30fps the spread is
+                wider than the digit shown, and saying so is more use than quietly
+                rounding the digit away. */}
             <Text style={styles.pm}>
-              {timing ? `± ${timing.quantSdMs.toFixed(0)}ms` : 'release to snap'}
+              {timing ? `± ${Math.round(timing.quantSdMs)}ms frame timing` : 'release to snap to frames'}
             </Text>
           </View>
         ) : null}
@@ -462,16 +500,32 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
               looks broken even when it worked. The big preview is the real
               feedback; this is the confirmation. */}
           <View style={styles.stepRow}>
-            <StepGroup
-              label="Start"
-              at={startMark?.pts ?? startAt}
-              onStep={(d) => void step('start', d)}
-            />
-            <StepGroup
-              label="Finish"
-              at={finishMark?.pts ?? finishAt}
-              onStep={(d) => void step('finish', d)}
-            />
+            <Pressable
+              style={[styles.markBtn, active === 'start' && styles.markBtnOn]}
+              onPress={() => setActive('start')}
+            >
+              <Text style={styles.markLabel}>Start</Text>
+              <Text style={styles.markAt}>{(startMark?.pts ?? startAt).toFixed(3)}s</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.markBtn, active === 'finish' && styles.markBtnOn]}
+              onPress={() => setActive('finish')}
+            >
+              <Text style={styles.markLabel}>Finish</Text>
+              <Text style={styles.markAt}>{(finishMark?.pts ?? finishAt).toFixed(3)}s</Text>
+            </Pressable>
+          </View>
+
+          {/* One pair of arrows driving whichever mark is selected, rather than a
+              pair each. Two sets of arrows invited stepping the wrong one, and the
+              screen has to stay readable with a thumb over half of it. */}
+          <View style={styles.stepRow}>
+            <Pressable style={styles.stepBtn} onPress={() => void step(-1)} hitSlop={8}>
+              <Text style={styles.stepText}>‹ frame</Text>
+            </Pressable>
+            <Pressable style={styles.stepBtn} onPress={() => void step(1)} hitSlop={8}>
+              <Text style={styles.stepText}>frame ›</Text>
+            </Pressable>
           </View>
 
           <Text style={styles.facts}>
@@ -512,22 +566,13 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
             </Text>
           </Pressable>
 
-          <View style={styles.saveRow}>
-            <Pressable
-              style={[styles.secondary, (!timing || !drill) && styles.disabled]}
-              onPress={() => void save(false)}
-              disabled={!timing || !drill}
-            >
-              <Text style={styles.secondaryText}>Keep time only</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.primary, styles.grow, (!timing || !drill) && styles.disabled]}
-              onPress={() => void save(true)}
-              disabled={!timing || !drill}
-            >
-              <Text style={styles.primaryText}>Keep both</Text>
-            </Pressable>
-          </View>
+          <Pressable
+            style={[styles.primary, !timing && styles.disabled]}
+            onPress={() => void save()}
+            disabled={!timing}
+          >
+            <Text style={styles.primaryText}>Keep</Text>
+          </Pressable>
 
           <DrillPickerModal
             visible={pickingDrill}
@@ -557,33 +602,6 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
           </Pressable>
         </ScrollView>
       )}
-    </View>
-  );
-}
-
-function StepGroup({
-  label,
-  at,
-  onStep,
-}: {
-  label: string;
-  at: number;
-  onStep: (delta: number) => void;
-}) {
-  return (
-    <View style={styles.stepGroup}>
-      <Pressable style={styles.stepBtn} onPress={() => onStep(-1)} hitSlop={8}>
-        <Text style={styles.stepText}>‹</Text>
-      </Pressable>
-      <View style={styles.stepMid}>
-        <Text style={styles.stepLabel}>{label}</Text>
-        {/* Three decimals on purpose: this is a FRAME POSITION, not a measurement.
-            The elapsed time above is the thing that has to respect its error bar. */}
-        <Text style={styles.stepAt}>{at.toFixed(3)}s</Text>
-      </View>
-      <Pressable style={styles.stepBtn} onPress={() => onStep(1)} hitSlop={8}>
-        <Text style={styles.stepText}>›</Text>
-      </Pressable>
     </View>
   );
 }
@@ -654,18 +672,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  stepMid: { flex: 1, alignItems: 'center' },
-  stepLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '600' },
-  stepAt: { color: '#e2e8f0', fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  markBtn: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#131a24',
+    borderRadius: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  markBtnOn: { borderColor: '#60a5fa', backgroundColor: '#16202c' },
+  markLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '600' },
+  markAt: { color: '#e2e8f0', fontSize: 15, fontWeight: '700', fontVariant: ['tabular-nums'] },
   stepBtn: {
-    width: 44,
-    height: 40,
+    flex: 1,
+    height: 48,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#243042',
-    borderRadius: 8,
+    borderRadius: 10,
   },
-  stepText: { color: '#e2e8f0', fontSize: 20, fontWeight: '700' },
+  stepText: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
   facts: { color: '#64748b', fontSize: 11, textAlign: 'center' },
   tagRow: {
     flexDirection: 'row',

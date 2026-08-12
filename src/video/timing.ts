@@ -88,14 +88,24 @@ export type VideoMark = {
   frameDurSec: number;
 };
 
+/**
+ * Decimals shown for a video time — always two, with the ± shown beside it.
+ *
+ * An earlier version varied this with the clip's frame rate, so a 30fps clip
+ * printed 4.2s because its ~13.6ms spread cannot support the 10ms a second
+ * decimal claims. That is arithmetically right and practically wrong: a tenth is
+ * too coarse to read, and rounding HIDES the uncertainty rather than stating it.
+ * Two decimals next to an explicit ± says the same thing out loud, and lets the
+ * coach see the digit move as they scrub.
+ */
+export const VIDEO_DECIMALS = 2;
+
 export type VideoTiming = {
   elapsedMs: number;
   /** 1 sigma, from the two frames' ACTUAL durations */
   quantSdMs: number;
   /** the largest single-sided quantization error possible */
   quantWorstMs: number;
-  /** decimal places this measurement can honestly carry */
-  decimals: number;
 };
 
 /**
@@ -125,28 +135,22 @@ export function timeFromMarks(a: VideoMark, b: VideoMark): VideoTiming | null {
   const quantSdMs = Math.sqrt((da * da + db * db) / 12);
   const quantWorstMs = Math.max(da, db);
 
-  return { elapsedMs, quantSdMs, quantWorstMs, decimals: videoDecimals(quantSdMs) };
+  return { elapsedMs, quantSdMs, quantWorstMs };
+}
+
+export function formatVideoSeconds(elapsedMs: number, decimals = VIDEO_DECIMALS): string {
+  return (elapsedMs / 1000).toFixed(decimals);
 }
 
 /**
- * How many decimals a video time may show: a place is only shown when the error
- * is smaller than that place's own unit.
+ * The time and its uncertainty, together, because neither is honest alone.
  *
- * At 30fps the spread is ~13.6ms, larger than the 10ms that a second decimal
- * claims to resolve — so 30fps clips print 4.2s, not 4.21s and certainly not
- * 4.213s. At 60fps and above the second decimal is earned. This is why the figure
- * comes from the clip's real frame durations and not from a constant: a 240fps
- * clip has genuinely more to say than a 30fps one and should be allowed to say it.
+ * The ± is what licenses the second decimal: at 30fps the spread is larger than
+ * the digit being shown, and saying so is more use to a coach than quietly
+ * dropping it.
  */
-export function videoDecimals(sdMs: number): number {
-  if (!Number.isFinite(sdMs) || sdMs <= 0) return 2;
-  if (sdMs < 1) return 3;
-  if (sdMs < 10) return 2;
-  return 1;
-}
-
-export function formatVideoSeconds(elapsedMs: number, decimals: number): string {
-  return (elapsedMs / 1000).toFixed(decimals);
+export function formatVideoTime(t: VideoTiming): string {
+  return `${formatVideoSeconds(t.elapsedMs)}s ± ${Math.round(t.quantSdMs)}ms`;
 }
 
 // -------------------------------------------------------------- accuracy
