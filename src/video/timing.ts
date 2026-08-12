@@ -196,10 +196,49 @@ export function emptyGrid(): FrameGrid {
   return { frames: [], windows: [] };
 }
 
+/**
+ * How many frame requests to have in flight at once.
+ *
+ * Measured, not guessed. On device, 12 sequential extractions took 221ms; at
+ * width 8 they took 91ms — 2.43x, within 10% of the best observed (width 12 at
+ * 2.70x) for a third of the concurrency. Most of the work serialises behind one
+ * hardware decoder, so the curve flattens early and a wider fan buys memory
+ * pressure rather than speed.
+ *
+ * Worth re-measuring when 4K/240fps clips arrive: that benchmark ran on a 548x960
+ * clip, and both the per-call cost and the in-flight decode buffers scale with
+ * resolution.
+ */
+export const FRAME_FAN_OUT = 8;
+
+/** Split work into fan-out sized groups. */
+export function chunk<T>(items: T[], size: number): T[][] {
+  const n = Math.max(1, Math.floor(size));
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += n) out.push(items.slice(i, i + n));
+  return out;
+}
+
+/**
+ * The time to REQUEST in order to land on a given frame: its centre, never its
+ * edge.
+ *
+ * Extraction is zero-tolerance, so it returns the frame whose display interval
+ * contains the requested time. Asking for a time that sits exactly ON a boundary
+ * is a coin flip decided by float representation — on device, 30 requests spaced
+ * exactly 1/fps apart returned only 29 distinct frames, because one landed a hair
+ * below a boundary and floored to the frame before. Half a frame in is
+ * unambiguous.
+ */
+export function seekTimeFor(mark: VideoMark): number {
+  return mark.pts + mark.frameDurSec / 2;
+}
+
 /** Times to request in order to discover the frames around `center`.
  *
  *  Quarter-frame granularity: enough to land inside every frame even when the
- *  spacing is uneven, without the cost of finer probing. The window is returned
+ *  spacing is uneven, without the cost of finer probing. Offset by an eighth of a
+ *  frame so no probe sits on a boundary (see seekTimeFor). The window is returned
  *  alongside so the caller records what it covered, not what it asked for. */
 export function probeWindow(
   center: number,
@@ -210,8 +249,25 @@ export function probeWindow(
   const from = Math.max(0, center - framesEitherSide * dur);
   const to = center + framesEitherSide * dur;
   const times: number[] = [];
-  for (let t = from; t <= to + 1e-9; t += dur / 4) times.push(t);
+  for (let t = from + dur / 8; t <= to + 1e-9; t += dur / 4) times.push(t);
   return { window: { from, to }, times };
+}
+
+/**
+ * Evenly spaced times for filmstrip tiles across [from, to].
+ *
+ * Tiles are a visual index, not a measurement, so these are not snapped to
+ * frames — but they are nudged off the exact endpoints, because a request at or
+ * past the clip's final frame is the one case where extraction has nothing to
+ * return.
+ */
+export function filmstripTimes(from: number, to: number, count: number): number[] {
+  const n = Math.max(1, Math.floor(count));
+  if (!(to > from)) return [Math.max(0, from)];
+  const step = (to - from) / n;
+  const out: number[] = [];
+  for (let i = 0; i < n; i += 1) out.push(from + step * (i + 0.5));
+  return out;
 }
 
 function mergeWindows(windows: FrameWindow[]): FrameWindow[] {

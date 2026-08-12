@@ -3,6 +3,9 @@ import { ExpoConfig } from 'expo/config';
 const BLUETOOTH_REASON =
   'EqualSplit connects to your timing gate over Bluetooth to start runs and read times.';
 
+const PHOTOS_REASON =
+  'EqualSplit reads a video you recorded so you can mark the start and finish frames of a run.';
+
 const config: ExpoConfig = {
   name: 'EqualSplit',
   slug: 'equalsplit-app',
@@ -43,6 +46,26 @@ const config: ExpoConfig = {
         isBackgroundEnabled: false,
         modes: ['central'],
         bluetoothAlwaysPermission: BLUETOOTH_REASON,
+      },
+    ],
+    // Video timing, Stage 1: import and mark. NO options on purpose — passing
+    // supportsBackgroundPlayback/PictureInPicture as false makes this plugin
+    // FILTER 'audio' out of UIBackgroundModes, which expo-audio (above) put there
+    // and the run beeps depend on. With no options it no-ops on Info.plist, which
+    // is right: we frame-step a local clip and never play media in the background.
+    'expo-video',
+    'expo-image',
+    // Camera and microphone are refused. Stage 1 has no in-app capture — clips come
+    // from the system camera via the library. NOTE for Stage 2: cameraPermission
+    // must become a string here, NOT be set in ios.infoPlist. This plugin owns
+    // NSCameraUsageDescription and its createPermissionsPlugin DELETES the key when
+    // passed false, overwriting anything infoPlist sets.
+    [
+      'expo-image-picker',
+      {
+        photosPermission: PHOTOS_REASON,
+        cameraPermission: false,
+        microphonePermission: false,
       },
     ],
   ],

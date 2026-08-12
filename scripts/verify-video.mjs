@@ -36,6 +36,10 @@ const {
   isVariableRate,
   videoRunRawJson,
   parseVideoRunJson,
+  FRAME_FAN_OUT,
+  chunk,
+  seekTimeFor,
+  filmstripTimes,
 } = await import('../src/video/timing.ts');
 const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble/repeats.ts');
 
@@ -238,6 +242,58 @@ console.log('\n10. THE ROW carries its own accuracy');
   check('a rep set is not a video run', parseVideoRunJson('{"engine":"rep-set"}'), null);
   check('nor is a rest rep', parseVideoRunJson(restRepRawJson({ ms: 1, closeUs: 1, closeAtMs: 1, lockoutMs: 1, gateId: 1 })), null);
   check('nor malformed json', parseVideoRunJson('{nope'), null);
+}
+
+console.log('\n11. PROBING lands inside frames, never on their edges');
+{
+  // Measured on device: 30 requests spaced exactly 1/fps apart came back with only
+  // 29 distinct frames. Zero-tolerance extraction returns the frame CONTAINING the
+  // requested time, so a request sitting exactly on a boundary is decided by float
+  // representation — one of them floored to the frame before.
+  const dur = 1 / 30;
+  const { times, window } = probeWindow(1.0, dur, 5);
+  const onEdge = times.filter((t) => {
+    // JS % is a remainder and keeps the sign, so probes before the centre need
+    // the extra fold to land in [0,1).
+    const frac = ((((t - 1.0) / dur) % 1) + 1) % 1;
+    const d = Math.min(frac, 1 - frac);
+    return d < 0.05;
+  });
+  check('no probe sits on a frame boundary', onEdge, []);
+  truthy('and probing still spans the window', times[0] > window.from && times.length > 20);
+
+  // The same rule for stepping: to display frame N, ask for its middle.
+  const m = { pts: 2.0, frameDurSec: dur };
+  near('a seek target is half a frame in', seekTimeFor(m), 2.0 + dur / 2, 1e-9);
+  truthy('which is strictly inside the frame', seekTimeFor(m) > m.pts && seekTimeFor(m) < m.pts + dur);
+
+  // Round trip: seeking to the computed time must resolve back to the same frame.
+  const g = ingestFrames(emptyGrid(), { from: 1.9, to: 2.2 }, [1.95, 2.0, 2.0 + dur, 2.0 + 2 * dur]);
+  check('the seek target resolves to the frame it came from', markAt(g, seekTimeFor(m)).pts, 2.0);
+}
+
+console.log('\n12. FAN-OUT batching');
+{
+  check('fan-out is the measured width', FRAME_FAN_OUT, 8);
+  check('work splits into groups', chunk([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
+  check('an exact multiple leaves no stub', chunk([1, 2, 3, 4], 2), [[1, 2], [3, 4]]);
+  check('empty stays empty', chunk([], 8), []);
+  // A zero or negative width would loop forever, so it is floored to 1.
+  check('a zero width cannot hang the loop', chunk([1, 2], 0), [[1], [2]]);
+  check('nor a negative one', chunk([1, 2], -5), [[1], [2]]);
+}
+
+console.log('\n13. FILMSTRIP tiles');
+{
+  const t = filmstripTimes(0, 10, 5);
+  check('one time per tile', t.length, 5);
+  truthy('none at the exact start', t[0] > 0);
+  truthy('and none at or past the end — the last frame is the one with nothing after it', t[4] < 10);
+  // Evenly spaced, so the strip reads as a uniform index of the clip.
+  const gaps = t.slice(1).map((v, i) => v - t[i]);
+  truthy('evenly spaced', Math.max(...gaps) - Math.min(...gaps) < 1e-9);
+  check('a degenerate range still yields something drawable', filmstripTimes(5, 5, 8).length, 1);
+  check('and never a negative time', filmstripTimes(-3, -1, 4)[0] > -3, true);
 }
 
 console.log(
