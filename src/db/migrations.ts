@@ -297,6 +297,16 @@ export async function ensureSchema(db: MigrationDb): Promise<void> {
     await db.execAsync('ALTER TABLE runs ADD COLUMN drill_id TEXT');
   }
   await db.execAsync('CREATE INDEX IF NOT EXISTS idx_runs_drill ON runs(drill_id)');
+  // The coach's own note on a run ("into a headwind", "bad start"). NULL and empty
+  // are the same thing — no note — so nothing has to distinguish "never written"
+  // from "cleared", and setRunNote() normalizes a blank back to NULL.
+  //
+  // No SCHEMA_VERSION bump: that gates the one-time DATA backfill, and this is a
+  // pure column add with no data to migrate. ensureSchema is idempotent and runs
+  // every launch, so an older database picks it up on the next open.
+  if (!runCols.includes('note')) {
+    await db.execAsync('ALTER TABLE runs ADD COLUMN note TEXT');
+  }
 
   const sessionCols = await tableColumns(db, 'sessions');
   if (!sessionCols.includes('custom_name')) {

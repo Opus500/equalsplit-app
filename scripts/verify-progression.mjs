@@ -10,6 +10,7 @@ import {
   MIN_Y_SPAN_MS,
   buildProgression,
   formatDelta,
+  seriesTitle,
   xFraction,
   yBounds,
   yFraction,
@@ -337,6 +338,60 @@ console.log('\n14. degenerate inputs');
   const allUnlabeled = buildProgression([run(null, null, 4200, 0), run(null, null, 4100, 1)]);
   check('all-unlabeled => no series at all', allUnlabeled.series, []);
   check('but the count explains why the screen is empty', allUnlabeled.unlabeledRuns, 2);
+}
+
+console.log('\n15. a video run never shares a series with a gate run');
+{
+  // Same drill, same athlete, same distance — but a gate fires on the first thing
+  // through the beam while a coach marks the torso. That is a systematic offset in
+  // one direction, so a merged series would show a step change on the day they
+  // switched tools and read it as a performance change.
+  const run = (id, at, ms, timeSource) => ({
+    id,
+    drillId: 'd30',
+    drillName: '30m',
+    elapsedMs: ms,
+    createdAt: at,
+    timeSource,
+  });
+  const p = buildProgression([
+    run('g1', 1, 4200, 'gate'),
+    run('g2', 2, 4150, 'gate'),
+    run('g3', 3, 4180, 'gate'),
+    run('v1', 4, 4400, 'video'),
+    run('v2', 5, 4380, 'video'),
+  ]);
+  check('one drill, two sources, two series', p.series.length, 2);
+
+  const gate = p.series.find((s) => s.timeSource === 'gate');
+  const video = p.series.find((s) => s.timeSource === 'video');
+  check('the gate series holds only gate runs', gate.points.map((x) => x.runId), ['g1', 'g2', 'g3']);
+  check('the video series holds only video runs', video.points.map((x) => x.runId), ['v1', 'v2']);
+  check('they share a drill id', gate.drillId, video.drillId);
+
+  // The bias must not reach the stats. A merged series would have called the video
+  // runs a 0.2s decline; split, each series is judged against its own kind.
+  check('the gate best is a gate time', gate.bestMs, 4150);
+  check('and the video best is a video time', video.bestMs, 4380);
+
+  // Naming: gate reads exactly as it always did, so no existing chart changes.
+  check('a gate series is untitled by source', seriesTitle(gate), '30m');
+  check('a video series says so', seriesTitle(video), '30m · video');
+
+  // Absent source folds to gate rather than making a third bucket.
+  const legacy = buildProgression([
+    { id: 'a', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 1 },
+    { id: 'b', drillId: 'd30', drillName: '30m', elapsedMs: 4100, createdAt: 2, timeSource: null },
+    run('g9', 3, 4300, 'gate'),
+  ]);
+  check('unknown and explicit gate are ONE series', legacy.series.length, 1);
+  check('holding all three', legacy.series[0].points.length, 3);
+  check('titled as it always was', seriesTitle(legacy.series[0]), '30m');
+
+  // A hand start carries ~200ms of reaction error — the same argument as video.
+  const hand = buildProgression([run('h1', 1, 64000, 'hand'), run('h2', 2, 65000, 'hand'), run('g1', 3, 4200, 'gate')]);
+  check('hand-started runs split too', hand.series.length, 2);
+  check('and are labelled', seriesTitle(hand.series.find((s) => s.timeSource === 'hand')), '30m · hand start');
 }
 
 console.log('\n=============================');

@@ -428,6 +428,19 @@ export async function updateRunAthlete(runId: string, athleteId: string | null):
 }
 
 // Delete a run; if its session is left empty, remove the session too.
+/**
+ * Set (or clear) the coach's note on a run.
+ *
+ * A blank note is stored as NULL, not '': "cleared" and "never written" are the
+ * same state to a coach, and keeping them distinct would only create a difference
+ * that every reader then has to remember to collapse.
+ */
+export async function setRunNote(id: string, note: string | null): Promise<void> {
+  const db = await getDb();
+  const trimmed = note?.trim() ?? '';
+  await db.runAsync('UPDATE runs SET note = ? WHERE id = ?', [trimmed ? trimmed : null, id]);
+}
+
 export async function deleteRun(id: string): Promise<void> {
   const db = await getDb();
   const row = await db.getFirstAsync<{ session_id: string }>(
@@ -456,6 +469,8 @@ export type AthleteRunRow = {
   raw_json: string | null;
   drill_id: string | null;
   drill_name: string | null;
+  /** the coach's own note. NULL and '' both mean no note. */
+  note: string | null;
 };
 
 /**
@@ -469,7 +484,7 @@ export async function getAthleteRuns(athleteId: string): Promise<AthleteRunRow[]
   const db = await getDb();
   return db.getAllAsync<AthleteRunRow>(
     `SELECT r.id, r.mode, r.total_ms, r.created_at, r.status, r.raw_json, r.drill_id,
-            d.name AS drill_name
+            r.note, d.name AS drill_name
        FROM runs r
        LEFT JOIN drills d ON d.id = r.drill_id
       WHERE r.athlete_id = ?
