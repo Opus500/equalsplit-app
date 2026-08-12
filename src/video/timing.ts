@@ -234,23 +234,59 @@ export function seekTimeFor(mark: VideoMark): number {
   return mark.pts + mark.frameDurSec / 2;
 }
 
-/** Times to request in order to discover the frames around `center`.
+/**
+ * Times to request in order to discover the frames around a KNOWN frame.
  *
- *  Quarter-frame granularity: enough to land inside every frame even when the
- *  spacing is uneven, without the cost of finer probing. Offset by an eighth of a
- *  frame so no probe sits on a boundary (see seekTimeFor). The window is returned
- *  alongside so the caller records what it covered, not what it asked for. */
-export function probeWindow(
-  center: number,
+ * One probe per frame, each half a frame past a real boundary — which is only
+ * possible because `anchorPts` is an actual presentation timestamp, so the phase
+ * of the frame grid is known rather than assumed.
+ *
+ * The earlier version probed blind at quarter-frame granularity: four calls to
+ * discover each frame, because without a known phase you cannot aim. For a window
+ * of 24 frames that was 96 extractions, ~730ms at the measured rate, paid on every
+ * step and every drag release. Anchoring costs one extra call to find the phase
+ * and then hits each frame exactly once.
+ *
+ * On a variable-rate clip the alignment drifts and some probes land twice in one
+ * frame, leaving a hole — `gapProbes` repairs those, and only those.
+ */
+export function alignedProbes(
+  anchorPts: number,
   frameDurSec: number,
-  framesEitherSide: number,
+  framesBefore: number,
+  framesAfter: number,
 ): { window: FrameWindow; times: number[] } {
   const dur = frameDurSec > 0 ? frameDurSec : 1 / 30;
-  const from = Math.max(0, center - framesEitherSide * dur);
-  const to = center + framesEitherSide * dur;
   const times: number[] = [];
-  for (let t = from + dur / 8; t <= to + 1e-9; t += dur / 4) times.push(t);
-  return { window: { from, to }, times };
+  for (let k = -framesBefore; k <= framesAfter; k += 1) {
+    const t = anchorPts + (k + 0.5) * dur;
+    if (t > 0) times.push(t);
+  }
+  return {
+    window: {
+      from: Math.max(0, anchorPts - framesBefore * dur),
+      to: anchorPts + (framesAfter + 1) * dur,
+    },
+    times,
+  };
+}
+
+/**
+ * Midpoints of gaps that are too wide to be a single frame.
+ *
+ * A gap above 1.5 frames means a frame was skipped — either the clip is variable
+ * rate or the alignment drifted. Probing only the holes keeps the repair
+ * proportional to the damage instead of re-probing the whole window.
+ */
+export function gapProbes(grid: FrameGrid, frameDurSec: number): number[] {
+  const dur = frameDurSec > 0 ? frameDurSec : 1 / 30;
+  const out: number[] = [];
+  for (let i = 1; i < grid.frames.length; i += 1) {
+    const a = grid.frames[i - 1]!;
+    const b = grid.frames[i]!;
+    if (b - a > dur * 1.5) out.push((a + b) / 2);
+  }
+  return out;
 }
 
 /**

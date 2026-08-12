@@ -26,7 +26,8 @@ const {
   parallaxErrorMs,
   BODY_PART_BIAS_MS,
   emptyGrid,
-  probeWindow,
+  alignedProbes,
+  gapProbes,
   ingestFrames,
   isCovered,
   frameIndexAt,
@@ -170,10 +171,11 @@ console.log('\n7. LAZY GRID: clips are uncapped, so coverage is tracked');
   check('an empty grid covers nothing', isCovered(g, 1), false);
   check('and resolves no frame', frameIndexAt(g, 1), null);
 
-  const { window, times } = probeWindow(1.0, 1 / 30, 5);
-  truthy('probing asks around the centre', window.from < 1.0 && window.to > 1.0);
-  truthy('at quarter-frame granularity', times.length >= 40);
-  near('and never before zero', probeWindow(0.01, 1 / 30, 5).window.from, 0, 1e-9);
+  const { window, times } = alignedProbes(1.0, 1 / 30, 5, 5);
+  truthy('probing asks around the anchor', window.from < 1.0 && window.to > 1.0);
+  check('one probe per frame, not four', times.length, 11);
+  check('and never a negative time', alignedProbes(0.01, 1 / 30, 5, 5).times.every((t) => t > 0), true);
+  near('the window never starts before zero', alignedProbes(0.01, 1 / 30, 5, 5).window.from, 0, 1e-9);
 
   g = ingestFrames(g, window, cfr(0.8, 30, 12));
   check('now covered at the centre', isCovered(g, 1.0), true);
@@ -244,23 +246,27 @@ console.log('\n10. THE ROW carries its own accuracy');
   check('nor malformed json', parseVideoRunJson('{nope'), null);
 }
 
-console.log('\n11. PROBING lands inside frames, never on their edges');
+console.log('\n11. PROBING is ANCHORED, so it costs one call per frame');
 {
   // Measured on device: 30 requests spaced exactly 1/fps apart came back with only
   // 29 distinct frames. Zero-tolerance extraction returns the frame CONTAINING the
-  // requested time, so a request sitting exactly on a boundary is decided by float
-  // representation — one of them floored to the frame before.
+  // requested time, so a request on a boundary is decided by float representation
+  // — one floored to the frame before.
+  //
+  // The fix is to aim rather than oversample. Probing blind needed four calls per
+  // frame to be sure of hitting each one; anchoring to a REAL timestamp makes the
+  // grid's phase known, so every probe can sit half a frame past a true boundary.
+  // For a 24-frame window that is 96 calls against 25 — on device, ~730ms against
+  // ~130ms, paid on every step and every drag release.
   const dur = 1 / 30;
-  const { times, window } = probeWindow(1.0, dur, 5);
-  const onEdge = times.filter((t) => {
-    // JS % is a remainder and keeps the sign, so probes before the centre need
-    // the extra fold to land in [0,1).
-    const frac = ((((t - 1.0) / dur) % 1) + 1) % 1;
-    const d = Math.min(frac, 1 - frac);
-    return d < 0.05;
+  const anchor = 2.0;
+  const { times } = alignedProbes(anchor, dur, 5, 5);
+  const offEdge = times.every((t) => {
+    const frac = ((((t - anchor) / dur) % 1) + 1) % 1;
+    return Math.min(frac, 1 - frac) > 0.4; // half a frame from either boundary
   });
-  check('no probe sits on a frame boundary', onEdge, []);
-  truthy('and probing still spans the window', times[0] > window.from && times.length > 20);
+  truthy('every probe sits mid-frame relative to the anchor', offEdge);
+  check('and there is exactly one per frame', times.length, 11);
 
   // The same rule for stepping: to display frame N, ask for its middle.
   const m = { pts: 2.0, frameDurSec: dur };
@@ -270,6 +276,28 @@ console.log('\n11. PROBING lands inside frames, never on their edges');
   // Round trip: seeking to the computed time must resolve back to the same frame.
   const g = ingestFrames(emptyGrid(), { from: 1.9, to: 2.2 }, [1.95, 2.0, 2.0 + dur, 2.0 + 2 * dur]);
   check('the seek target resolves to the frame it came from', markAt(g, seekTimeFor(m)).pts, 2.0);
+}
+
+console.log('\n11b. GAP REPAIR is proportional to the damage');
+{
+  const dur = 1 / 30;
+  // A constant-rate clip: aiming worked, nothing was missed, nothing to re-probe.
+  const even = ingestFrames(emptyGrid(), { from: 0, to: 1 }, cfr(0, 30, 10));
+  check('an even grid needs no repair', gapProbes(even, dur), []);
+
+  // A dropped frame — what low light does to an iPhone recording, and what the
+  // anchored alignment drifts past on a variable-rate clip.
+  const holed = ingestFrames(emptyGrid(), { from: 0, to: 1 }, [
+    0, dur, 2 * dur, /* 3*dur missing */ 4 * dur, 5 * dur,
+  ]);
+  const holes = gapProbes(holed, dur);
+  check('exactly one hole is found', holes.length, 1);
+  near('and it is probed in the middle of the gap', holes[0], 3 * dur, 1e-9);
+
+  // The repair must not fire on ordinary spacing jitter, or every probe would
+  // trigger a second round for nothing.
+  const jittery = ingestFrames(emptyGrid(), { from: 0, to: 1 }, [0, dur * 1.05, dur * 2.1, dur * 3.15]);
+  check('normal jitter is not mistaken for a hole', gapProbes(jittery, dur), []);
 }
 
 console.log('\n12. FAN-OUT batching');

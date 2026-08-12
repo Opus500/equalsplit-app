@@ -23,10 +23,12 @@ import type { VideoPlayer } from 'expo-video';
 
 import {
   FRAME_FAN_OUT,
+  alignedProbes,
   chunk,
   filmstripTimes,
+  gapProbes,
   ingestFrames,
-  probeWindow,
+  isCovered,
   type FrameGrid,
 } from './timing';
 
@@ -89,17 +91,44 @@ export async function probeGridAround(
   grid: FrameGrid,
   centre: number,
   frameDurSec: number,
-  framesEitherSide = 12,
-): Promise<FrameGrid> {
-  const { window, times } = probeWindow(centre, frameDurSec, framesEitherSide);
-  // Already covered end to end: nothing to learn, and probing would cost ~0.5s.
-  if (grid.windows.some((w) => window.from >= w.from - 1e-9 && window.to <= w.to + 1e-9)) {
-    return grid;
+  framesEitherSide = 8,
+): Promise<{ grid: FrameGrid; ms: number; calls: number }> {
+  const t0 = Date.now();
+  // Covered already: nothing to learn, and a scrubber revisits the same
+  // neighbourhood constantly, so this early exit is most of why dragging is cheap.
+  if (isCovered(grid, centre - framesEitherSide * frameDurSec) &&
+      isCovered(grid, centre + framesEitherSide * frameDurSec)) {
+    return { grid, ms: 0, calls: 0 };
   }
+
+  // One call to learn the PHASE of the frame grid. Without a real timestamp to
+  // anchor to you have to oversample to be sure of hitting every frame; with one
+  // you can aim at frame centres and spend a single call per frame.
+  const anchor = await oneFrame(player, centre, PROBE_SIZE);
+  if (!anchor) return { grid, ms: Date.now() - t0, calls: 1 };
+
+  const { window, times } = alignedProbes(
+    anchor.actualTime,
+    frameDurSec,
+    framesEitherSide,
+    framesEitherSide,
+  );
   const results = await fanOut(times.map((t) => () => oneFrame(player, t, PROBE_SIZE)));
-  const actual = results.filter((r): r is { actualTime: number; ref: unknown } => r !== null);
-  if (!actual.length) return grid;
-  return ingestFrames(grid, window, actual.map((r) => r.actualTime));
+  const found = results.filter((r): r is { actualTime: number; ref: unknown } => r !== null);
+  let next = ingestFrames(grid, window, [anchor.actualTime, ...found.map((r) => r.actualTime)]);
+  let calls = 1 + times.length;
+
+  // Repair only the holes. On a constant-rate clip there are none and this costs
+  // nothing; on a variable-rate one it fills what the alignment drifted past.
+  const holes = gapProbes(next, frameDurSec);
+  if (holes.length) {
+    const filled = await fanOut(holes.map((t) => () => oneFrame(player, t, PROBE_SIZE)));
+    calls += holes.length;
+    const got = filled.filter((r): r is { actualTime: number; ref: unknown } => r !== null);
+    if (got.length) next = ingestFrames(next, window, got.map((r) => r.actualTime));
+  }
+
+  return { grid: next, ms: Date.now() - t0, calls };
 }
 
 /**

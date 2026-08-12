@@ -88,6 +88,11 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   // otherwise close over the first render's state.
   const live = useRef({ stripW: 0, duration: 0, startAt: 0, finishAt: 0 });
   live.current = { stripW, duration, startAt, finishAt };
+  /** The handle's position when the drag STARTED. See onPanResponderGrant. */
+  const dragBase = useRef(0);
+  /** What each interaction actually cost, shown on screen so "it feels slow" can
+   *  be answered with a number instead of a guess. */
+  const [perf, setPerf] = useState<string | null>(null);
 
   // ------------------------------------------------------------- import
 
@@ -152,12 +157,14 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   const settleAt = useCallback(
     async (seconds: number) => {
       if (!clip) return;
-      const next = await probeGridAround(player, grid, seconds, frameDur);
-      setGrid(next);
-      const m = markAt(next, seconds);
+      const r = await probeGridAround(player, grid, seconds, frameDur);
+      setGrid(r.grid);
+      const m = markAt(r.grid, seconds);
+      const t0 = Date.now();
       // Seek to the frame's MIDDLE — a request on a boundary is decided by float
       // representation and can show the frame before.
       player.currentTime = m ? seekTimeFor(m) : seconds;
+      setPerf(`probe ${r.ms}ms / ${r.calls} calls · seek ${Date.now() - t0}ms`);
     },
     [clip, grid, player, frameDur],
   );
@@ -182,12 +189,18 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => setDragging(which),
+      onPanResponderGrant: () => {
+        // The origin is captured ONCE, here. gestureState.dx is cumulative from
+        // this moment, so reading the base from live state on every move re-adds
+        // the whole displacement to a position that already contains it — which
+        // compounds, and is why a 20pt drag crossed most of the strip.
+        dragBase.current = which === 'start' ? live.current.startAt : live.current.finishAt;
+        setDragging(which);
+      },
       onPanResponderMove: (_e, g) => {
-        const { stripW: w, duration: d, startAt: s, finishAt: f } = live.current;
+        const { stripW: w, duration: d } = live.current;
         if (!w || !d) return;
-        const base = which === 'start' ? s : f;
-        let next = base + (g.dx / w) * d;
+        let next = dragBase.current + (g.dx / w) * d;
         next = Math.max(0, Math.min(d, next));
         // The handles cannot cross. A finish before a start is not a measurement
         // to warn about later, it is a state to prevent now.
@@ -207,13 +220,15 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   const step = useCallback(
     async (which: Which, delta: number) => {
       const at = which === 'start' ? startAt : finishAt;
-      const next = await probeGridAround(player, grid, at, frameDur);
-      setGrid(next);
-      const m = stepFrames(next, at, delta);
+      const r = await probeGridAround(player, grid, at, frameDur);
+      setGrid(r.grid);
+      const m = stepFrames(r.grid, at, delta);
       if (!m) return;
       if (which === 'start') setStartAt(m.pts);
       else setFinishAt(m.pts);
+      const t0 = Date.now();
       player.currentTime = seekTimeFor(m);
+      setPerf(`probe ${r.ms}ms / ${r.calls} calls · seek ${Date.now() - t0}ms`);
     },
     [startAt, finishAt, grid, player, frameDur],
   );
@@ -284,7 +299,11 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   const x = (t: number) => (duration ? (t / duration) * Math.max(0, stripW - HANDLE_W) : 0);
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.body}>
+    // Column, not a ScrollView: the preview must TAKE the leftover space rather
+    // than sit at a fixed height above scrollable content. Judging a foot against
+    // a cone is the whole task, and it cannot be done on a thumbnail — so the
+    // preview gets everything the controls do not need.
+    <View style={styles.root}>
       <View style={styles.preview}>
         {clip ? (
           <VideoView player={player} style={styles.video} nativeControls={false} contentFit="contain" />
@@ -297,25 +316,27 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
             <Text style={styles.busyText}>{busy}</Text>
           </View>
         ) : null}
-      </View>
-
-      {!clip ? (
-        <Pressable style={styles.primary} onPress={pick}>
-          <Text style={styles.primaryText}>Import a clip</Text>
-        </Pressable>
-      ) : (
-        <>
-          {/* THE READOUT. Big, because it is the answer the coach came for, and it
-              has to be readable while a thumb is still on the strip. */}
+        {/* Overlaid on the video rather than given its own row: it is the answer
+            the coach came for and it has to be readable without taking space from
+            the thing being judged. */}
+        {clip ? (
           <View style={styles.readout}>
             <Text style={styles.elapsed}>{formatVideoSeconds(liveMs, decimals)}s</Text>
             <Text style={styles.pm}>
-              {timing
-                ? `± ${timing.quantSdMs.toFixed(0)}ms from frame timing`
-                : 'release to snap to frames'}
+              {timing ? `± ${timing.quantSdMs.toFixed(0)}ms` : 'release to snap'}
             </Text>
           </View>
+        ) : null}
+      </View>
 
+      {!clip ? (
+        <View style={styles.controls}>
+          <Pressable style={styles.primary} onPress={pick}>
+            <Text style={styles.primaryText}>Import a clip</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <ScrollView style={styles.controls} contentContainerStyle={styles.controlsBody}>
           <View
             style={styles.strip}
             onLayout={(e: LayoutChangeEvent) => setStripW(e.nativeEvent.layout.width)}
@@ -345,16 +366,29 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
             />
           </View>
 
+          {/* Each mark shows its own timestamp. At full-clip scale one frame is
+              about 1.5pt of strip — invisible — so without a number a step button
+              looks broken even when it worked. The big preview is the real
+              feedback; this is the confirmation. */}
           <View style={styles.stepRow}>
-            <StepGroup label="Start" onStep={(d) => void step('start', d)} />
-            <StepGroup label="Finish" onStep={(d) => void step('finish', d)} />
+            <StepGroup
+              label="Start"
+              at={startMark?.pts ?? startAt}
+              onStep={(d) => void step('start', d)}
+            />
+            <StepGroup
+              label="Finish"
+              at={finishMark?.pts ?? finishAt}
+              onStep={(d) => void step('finish', d)}
+            />
           </View>
 
           <Text style={styles.facts}>
             {[
               measuredFps(grid) ? `${measuredFps(grid)!.toFixed(1)}fps measured` : null,
               isVariableRate(grid) ? 'variable frame rate' : null,
-              `${formatBytes(clip.bytes)}`,
+              formatBytes(clip.bytes),
+              perf,
             ]
               .filter(Boolean)
               .join(' · ')}
@@ -414,20 +448,33 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
           <Pressable style={styles.tertiary} onPress={pick}>
             <Text style={styles.tertiaryText}>Import a different clip</Text>
           </Pressable>
-        </>
+        </ScrollView>
       )}
-    </ScrollView>
+    </View>
   );
 }
 
-function StepGroup({ label, onStep }: { label: string; onStep: (delta: number) => void }) {
+function StepGroup({
+  label,
+  at,
+  onStep,
+}: {
+  label: string;
+  at: number;
+  onStep: (delta: number) => void;
+}) {
   return (
     <View style={styles.stepGroup}>
-      <Text style={styles.stepLabel}>{label}</Text>
-      <Pressable style={styles.stepBtn} onPress={() => onStep(-1)} hitSlop={6}>
+      <Pressable style={styles.stepBtn} onPress={() => onStep(-1)} hitSlop={8}>
         <Text style={styles.stepText}>‹</Text>
       </Pressable>
-      <Pressable style={styles.stepBtn} onPress={() => onStep(1)} hitSlop={6}>
+      <View style={styles.stepMid}>
+        <Text style={styles.stepLabel}>{label}</Text>
+        {/* Three decimals on purpose: this is a FRAME POSITION, not a measurement.
+            The elapsed time above is the thing that has to respect its error bar. */}
+        <Text style={styles.stepAt}>{at.toFixed(3)}s</Text>
+      </View>
+      <Pressable style={styles.stepBtn} onPress={() => onStep(1)} hitSlop={8}>
         <Text style={styles.stepText}>›</Text>
       </Pressable>
     </View>
@@ -435,11 +482,14 @@ function StepGroup({ label, onStep }: { label: string; onStep: (delta: number) =
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0e1116' },
-  body: { padding: 14, paddingTop: 56, paddingBottom: 40, gap: 12 },
+  root: { flex: 1, backgroundColor: '#0e1116', paddingTop: 52 },
+  // flex: 1 so the video takes every point the controls do not. Marking a crossing
+  // is a judgement about where a foot is relative to a cone; a fixed-height box
+  // above scrollable content made that the smallest thing on screen.
   preview: {
-    height: 220,
+    flex: 1,
     backgroundColor: '#000',
+    marginHorizontal: 10,
     borderRadius: 12,
     overflow: 'hidden',
     alignItems: 'center',
@@ -449,9 +499,23 @@ const styles = StyleSheet.create({
   placeholder: { color: '#475569', fontSize: 14 },
   busy: { position: 'absolute', alignItems: 'center', gap: 6 },
   busyText: { color: '#93c5fd', fontSize: 12 },
-  readout: { alignItems: 'center', gap: 2 },
-  elapsed: { color: '#fff', fontSize: 44, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  pm: { color: '#94a3b8', fontSize: 12 },
+  // Overlaid bottom-left of the video: legible against footage without costing the
+  // footage any height.
+  readout: {
+    position: 'absolute',
+    left: 12,
+    bottom: 10,
+    backgroundColor: 'rgba(9,12,17,0.66)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    alignItems: 'flex-start',
+  },
+  elapsed: { color: '#fff', fontSize: 34, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  pm: { color: '#cbd5e1', fontSize: 11 },
+  // Capped so a long clip's controls never grow into the preview; scrolls instead.
+  controls: { maxHeight: 310, flexGrow: 0 },
+  controlsBody: { padding: 10, paddingBottom: 28, gap: 10 },
   strip: {
     height: STRIP_H,
     flexDirection: 'row',
@@ -483,16 +547,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
   },
-  stepLabel: { flex: 1, color: '#94a3b8', fontSize: 12, fontWeight: '600' },
+  stepMid: { flex: 1, alignItems: 'center' },
+  stepLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '600' },
+  stepAt: { color: '#e2e8f0', fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
   stepBtn: {
-    width: 40,
-    height: 36,
+    width: 44,
+    height: 40,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#243042',
     borderRadius: 8,
   },
-  stepText: { color: '#e2e8f0', fontSize: 18, fontWeight: '700' },
+  stepText: { color: '#e2e8f0', fontSize: 20, fontWeight: '700' },
   facts: { color: '#64748b', fontSize: 11, textAlign: 'center' },
   tagRow: {
     flexDirection: 'row',
