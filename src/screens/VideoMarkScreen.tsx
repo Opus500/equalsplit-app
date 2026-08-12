@@ -33,6 +33,7 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
 
+import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { saveRun, type Drill } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
@@ -56,6 +57,15 @@ import {
 
 const STRIP_H = 56;
 const TILE_COUNT = 14;
+/**
+ * Floor on the gap between live scrub seeks, in ms.
+ *
+ * ~16/second. Move events arrive at about 60Hz and a seek per event would thrash
+ * the decoder; below roughly this rate the preview stops reading as live. Paired
+ * with a half-frame filter, so a move that does not change the displayed frame
+ * costs nothing at all.
+ */
+const DRAG_SEEK_MS = 60;
 /** Handle width; also the minimum comfortable drag target. */
 const HANDLE_W = 22;
 
@@ -74,7 +84,24 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   const [dragging, setDragging] = useState<Which | null>(null);
   const [drill, setDrill] = useState<Drill | null>(null);
   const [pickingDrill, setPickingDrill] = useState(false);
+  const [pickingAthlete, setPickingAthlete] = useState(false);
+  /**
+   * undefined = follow the lineup. A string or null = the coach chose, including
+   * choosing Unassigned.
+   *
+   * BOTH, not one or the other. A gate run is timed live, so the lineup cursor is
+   * authoritative by construction — whoever is up is who just ran. A video run is
+   * usually marked afterwards, sitting down, from a clip of someone who may be
+   * three places back in the lineup by now. Defaulting to the lineup keeps the
+   * common case one tap; allowing an override is what stops the uncommon case from
+   * silently attributing a run to the wrong athlete.
+   */
+  const [athleteOverride, setAthleteOverride] = useState<string | null | undefined>(undefined);
   const roster = useRoster();
+
+  const athleteId = athleteOverride !== undefined ? athleteOverride : (roster.currentAthlete?.id ?? null);
+  const athlete = roster.byId(athleteId);
+  const followingLineup = athleteOverride === undefined;
 
   const player = useVideoPlayer(null, (p) => {
     p.muted = true;
@@ -90,6 +117,9 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   live.current = { stripW, duration, startAt, finishAt };
   /** The handle's position when the drag STARTED. See onPanResponderGrant. */
   const dragBase = useRef(0);
+  /** Live-scrub bookkeeping: throttle state plus what the seeks actually cost, so
+   *  "is a seek per drag event affordable" is answered with a number. */
+  const dragSeeks = useRef({ n: 0, ms: 0, lastAt: 0, lastT: -1 });
   /** What each interaction actually cost, shown on screen so "it feels slow" can
    *  be answered with a number instead of a guess. */
   const [perf, setPerf] = useState<string | null>(null);
@@ -164,7 +194,11 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
       // Seek to the frame's MIDDLE — a request on a boundary is decided by float
       // representation and can show the frame before.
       player.currentTime = m ? seekTimeFor(m) : seconds;
-      setPerf(`probe ${r.ms}ms / ${r.calls} calls · seek ${Date.now() - t0}ms`);
+      const d = dragSeeks.current;
+      setPerf(
+        `probe ${r.ms}ms/${r.calls} · seek ${Date.now() - t0}ms` +
+          (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
+      );
     },
     [clip, grid, player, frameDur],
   );
@@ -189,12 +223,28 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
+      // THE FIX FOR VERTICAL DRIFT. The handles live inside a vertical ScrollView,
+      // and RN's responder negotiation lets that parent ASK to take over as soon as
+      // it sees vertical movement — which it always does, because fingers do not
+      // travel in straight lines. Refusing the request keeps the gesture here for
+      // its whole life. `scrollEnabled` is also switched off while dragging, so the
+      // parent never competes in the first place.
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
       onPanResponderGrant: () => {
         // The origin is captured ONCE, here. gestureState.dx is cumulative from
         // this moment, so reading the base from live state on every move re-adds
         // the whole displacement to a position that already contains it — which
         // compounds, and is why a 20pt drag crossed most of the strip.
         dragBase.current = which === 'start' ? live.current.startAt : live.current.finishAt;
+        dragSeeks.current = { n: 0, ms: 0, lastAt: 0, lastT: -1 };
+        // Scrubbing mode plus a LOOSE tolerance for the duration of the drag. A
+        // zero-tolerance seek must decode from the preceding keyframe, which is the
+        // ~25ms we measured — fine once, ruinous at 60Hz. While a finger is moving
+        // the coach needs responsiveness, not frame accuracy; the exact frame is
+        // resolved on release, which is the only moment it means anything.
+        player.scrubbingModeOptions = { scrubbingModeEnabled: true };
+        player.seekTolerance = { toleranceBefore: 0.05, toleranceAfter: 0.05 };
         setDragging(which);
       },
       onPanResponderMove: (_e, g) => {
@@ -204,12 +254,41 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
         next = Math.max(0, Math.min(d, next));
         // The handles cannot cross. A finish before a start is not a measurement
         // to warn about later, it is a state to prevent now.
-        if (which === 'start') setStartAt(Math.min(next, live.current.finishAt - frameDur));
-        else setFinishAt(Math.max(next, live.current.startAt + frameDur));
+        const clamped =
+          which === 'start'
+            ? Math.min(next, live.current.finishAt - frameDur)
+            : Math.max(next, live.current.startAt + frameDur);
+        if (which === 'start') setStartAt(clamped);
+        else setFinishAt(clamped);
+
+        // Two gates before seeking. Time-based so the decoder is never asked for
+        // more than ~16 seeks a second, and frame-based so a move that has not
+        // changed which frame is displayed does no work at all.
+        const now = Date.now();
+        const s = dragSeeks.current;
+        if (now - s.lastAt < DRAG_SEEK_MS) return;
+        if (Math.abs(clamped - s.lastT) < frameDur / 2) return;
+        s.lastAt = now;
+        s.lastT = clamped;
+        const t0 = Date.now();
+        player.currentTime = clamped;
+        s.ms += Date.now() - t0;
+        s.n += 1;
       },
       onPanResponderRelease: () => {
         setDragging(null);
+        // Back to frame-accurate for the settle. Leaving a loose tolerance in place
+        // would silently make every later seek land on the wrong frame.
+        player.scrubbingModeOptions = { scrubbingModeEnabled: false };
+        player.seekTolerance = { toleranceBefore: 0, toleranceAfter: 0 };
         void settleAt(which === 'start' ? live.current.startAt : live.current.finishAt);
+      },
+      // A terminate still has to restore the player, or a gesture stolen by the
+      // system would leave loose tolerances behind for good.
+      onPanResponderTerminate: () => {
+        setDragging(null);
+        player.scrubbingModeOptions = { scrubbingModeEnabled: false };
+        player.seekTolerance = { toleranceBefore: 0, toleranceAfter: 0 };
       },
     });
 
@@ -259,7 +338,7 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
           totalMs: Math.round(timing.elapsedMs),
           split1Ms: 0,
           split2Ms: 0,
-          athleteId: roster.currentAthlete?.id ?? null,
+          athleteId,
           drillType: drill.name,
           rawJson: videoRunRawJson({
             startPts: startMark.pts,
@@ -275,7 +354,10 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
         // Only after the row is safely written. Discarding first would risk losing
         // the video to a failed save.
         if (!keepVideo) deleteClip(clip.id);
-        roster.completeRun();
+        // Advance the lineup ONLY when this run belongs to whoever is up. Marking
+        // an old clip for someone three places back must not move the cursor —
+        // that would skip a live athlete's turn on the strength of a desk job.
+        if (athleteId && athleteId === roster.currentAthlete?.id) roster.completeRun();
         onSaved?.(timing.elapsedMs);
         Alert.alert(
           'Time recorded',
@@ -291,7 +373,10 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
         setBusy(null);
       }
     },
-    [timing, clip, startMark, finishMark, grid, frameDur, drill, roster, onSaved],
+    // athleteId, not just roster: it is derived from athleteOverride too, and
+    // leaving it out would let a stale closure attribute the run to whoever was
+    // selected before the coach changed it.
+    [timing, clip, startMark, finishMark, grid, frameDur, drill, athleteId, roster, onSaved],
   );
 
   // ------------------------------------------------------------ render
@@ -336,7 +421,13 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
           </Pressable>
         </View>
       ) : (
-        <ScrollView style={styles.controls} contentContainerStyle={styles.controlsBody}>
+        <ScrollView
+          style={styles.controls}
+          contentContainerStyle={styles.controlsBody}
+          // Belt and braces with onPanResponderTerminationRequest: with scrolling
+          // off there is nothing for the drag to compete against.
+          scrollEnabled={!dragging}
+        >
           <View
             style={styles.strip}
             onLayout={(e: LayoutChangeEvent) => setStripW(e.nativeEvent.layout.width)}
@@ -404,19 +495,22 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
             runs for that reason.
           </Text>
 
-          {/* Attribution. The athlete comes from the lineup, exactly as it does for
-              a gate run — a video run is not a different kind of record. */}
+          {/* Attribution. A video run is not a different kind of record, so it
+              carries the same two facts as any other. */}
+          <Pressable style={styles.tagRow} onPress={() => setPickingAthlete(true)}>
+            <Text style={styles.tagLabel}>Athlete</Text>
+            <Text style={[styles.tagValue, !athlete && styles.tagEmpty]}>
+              {athlete?.display_name ?? 'Unassigned'}
+            </Text>
+            <Text style={styles.tagHint}>{followingLineup ? 'from lineup' : 'chosen'}</Text>
+          </Pressable>
+
           <Pressable style={styles.tagRow} onPress={() => setPickingDrill(true)}>
             <Text style={styles.tagLabel}>Drill</Text>
             <Text style={[styles.tagValue, !drill && styles.tagEmpty]}>
               {drill?.name ?? 'Pick a drill'}
             </Text>
           </Pressable>
-          <Text style={styles.facts}>
-            {roster.currentAthlete
-              ? `Saves to ${roster.currentAthlete.display_name}`
-              : 'No athlete up — saves unassigned'}
-          </Text>
 
           <View style={styles.saveRow}>
             <Pressable
@@ -442,6 +536,19 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
             onPick={(d) => {
               setDrill(d);
               setPickingDrill(false);
+            }}
+          />
+
+          <AthletePickerModal
+            visible={pickingAthlete}
+            currentId={athleteId}
+            title="Whose run is this?"
+            onClose={() => setPickingAthlete(false)}
+            onPick={(id) => {
+              // Even picking the same athlete counts as a choice: it stops the
+              // attribution drifting if the lineup cursor moves afterwards.
+              setAthleteOverride(id);
+              setPickingAthlete(false);
             }}
           />
 
@@ -572,6 +679,7 @@ const styles = StyleSheet.create({
   tagLabel: { color: '#94a3b8', fontSize: 13, fontWeight: '600' },
   tagValue: { flex: 1, color: '#e2e8f0', fontSize: 15, fontWeight: '600', textAlign: 'right' },
   tagEmpty: { color: '#64748b', fontWeight: '400' },
+  tagHint: { color: '#64748b', fontSize: 10, minWidth: 58, textAlign: 'right' },
   caveat: { color: '#64748b', fontSize: 11, lineHeight: 16 },
   saveRow: { flexDirection: 'row', gap: 10 },
   grow: { flex: 1 },
