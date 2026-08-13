@@ -398,14 +398,21 @@ export function isVariableRate(grid: FrameGrid, toleranceSec = 0.0005): boolean 
 
 // ------------------------------------------------------------- storage
 
+/**
+ * The timing facts for a video-timed run.
+ *
+ * Deliberately does NOT carry the clip id. raw_json answers "how was this timed";
+ * runs.clip_id answers "is there footage". Keeping the clip here would have meant
+ * that attaching review video to a GATE run had to write this JSON over the
+ * gate's, flipping timeSource to 'video' and moving the run into a different
+ * progression series — a review clip silently reclassifying a gate-timed run.
+ */
 export type VideoRunFacts = {
   startPts: number;
   endPts: number;
   /** measured, never nominal */
   fps: number;
   quantSdMs: number;
-  /** the stored clip this was marked from, if the coach kept it */
-  clipId?: string | null;
 };
 
 /** What a video run writes into raw_json. The accuracy fact travels with the ROW,
@@ -420,7 +427,6 @@ export function videoRunRawJson(f: VideoRunFacts): string {
     endPts: f.endPts,
     quantSdMs: f.quantSdMs,
     bodyPartBiasMs: BODY_PART_BIAS_MS,
-    clipId: f.clipId ?? null,
   });
 }
 
@@ -436,7 +442,6 @@ export function parseVideoRunJson(raw: string | null | undefined): VideoRunFacts
       endPts: v.endPts,
       fps: Number.isFinite(v.fps) ? v.fps : 0,
       quantSdMs: Number.isFinite(v.quantSdMs) ? v.quantSdMs : 0,
-      clipId: typeof v.clipId === 'string' ? v.clipId : null,
     };
   } catch {
     return null;

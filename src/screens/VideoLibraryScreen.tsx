@@ -34,9 +34,10 @@ import {
 // — only the asset verbs moved.
 import { Asset, requestPermissionsAsync } from 'expo-media-library';
 
-import { listVideoRuns, type VideoRunRow } from '../db/database';
+import { VideoPlayerModal } from '../components/VideoPlayerModal';
+import { clearMissingClips, listVideoRuns, type VideoRunRow } from '../db/database';
 import { deleteClip, formatBytes, listClips, totalBytes, type Clip } from '../video/clips';
-import { formatVideoSeconds, parseVideoRunJson } from '../video/timing';
+import { formatVideoSeconds, VIDEO_MODE } from '../video/timing';
 
 type Entry = {
   clip: Clip;
@@ -47,17 +48,23 @@ export default function VideoLibraryScreen() {
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [total, setTotal] = useState(0);
   const [working, setWorking] = useState<string | null>(null);
+  const [playing, setPlaying] = useState<Entry | null>(null);
+
+  /** Runs whose clip is gone. Not an error — deleting a video keeps the run, and
+   *  saying so stops it reading as data loss. */
+  const [orphanRuns, setOrphanRuns] = useState(0);
 
   const load = useCallback(async () => {
     const clips = listClips();
     const runs = await listVideoRuns();
-    // Index runs by the clip they reference, so the join is one pass rather than
-    // a scan per clip.
+    // Clip references that no longer resolve are cleared here rather than left to
+    // rot: a run claiming footage it does not have would show a Play button that
+    // opens nothing. The count is reported, not hidden.
+    const cleared = await clearMissingClips(clips.map((c) => c.id));
+    setOrphanRuns(cleared);
+
     const byClip = new Map<string, VideoRunRow>();
-    for (const r of runs) {
-      const id = parseVideoRunJson(r.raw_json)?.clipId;
-      if (id) byClip.set(id, r);
-    }
+    for (const r of runs) byClip.set(r.clip_id, r);
     setEntries(clips.map((clip) => ({ clip, run: byClip.get(clip.id) ?? null })));
     setTotal(totalBytes());
   }, []);
@@ -65,23 +72,6 @@ export default function VideoLibraryScreen() {
   useEffect(() => {
     void load();
   }, [load]);
-
-  /** Runs whose clip is gone. Not an error — Stage 1 keeps the time when a clip
-   *  is deleted, and saying so stops it reading as data loss. */
-  const [orphanRuns, setOrphanRuns] = useState(0);
-  useEffect(() => {
-    if (!entries) return;
-    void (async () => {
-      const runs = await listVideoRuns();
-      const present = new Set(entries.map((e) => e.clip.id));
-      setOrphanRuns(
-        runs.filter((r) => {
-          const id = parseVideoRunJson(r.raw_json)?.clipId;
-          return id && !present.has(id);
-        }).length,
-      );
-    })();
-  }, [entries]);
 
   const confirmDelete = useCallback(
     (entry: Entry) => {
@@ -158,42 +148,61 @@ export default function VideoLibraryScreen() {
         </View>
       );
     }
-    return entries.map((e) => (
-      <View key={e.clip.id} style={styles.card}>
-        <View style={styles.cardHead}>
-          <View style={styles.cardText}>
-            <Text style={styles.cardTitle} numberOfLines={1}>
-              {e.run
-                ? `${formatVideoSeconds(e.run.total_ms)}s · ${e.run.drill_name ?? 'no drill'}`
-                : 'Never saved'}
-            </Text>
-            <Text style={styles.cardSub} numberOfLines={1}>
-              {e.run
-                ? `${e.run.athlete_name ?? 'Unassigned'} · ${dateOf(e.run.created_at)}`
-                : 'Imported, then left — no run was recorded'}
+    return entries.map((e) => {
+      // Three genuinely different things, and they look identical as files.
+      // A video-TIMED run got its number from these frames. An attached clip is
+      // review footage on a run timed by something else — deleting it loses
+      // footage but no measurement. An orphan is neither and is pure waste.
+      const kind = !e.run ? 'orphan' : e.run.mode === VIDEO_MODE ? 'timed' : 'attached';
+      return (
+        <View key={e.clip.id} style={styles.card}>
+          <View style={styles.cardHead}>
+            <View style={styles.cardText}>
+              <Text style={styles.cardTitle} numberOfLines={1}>
+                {e.run
+                  ? `${formatVideoSeconds(e.run.total_ms)}s · ${e.run.drill_name ?? 'no drill'}`
+                  : 'Never saved'}
+              </Text>
+              <Text style={styles.cardSub} numberOfLines={1}>
+                {e.run
+                  ? `${e.run.athlete_name ?? 'Unassigned'} · ${dateOf(e.run.created_at)}`
+                  : 'Imported, then left — no run was recorded'}
+              </Text>
+              <Text style={[styles.kind, styles[`kind_${kind}`]]}>
+                {kind === 'timed'
+                  ? 'TIMED FROM THIS VIDEO'
+                  : kind === 'attached'
+                    ? 'REVIEW FOOTAGE · run timed separately'
+                    : 'NO RUN — SAFE TO DELETE'}
+              </Text>
+            </View>
+            <Text style={[styles.size, kind === 'orphan' && styles.sizeWaste]}>
+              {formatBytes(e.clip.bytes)}
             </Text>
           </View>
-          <Text style={[styles.size, !e.run && styles.sizeWaste]}>{formatBytes(e.clip.bytes)}</Text>
+          <View style={styles.actions}>
+            <Pressable style={styles.action} onPress={() => setPlaying(e)}>
+              <Text style={[styles.actionText, styles.play]}>Play</Text>
+            </Pressable>
+            <Pressable
+              style={styles.action}
+              onPress={() => void exportToRoll(e)}
+              disabled={working === e.clip.id}
+            >
+              <Text style={styles.actionText}>
+                {working === e.clip.id ? 'Saving…' : 'Camera roll'}
+              </Text>
+            </Pressable>
+            <Pressable style={styles.action} onPress={() => void share(e)}>
+              <Text style={styles.actionText}>Share</Text>
+            </Pressable>
+            <Pressable style={styles.action} onPress={() => confirmDelete(e)}>
+              <Text style={[styles.actionText, styles.danger]}>Delete</Text>
+            </Pressable>
+          </View>
         </View>
-        <View style={styles.actions}>
-          <Pressable
-            style={styles.action}
-            onPress={() => void exportToRoll(e)}
-            disabled={working === e.clip.id}
-          >
-            <Text style={styles.actionText}>
-              {working === e.clip.id ? 'Saving…' : 'Save to camera roll'}
-            </Text>
-          </Pressable>
-          <Pressable style={styles.action} onPress={() => void share(e)}>
-            <Text style={styles.actionText}>Share</Text>
-          </Pressable>
-          <Pressable style={styles.action} onPress={() => confirmDelete(e)}>
-            <Text style={[styles.actionText, styles.danger]}>Delete</Text>
-          </Pressable>
-        </View>
-      </View>
-    ));
+      );
+    });
   }, [entries, working, confirmDelete, exportToRoll, share]);
 
   return (
@@ -219,6 +228,22 @@ export default function VideoLibraryScreen() {
           </Text>
         ) : null}
       </ScrollView>
+
+      <VideoPlayerModal
+        visible={!!playing}
+        clipId={playing?.clip.id ?? null}
+        title={
+          playing?.run
+            ? `${formatVideoSeconds(playing.run.total_ms)}s · ${playing.run.drill_name ?? 'no drill'}`
+            : 'Unsaved clip'
+        }
+        subtitle={
+          playing?.run
+            ? `${playing.run.athlete_name ?? 'Unassigned'} · ${dateOf(playing.run.created_at)}`
+            : undefined
+        }
+        onClose={() => setPlaying(null)}
+      />
     </View>
   );
 }
@@ -257,6 +282,11 @@ const styles = StyleSheet.create({
   size: { color: '#cbd5e1', fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
   /** An orphan is pure waste, so its size is the thing to notice. */
   sizeWaste: { color: '#fbbf24' },
+  kind: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4, marginTop: 4 },
+  kind_timed: { color: '#34d399' },
+  kind_attached: { color: '#60a5fa' },
+  kind_orphan: { color: '#fbbf24' },
+  play: { color: '#60a5fa' },
   actions: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#243042' },
   action: { flex: 1, alignItems: 'center', paddingVertical: 12 },
   actionText: { color: '#cbd5e1', fontSize: 12, fontWeight: '600' },

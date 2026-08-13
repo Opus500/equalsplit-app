@@ -307,6 +307,23 @@ export async function ensureSchema(db: MigrationDb): Promise<void> {
   if (!runCols.includes('note')) {
     await db.execAsync('ALTER TABLE runs ADD COLUMN note TEXT');
   }
+  // Which stored video belongs to this run — for BOTH a video-timed run and a
+  // gate-timed run with review footage attached.
+  //
+  // A column rather than a field in raw_json, and the reason is correctness, not
+  // tidiness. raw_json answers "how was this timed"; putting the clip there meant
+  // attaching footage to a GATE run would have had to write the video engine's
+  // JSON over the gate's, flipping runTimeSource to 'video' and moving the run
+  // into a different progression series. A review video would have silently
+  // reclassified a gate-timed run. The two questions are orthogonal and now live
+  // in orthogonal places: raw_json for how it was timed, clip_id for whether
+  // there is footage.
+  //
+  // NULL is the norm. No SCHEMA_VERSION bump — a pure column add with nothing to
+  // backfill, picked up by the next launch since ensureSchema is idempotent.
+  if (!runCols.includes('clip_id')) {
+    await db.execAsync('ALTER TABLE runs ADD COLUMN clip_id TEXT');
+  }
 
   const sessionCols = await tableColumns(db, 'sessions');
   if (!sessionCols.includes('custom_name')) {

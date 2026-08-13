@@ -239,14 +239,20 @@ console.log('\n9. VARIABLE FRAME RATE is detected, not assumed away');
 
 console.log('\n10. THE ROW carries its own accuracy');
 {
-  const raw = videoRunRawJson({ startPts: 1.5, endPts: 5.75, fps: 59.94, quantSdMs: 6.8, clipId: 'c1' });
+  const raw = videoRunRawJson({ startPts: 1.5, endPts: 5.75, fps: 59.94, quantSdMs: 6.8 });
   const back = parseVideoRunJson(raw);
   near('start survives', back.startPts, 1.5, 1e-9);
   near('end survives', back.endPts, 5.75, 1e-9);
   near('the MEASURED fps survives, not a nominal one', back.fps, 59.94, 1e-9);
   near('and so does the error bar', back.quantSdMs, 6.8, 1e-9);
-  check('the clip reference survives for attaching video later', back.clipId, 'c1');
-  check('a kept-time-only run has no clip', parseVideoRunJson(videoRunRawJson({ startPts: 0, endPts: 1, fps: 30, quantSdMs: 13 })).clipId, null);
+
+  // THE SEPARATION. raw_json answers "how was this timed"; runs.clip_id answers
+  // "is there footage". If the clip lived here, attaching review video to a GATE
+  // run would have to write this JSON over the gate's — flipping timeSource to
+  // 'video' and moving the run into a different progression series. A review clip
+  // would silently reclassify a gate-timed run as video-timed.
+  check('raw_json carries no clip reference', 'clipId' in JSON.parse(raw), false);
+  check('so attaching footage cannot change how a run was timed', runTimeSource('{"engine":"v2"}'), null);
 
   // It must not claim rows that are not video runs.
   check('a rep set is not a video run', parseVideoRunJson('{"engine":"rep-set"}'), null);

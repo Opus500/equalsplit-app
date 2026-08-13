@@ -61,6 +61,9 @@ export type ProgressionRun = {
    *  DERIVED description of the run's shape — this one is typed by a person and
    *  is the only field here that round-trips to storage. */
   userNote?: string | null;
+  /** Stored video for this run, if any. Independent of `timeSource`: a gate run
+   *  can carry review footage without being a video-TIMED run. */
+  clipId?: string | null;
 };
 
 export type SeriesPoint = {
@@ -73,6 +76,8 @@ export type SeriesPoint = {
   note: string | null;
   /** see ProgressionRun.userNote */
   userNote: string | null;
+  /** see ProgressionRun.clipId */
+  clipId: string | null;
 };
 
 export type Series = {
@@ -187,6 +192,7 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
         isBest: r.elapsedMs === bestMs,
         note: r.note ?? null,
         userNote: r.userNote ?? null,
+        clipId: r.clipId ?? null,
       })),
       bestMs,
       worstMs,

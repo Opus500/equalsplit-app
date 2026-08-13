@@ -36,6 +36,7 @@ import { formatTags } from '../runs/format';
 import { REPEAT_MODE, parseRepSetJson, runStartSource } from '../ble/repeats';
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
+import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { runShareLine, sessionShareText, shareText } from '../share';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
@@ -72,6 +73,7 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   const [editing, setEditing] = useState<RunRow | null>(null);
   // Which rep set has its intervals showing. One at a time — the list is long.
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [playing, setPlaying] = useState<RunRow | null>(null);
   const [picking, setPicking] = useState(false);
   const [pickingDrill, setPickingDrill] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -298,6 +300,18 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                 ) : null}
                 {handStarted ? <Text style={styles.handTag}>hand</Text> : null}
                 <Text style={styles.runTotal}>{fmt(totalOf(item))}s</Text>
+                {/* Only when there is footage. Absent rather than disabled: a
+                    permanently greyed control on most rows is noise. */}
+                {item.clip_id ? (
+                  <Pressable
+                    onPress={() => setPlaying(item)}
+                    hitSlop={8}
+                    style={styles.rowIcon}
+                    accessibilityLabel="Play this run's video"
+                  >
+                    <Text style={styles.playGlyph}>▶</Text>
+                  </Pressable>
+                ) : null}
                 <Pressable
                   onPress={() =>
                     shareText(
@@ -375,6 +389,20 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
           dateName={selected.name}
           onClose={() => setRenaming(false)}
           onSubmit={renameSelected}
+        />
+
+        <VideoPlayerModal
+          visible={!!playing}
+          clipId={playing?.clip_id ?? null}
+          title={playing ? `#${playing.display_index} · ${fmt(totalOf(playing))}s` : undefined}
+          subtitle={
+            playing
+              ? [resolvedAthlete(playing).name, resolvedDrill(playing).name]
+                  .filter(Boolean)
+                  .join(' · ')
+              : undefined
+          }
+          onClose={() => setPlaying(null)}
         />
       </View>
     );
@@ -661,6 +689,7 @@ const styles = StyleSheet.create({
   runTotal: { color: '#fff', fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
   rowIcon: { paddingHorizontal: 6, paddingVertical: 2 },
   shareGlyph: { color: '#60a5fa', fontSize: 16, fontWeight: '800' },
+  playGlyph: { color: '#34d399', fontSize: 14, fontWeight: '800' },
   delText: { color: '#b4541f', fontSize: 16, fontWeight: '800' },
   headerShare: {
     backgroundColor: '#1f2937',

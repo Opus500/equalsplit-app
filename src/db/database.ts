@@ -152,6 +152,9 @@ export type RunInput = {
    *  observer, and anything added later) is linked automatically and cannot
    *  silently drop out of the progression graphs by forgetting to. */
   drillType?: string | null;
+  /** Stored video belonging to this run. Independent of how it was TIMED — a gate
+   *  run can carry review footage without becoming a video-timed run. */
+  clipId?: string | null;
 };
 
 const clean = (s?: string | null) => {
@@ -217,8 +220,8 @@ export async function saveRun(r: RunInput): Promise<string> {
 
   await db.runAsync(
     `INSERT INTO runs
-       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, athlete_id, athlete_name, drill_id, drill_type, synced)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, athlete_id, athlete_name, drill_id, drill_type, clip_id, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     [
       id,
       sessionId,
@@ -236,6 +239,7 @@ export async function saveRun(r: RunInput): Promise<string> {
       athleteName,
       drillId,
       drillName,
+      clean(r.clipId),
     ],
   );
   // Recency drives the picker's order — this is what makes a one-off drill sink
@@ -346,6 +350,8 @@ export type RunRow = {
   drill_id: string | null;
   drill_name: string | null;
   created_at: number;
+  /** Stored video for this run, if any. Independent of how it was timed. */
+  clip_id: string | null;
   // --- roster (schema v2), joined ---
   athlete_id: string | null;
   athlete_display_name: string | null;
@@ -361,7 +367,7 @@ export async function getRuns(sessionId: string): Promise<RunRow[]> {
   return db.getAllAsync<RunRow>(
     `SELECT r.id, r.mode, r.run_index, r.total_ms, r.split1_ms, r.split2_ms,
             r.reaction_offset_ms, r.status, r.raw_json, r.athlete_name, r.drill_type,
-            r.created_at, r.athlete_id, r.drill_id,
+            r.created_at, r.athlete_id, r.drill_id, r.clip_id,
             ROW_NUMBER() OVER (
               ORDER BY r.run_index ASC, r.created_at ASC, r.rowid ASC
             ) AS display_index,
@@ -431,35 +437,63 @@ export async function updateRunAthlete(runId: string, athleteId: string | null):
 // Delete a run; if its session is left empty, remove the session too.
 export type VideoRunRow = {
   id: string;
+  mode: number;
   total_ms: number;
   created_at: number;
-  raw_json: string | null;
+  clip_id: string;
   athlete_name: string | null;
   drill_name: string | null;
 };
 
 /**
- * Every video-timed run, newest first.
+ * Every run that has a clip, newest first — video-timed or not.
  *
- * Backs the video library: a list of files with sizes and dates is close to
- * useless for deciding what to delete, so each clip is shown against the run it
- * belongs to. The clip id lives inside raw_json rather than in a column — there is
- * one video mode and few enough rows that scanning them costs nothing, and adding
- * a column would put the same fact in two places where they could disagree.
+ * `mode` comes back so the caller can tell the two apart: mode 5 was TIMED from
+ * the video, anything else was timed some other way and has footage attached for
+ * review. They look identical in a file listing and are not the same thing.
+ *
+ * Backs the video library, where a list of files with sizes and dates would be
+ * close to useless for deciding what to delete.
  */
 export async function listVideoRuns(): Promise<VideoRunRow[]> {
   const db = await getDb();
   return db.getAllAsync<VideoRunRow>(
-    `SELECT r.id, r.total_ms, r.created_at, r.raw_json,
+    `SELECT r.id, r.mode, r.total_ms, r.created_at, r.clip_id,
             a.display_name AS athlete_name,
             d.name         AS drill_name
        FROM runs r
        LEFT JOIN athletes a ON a.id = r.athlete_id
        LEFT JOIN drills   d ON d.id = r.drill_id
-      WHERE r.mode = ?
+      WHERE r.clip_id IS NOT NULL
       ORDER BY r.created_at DESC`,
-    [VIDEO_MODE],
   );
+}
+
+/**
+ * Attach a clip to a run, or detach it.
+ *
+ * Deliberately touches ONLY clip_id. Attaching review footage to a gate-timed run
+ * must not alter how that run was timed, or it would move between progression
+ * series — which is the whole reason this is a column and not a raw_json field.
+ */
+export async function setRunClip(runId: string, clipId: string | null): Promise<void> {
+  const db = await getDb();
+  await db.runAsync('UPDATE runs SET clip_id = ? WHERE id = ?', [clipId, runId]);
+}
+
+/** Runs whose clip_id points at a video that is no longer on disk. Clearing them
+ *  keeps "has footage" honest after a delete. */
+export async function clearMissingClips(presentClipIds: string[]): Promise<number> {
+  const db = await getDb();
+  const rows = await db.getAllAsync<{ id: string; clip_id: string }>(
+    'SELECT id, clip_id FROM runs WHERE clip_id IS NOT NULL',
+  );
+  const present = new Set(presentClipIds);
+  const stale = rows.filter((r) => !present.has(r.clip_id));
+  for (const r of stale) {
+    await db.runAsync('UPDATE runs SET clip_id = NULL WHERE id = ?', [r.id]);
+  }
+  return stale.length;
 }
 
 /**
@@ -505,6 +539,8 @@ export type AthleteRunRow = {
   drill_name: string | null;
   /** the coach's own note. NULL and '' both mean no note. */
   note: string | null;
+  /** stored video, if any. Independent of how the run was timed. */
+  clip_id: string | null;
 };
 
 /**
@@ -518,7 +554,7 @@ export async function getAthleteRuns(athleteId: string): Promise<AthleteRunRow[]
   const db = await getDb();
   return db.getAllAsync<AthleteRunRow>(
     `SELECT r.id, r.mode, r.total_ms, r.created_at, r.status, r.raw_json, r.drill_id,
-            r.note, d.name AS drill_name
+            r.note, r.clip_id, d.name AS drill_name
        FROM runs r
        LEFT JOIN drills d ON d.id = r.drill_id
       WHERE r.athlete_id = ?

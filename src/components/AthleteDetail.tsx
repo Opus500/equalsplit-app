@@ -19,14 +19,19 @@ import {
   View,
 } from 'react-native';
 
+import * as ImagePicker from 'expo-image-picker';
+
 import {
   deleteRun,
   getAthleteRuns,
+  setRunClip,
   setRunNote,
   type Athlete,
   type AthleteRunRow,
 } from '../db/database';
+import { importClip } from '../video/clips';
 import { seriesTimeSource } from '../video/timing';
+import { VideoPlayerModal } from './VideoPlayerModal';
 import {
   HAND_START_ERROR_MS,
   REPEAT_MODE,
@@ -44,6 +49,7 @@ import {
   seriesUid,
   type Progression,
   type Series,
+  type SeriesPoint,
 } from '../roster/progression';
 import { ProgressionChart } from './ProgressionChart';
 
@@ -116,6 +122,9 @@ export function AthleteDetailModal({
             // are kept in separate series rather than trusted to a naming habit.
             timeSource: seriesTimeSource(r.raw_json),
             userNote: r.note,
+            // From the COLUMN, not raw_json. Attaching footage to a gate run must
+            // not touch how it was timed, or it would move series.
+            clipId: r.clip_id,
             // Splits stay reachable in the readout without touching the axis;
             // and a hand-started run says so, because the accuracy fact lives
             // on the row (runStartSource) rather than only in the UI.
@@ -228,6 +237,41 @@ export function AthleteDetailModal({
     [rows],
   );
 
+  /**
+   * Attach a video to a run that already exists.
+   *
+   * Writes clip_id and NOTHING else. The run keeps its time, its mode and its
+   * raw_json, so a gate-timed run stays gate-timed and stays in its own
+   * progression series — attaching review footage is not a claim about how the
+   * run was measured.
+   */
+  const attachVideo = useCallback(
+    async (runId: string) => {
+      try {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          Alert.alert('Photo access needed', 'EqualSplit needs to read the clip you recorded.');
+          return;
+        }
+        const res = await ImagePicker.launchImageLibraryAsync({
+          mediaTypes: ['videos'],
+          allowsEditing: false,
+          videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
+          shouldDownloadFromNetwork: true,
+        });
+        if (res.canceled || !res.assets[0]) return;
+        const imported = await importClip(res.assets[0].uri);
+        await setRunClip(runId, imported.id);
+        setRows((prev) => prev?.map((r) => (r.id === runId ? { ...r, clip_id: imported.id } : r)) ?? null);
+      } catch (e) {
+        Alert.alert('Could not attach that video', String(e));
+      }
+    },
+    [],
+  );
+
+  const [playing, setPlaying] = useState<{ clipId: string; title: string; sub: string } | null>(null);
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
       <View style={styles.container}>
@@ -270,6 +314,14 @@ export function AthleteDetailModal({
                 series={graphable}
                 onDeleteRun={confirmDeleteRun}
                 onEditNote={editNote}
+                onAttachVideo={(id) => void attachVideo(id)}
+                onPlayVideo={(p, s) =>
+                  setPlaying({
+                    clipId: p.clipId!,
+                    title: `${formatMs(p.elapsedMs)}s · ${s.drillName}`,
+                    sub: `${athlete?.display_name ?? ''} · ${new Date(p.createdAt).toLocaleDateString()}`,
+                  })
+                }
                 selectedRunId={selectedRunId}
                 onSelectRun={setSelectedRunId}
               />
@@ -332,6 +384,17 @@ export function AthleteDetailModal({
           )}
         </ScrollView>
 
+        {/* Nested inside this modal, not a sibling — same iOS constraint as the
+            edit form: dismissing one root-level Modal while presenting another in
+            the same frame can drop the second. */}
+        <VideoPlayerModal
+          visible={!!playing}
+          clipId={playing?.clipId ?? null}
+          title={playing?.title}
+          subtitle={playing?.sub}
+          onClose={() => setPlaying(null)}
+        />
+
         {children}
       </View>
     </Modal>
@@ -352,12 +415,16 @@ function ChartPager({
   series,
   onDeleteRun,
   onEditNote,
+  onAttachVideo,
+  onPlayVideo,
   selectedRunId,
   onSelectRun,
 }: {
   series: Series[];
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
+  onAttachVideo?: (runId: string) => void;
+  onPlayVideo?: (point: SeriesPoint, series: Series) => void;
   selectedRunId: string | null;
   onSelectRun: (runId: string | null) => void;
 }) {
@@ -393,6 +460,8 @@ function ChartPager({
       onSelectRun={onSelectRun}
       onDeleteRun={onDeleteRun}
       onEditNote={onEditNote}
+      onAttachVideo={onAttachVideo}
+      onPlayVideo={onPlayVideo}
     />
   ) : null;
 
@@ -482,12 +551,16 @@ function RunList({
   onSelectRun,
   onDeleteRun,
   onEditNote,
+  onAttachVideo,
+  onPlayVideo,
 }: {
   series: Series;
   selectedRunId: string | null;
   onSelectRun: (runId: string | null) => void;
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
+  onAttachVideo?: (runId: string) => void;
+  onPlayVideo?: (point: SeriesPoint, series: Series) => void;
 }) {
   const points = useMemo(() => [...series.points].reverse(), [series.points]);
 
@@ -514,6 +587,9 @@ function RunList({
                 {formatMs(p.elapsedMs)}s
               </Text>
               {p.isBest ? <Text style={styles.pb}>PB</Text> : null}
+              {/* Visible without expanding: which runs have footage is the thing
+                  you scan the list for once video exists. */}
+              {p.clipId ? <Text style={styles.hasVideo}>▶</Text> : null}
               <View style={styles.runMid}>
                 <Text style={styles.runDate}>{listDate(p.createdAt)}</Text>
                 {/* The derived shape (a rep set's splits, a hand start) and the
@@ -534,6 +610,25 @@ function RunList({
 
             {open ? (
               <View style={styles.runActions}>
+                {/* Play when there is footage, attach when there is not. Never
+                    both — the run has one video or none, and offering "attach"
+                    beside a clip invites silently replacing it. */}
+                {p.clipId && onPlayVideo ? (
+                  <Pressable
+                    onPress={() => onPlayVideo(p, series)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={[styles.actionText, styles.actionVideo]}>Play video</Text>
+                  </Pressable>
+                ) : null}
+                {!p.clipId && onAttachVideo ? (
+                  <Pressable
+                    onPress={() => onAttachVideo(p.runId)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={styles.actionText}>Attach video</Text>
+                  </Pressable>
+                ) : null}
                 {onEditNote ? (
                   <Pressable
                     onPress={() => onEditNote(p.runId)}
@@ -621,6 +716,8 @@ const styles = StyleSheet.create({
   },
   actionText: { color: '#cbd5e1', fontSize: 13, fontWeight: '600' },
   actionDanger: { color: '#f87171' },
+  actionVideo: { color: '#60a5fa' },
+  hasVideo: { color: '#60a5fa', fontSize: 10 },
   dots: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, marginTop: 2 },
   dotHit: { paddingHorizontal: 5, paddingVertical: 8 },
   dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#334155' },

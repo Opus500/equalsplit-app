@@ -453,10 +453,11 @@ export default function VideoMarkScreen({
             // actually observed between the marks.
             fps: measuredFps(grid) ?? 1 / frameDur,
             quantSdMs: timing.quantSdMs,
-            // The clip ALWAYS stays with the run now. There is no discard path, so
-            // no run can end up referencing a video that was thrown away.
-            clipId: clip.id,
           }),
+          // The clip is a COLUMN, not part of raw_json. raw_json says how the run
+          // was timed; clip_id says whether there is footage. Keeping them apart is
+          // what lets a gate run carry review video without being reclassified.
+          clipId: clip.id,
         });
         // Advance the lineup ONLY when this run belongs to whoever is up. Marking
         // an old clip for someone three places back must not move the cursor —
