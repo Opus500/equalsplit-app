@@ -474,11 +474,26 @@ function ChartPager({
   const [page, setPage] = useState(0);
   const ref = useRef<ScrollView>(null);
 
+  // Pages = one per series, plus ONE appended for runs with no drill.
+  //
+  // Appended, not sorted in. It is not a Series and never competes for position,
+  // so "sorts last" is a property of the structure rather than a comparator that
+  // a later change could reorder.
+  const hasUnlabeled = unlabeled.length > 0;
+  const pageCount = series.length + (hasUnlabeled ? 1 : 0);
+
   // Archiving a drill's runs (or a filter change) can shorten the list under us;
   // without this the pager would sit on a page that no longer exists.
+  //
+  // Clamped to pageCount, NOT to series.length. Against series.length the
+  // unlabelled page was structurally unreachable: swiping onto it set page to
+  // series.length, this effect immediately pulled it back to series.length - 1,
+  // and the run list underneath went on describing the previous drill while the
+  // card above it said "No drill". The bug only appeared when there was at least
+  // one real series, which is why the all-untagged athlete looked fine.
   useEffect(() => {
-    if (page > series.length - 1) setPage(Math.max(0, series.length - 1));
-  }, [series.length, page]);
+    if (page > pageCount - 1) setPage(Math.max(0, pageCount - 1));
+  }, [pageCount, page]);
 
   const onLayout = (e: LayoutChangeEvent) => setPageW(e.nativeEvent.layout.width);
   const onEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -491,13 +506,6 @@ function ChartPager({
     ref.current?.scrollTo({ x: i * pageW, animated: true });
   };
 
-  // Pages = one per series, plus ONE appended for runs with no drill.
-  //
-  // Appended, not sorted in. It is not a Series and never competes for position,
-  // so "sorts last" is a property of the structure rather than a comparator that
-  // a later change could reorder.
-  const hasUnlabeled = unlabeled.length > 0;
-  const pageCount = series.length + (hasUnlabeled ? 1 : 0);
   if (!pageCount) return null;
 
   const idx = Math.min(page, pageCount - 1);
