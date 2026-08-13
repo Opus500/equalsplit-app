@@ -155,7 +155,6 @@ export function AthleteDetailModal({
   // Sorted graphable-first by buildProgression, so the pager still opens on
   // something worth looking at.
   const allSeries = prog?.series ?? [];
-  const graphable = allSeries.filter((s) => s.graphable);
 
   /**
    * Delete a run from the chart. A REAL delete through the same deleteRun() path
@@ -181,7 +180,11 @@ export function AthleteDetailModal({
       Alert.alert(
         'Delete this run?',
         `${(row.total_ms / 1000).toFixed(2)}s · ${row.drill_name ?? 'no drill'} · ${when}\n\n` +
-          'Deleted everywhere, including History. This cannot be undone.',
+          'Deleted everywhere, including History. This cannot be undone.' +
+          // Said, not done. Deleting the footage along with the run would destroy
+          // the very thing a coach might be keeping — but leaving it unmentioned
+          // is how megabytes accumulate with nothing pointing at them.
+          (row.clip_id ? '\n\nIts video is KEPT, and stays listed under Videos.' : ''),
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -258,14 +261,42 @@ export function AthleteDetailModal({
    * progression series — attaching review footage is not a claim about how the
    * run was measured.
    */
+  const [attaching, setAttaching] = useState<string | null>(null);
+  /**
+   * Guards against a second attach starting while the first is still copying.
+   *
+   * A ref, not the state above: the state is for the label, and a handler reading
+   * it from a closure would see whatever it was when that closure was made — the
+   * exact stale-closure shape that has already produced three bugs in this
+   * feature. Two attaches racing would import twice and orphan the loser, since
+   * the second setRunClip simply overwrites the first.
+   */
+  const attachBusy = useRef(false);
+
   const attachVideo = useCallback(
     async (runId: string) => {
+      if (attachBusy.current) return;
+      attachBusy.current = true;
+      setAttaching(runId);
       try {
         const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
         if (!perm.granted) {
           Alert.alert('Photo access needed', 'EqualSplit needs to read the clip you recorded.');
           return;
         }
+        // These two options are a verbatim copy of VideoMarkScreen's picker call,
+        // and neither is optional — the reasons were only recorded there, which is
+        // how a flag that looks gratuitous gets deleted from one of two copies.
+        //
+        // Passthrough copies the original bytes; a transcode would re-encode to a
+        // constant frame rate and change the timings being measured. It matters
+        // less here (attached footage is for review, not measurement) but a clip
+        // attached today may be marked properly later, and it should not have been
+        // silently resampled in the meantime.
+        //
+        // shouldDownloadFromNetwork is REQUIRED with Passthrough: that path streams
+        // the original via PHAssetResourceManager, whose network access is bound to
+        // this flag, and without it every local clip fails with PHPhotosError 3164.
         const res = await ImagePicker.launchImageLibraryAsync({
           mediaTypes: ['videos'],
           allowsEditing: false,
@@ -278,6 +309,9 @@ export function AthleteDetailModal({
         setRows((prev) => prev?.map((r) => (r.id === runId ? { ...r, clip_id: imported.id } : r)) ?? null);
       } catch (e) {
         Alert.alert('Could not attach that video', String(e));
+      } finally {
+        attachBusy.current = false;
+        setAttaching(null);
       }
     },
     [],
@@ -357,6 +391,7 @@ export function AthleteDetailModal({
                 onDeleteRun={confirmDeleteRun}
                 onEditNote={editNote}
                 onAttachVideo={(id) => void attachVideo(id)}
+                attachingRunId={attaching}
                 onPlayVideo={(p, pageTitle) =>
                   setPlaying({
                     clipId: p.clipId!,
@@ -452,6 +487,7 @@ function ChartPager({
   onDeleteRun,
   onEditNote,
   onAttachVideo,
+  attachingRunId,
   onPlayVideo,
   onAssignDrill,
   selectedRunId,
@@ -465,6 +501,9 @@ function ChartPager({
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
+  /** Which run is mid-import, so the button can say so. Copying a clip is a file
+   *  copy of tens of megabytes and a silent button reads as a dead one. */
+  attachingRunId?: string | null;
   onPlayVideo?: (point: SeriesPoint, title: string) => void;
   onAssignDrill?: (runId: string) => void;
   selectedRunId: string | null;
@@ -523,6 +562,7 @@ function ChartPager({
       onDeleteRun={onDeleteRun}
       onEditNote={onEditNote}
       onAttachVideo={onAttachVideo}
+      attachingRunId={attachingRunId}
       onPlayVideo={onPlayVideo}
       onAssignDrill={onAssignDrill}
     />
@@ -535,6 +575,7 @@ function ChartPager({
       onDeleteRun={onDeleteRun}
       onEditNote={onEditNote}
       onAttachVideo={onAttachVideo}
+      attachingRunId={attachingRunId}
       onPlayVideo={onPlayVideo}
     />
   ) : null;
@@ -659,6 +700,7 @@ function RunList({
   onDeleteRun,
   onEditNote,
   onAttachVideo,
+  attachingRunId,
   onPlayVideo,
   onAssignDrill,
 }: {
@@ -672,6 +714,8 @@ function RunList({
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
+  /** see ChartPager */
+  attachingRunId?: string | null;
   onPlayVideo?: (point: SeriesPoint, title: string) => void;
   /** Only offered where it is the obvious next action: a run with no drill. */
   onAssignDrill?: (runId: string) => void;
@@ -749,9 +793,15 @@ function RunList({
                 {!p.clipId && onAttachVideo ? (
                   <Pressable
                     onPress={() => onAttachVideo(p.runId)}
-                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                    disabled={!!attachingRunId}
+                    style={({ pressed }) => [
+                      styles.actionBtn,
+                      (pressed || !!attachingRunId) && styles.dim,
+                    ]}
                   >
-                    <Text style={styles.actionText}>Attach video</Text>
+                    <Text style={styles.actionText}>
+                      {attachingRunId === p.runId ? 'Copying…' : 'Attach video'}
+                    </Text>
                   </Pressable>
                 ) : null}
                 {onEditNote ? (

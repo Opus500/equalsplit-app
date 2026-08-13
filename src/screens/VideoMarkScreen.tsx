@@ -13,9 +13,12 @@
 // timestamp. Without that the recorded time would be the scrubber's precision
 // rather than the video's.
 //
-// Accuracy is stated, never implied. The +/- comes from the two marked frames'
-// measured durations, and the decimals shown follow from it — a 30fps clip is not
-// allowed to print a hundredths digit it cannot support.
+// Accuracy is STATED, not implied by rounding. Two decimals always, with the +/-
+// from the two marked frames' measured durations printed beside them. An earlier
+// version dropped the second decimal on a 30fps clip on the grounds that ~13.6ms
+// of spread cannot support a 10ms digit — arithmetically right, practically worse:
+// a tenth is too coarse to read, and rounding hides the uncertainty instead of
+// saying it out loud.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -37,7 +40,7 @@ import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { saveRun, type Drill } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
-import { deleteClip, formatBytes, importClip, type Clip } from '../video/clips';
+import { formatBytes, importClip, NotEnoughSpaceError, type Clip } from '../video/clips';
 import { filmstrip, nominalFrameDur, probeGridAround, type Tile } from '../video/frames';
 import {
   BODY_PART_BIAS_MS,
@@ -69,8 +72,31 @@ const TILE_COUNT = 14;
 const DRAG_SEEK_MS = 60;
 /** Handle width; also the minimum comfortable drag target. */
 const HANDLE_W = 22;
+/** Longest wait for a newly loaded clip to report a duration, in ms. Generous
+ *  because the alternative is telling a coach their clip is unreadable when it
+ *  was only slow; bounded because a source that never loads must not hang. */
+const DURATION_TIMEOUT_MS = 8000;
 
 type Which = 'start' | 'finish';
+
+/**
+ * Poll until the player reports a duration, or give up.
+ *
+ * expo-video's duration is a property of a mutable native object, not a React
+ * value — nothing re-renders when tracks finish loading — so the load has to be
+ * awaited here, once, before anything derives a mark from it. Returns 0 if the
+ * clip never reports one, which the caller treats as a failed import rather than
+ * a zero-length video.
+ */
+async function waitForDuration(player: { duration: number }): Promise<number> {
+  const deadline = Date.now() + DURATION_TIMEOUT_MS;
+  for (;;) {
+    const d = player.duration || 0;
+    if (d > 0) return d;
+    if (Date.now() >= deadline) return 0;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+}
 
 export default function VideoMarkScreen({
   isVisible = true,
@@ -163,7 +189,21 @@ export default function VideoMarkScreen({
 
   // ------------------------------------------------------------- import
 
+  /**
+   * True while an import is in flight.
+   *
+   * A ref rather than reading `busy`, because a handler reads state from the
+   * closure it was made in. Two imports racing is not a cosmetic problem: the
+   * second replaces the player's source while the first is still probing, and the
+   * probe writes ITS frames into `live.current.grid`, which the second clip's
+   * marks are then resolved against. The recorded time would be computed from
+   * another video's frame timestamps.
+   */
+  const importing = useRef(false);
+
   const pick = useCallback(async () => {
+    if (importing.current) return;
+    importing.current = true;
     setBusy('Importing…');
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -189,12 +229,29 @@ export default function VideoMarkScreen({
       setGrid(emptyGrid());
       setTiles([]);
       await player.replaceAsync(imported.uri);
-      // Let the tracks load before anything reads duration or frame rate.
-      await new Promise((r) => setTimeout(r, 400));
-      const d = player.duration || 0;
+      setBusy('Reading the clip…');
+      // WAIT for the tracks, do not assume a duration.
+      //
+      // This was a flat 400ms sleep, which is a bet on how fast the device is. Lose
+      // that bet — a long clip, a cold decoder, a busy phone — and duration comes
+      // back 0, so the end mark lands at 0, the filmstrip effect is gated on
+      // `duration` and never fires, and Keep stays disabled. Nothing re-reads
+      // duration afterwards, because it is a property of a mutable player object
+      // that React has no reason to re-render for, so the screen stays dead until
+      // the clip is imported again.
+      const d = await waitForDuration(player);
       const dur = nominalFrameDur(player);
       setFrameDur(dur);
       setActive('start');
+      if (!d) {
+        // Said plainly rather than left as an empty strip. Everything else here
+        // would go on to compute marks from a duration that does not exist.
+        Alert.alert(
+          'Could not read that clip',
+          'The video imported but its length could not be read, so it cannot be marked. Try importing it again.',
+        );
+        return;
+      }
 
       // Marks land on REAL frames, and the grid around them is probed now rather
       // than on first use. Two bugs lived here: finishAt was set to `duration`
@@ -211,8 +268,14 @@ export default function VideoMarkScreen({
       setFinishAt(markAt(g, endAt)?.pts ?? endAt);
       player.currentTime = dur / 2;
     } catch (e) {
-      Alert.alert('Could not import that clip', String(e));
+      // NotEnoughSpaceError already reads as a sentence; anything else does not,
+      // so it keeps its own title rather than being flattened into one message.
+      Alert.alert(
+        e instanceof NotEnoughSpaceError ? 'Not enough space' : 'Could not import that clip',
+        e instanceof NotEnoughSpaceError ? e.message : String(e),
+      );
     } finally {
+      importing.current = false;
       setBusy(null);
     }
   }, [player]);
@@ -385,7 +448,15 @@ export default function VideoMarkScreen({
         if (r.calls) setGrid(r.grid);
 
         const m = stepFrames(r.grid, at, delta);
-        if (!m) continue;
+        if (!m) {
+          // Said, not swallowed. "The arrows do nothing" has been the symptom of
+          // three different bugs on this screen, and each time the first question
+          // was whether the press arrived at all. It reaches here when the probe
+          // came back empty — the end of the clip, or a decoder that was asleep
+          // because the app was in the background.
+          setPerf(`step ${delta > 0 ? '+' : ''}${delta} · no frame there · probe ${r.ms}ms/${r.calls}`);
+          continue;
+        }
         // The handles cannot cross by stepping either, not just by dragging.
         if (which === 'start') {
           if (m.pts >= live.current.finishAt) continue;
@@ -732,16 +803,6 @@ const styles = StyleSheet.create({
   handleEnd: { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 },
   handleOn: { backgroundColor: '#93c5fd' },
   stepRow: { flexDirection: 'row', gap: 10 },
-  stepGroup: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#131a24',
-    borderRadius: 10,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-  },
   markBtn: {
     flex: 1,
     alignItems: 'center',
@@ -778,12 +839,8 @@ const styles = StyleSheet.create({
   tagEmpty: { color: '#64748b', fontWeight: '400' },
   tagHint: { color: '#64748b', fontSize: 10, minWidth: 58, textAlign: 'right' },
   caveat: { color: '#64748b', fontSize: 11, lineHeight: 16 },
-  saveRow: { flexDirection: 'row', gap: 10 },
-  grow: { flex: 1 },
   primary: { backgroundColor: '#1d4ed8', borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
-  secondary: { backgroundColor: '#243042', borderRadius: 10, paddingVertical: 14, paddingHorizontal: 16, alignItems: 'center' },
-  secondaryText: { color: '#cbd5e1', fontSize: 15, fontWeight: '600' },
   tertiary: { alignItems: 'center', paddingVertical: 10 },
   tertiaryText: { color: '#60a5fa', fontSize: 13, fontWeight: '600' },
   disabled: { opacity: 0.4 },

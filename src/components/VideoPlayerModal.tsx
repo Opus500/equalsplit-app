@@ -1,7 +1,8 @@
 // Play back the clip belonging to a run.
 //
-// One component, two call sites (the athlete chart's run list and History), so
-// "watch this run" behaves identically wherever it is reached from.
+// One component, three call sites (the athlete chart's run list, History, and the
+// video library), so "watch this run" behaves identically wherever it is reached
+// from.
 //
 // Native controls, not the marking screen's scrubber: this is review, not
 // measurement. Frame-accurate seeking exists to place a mark, and a mark has
@@ -11,6 +12,11 @@
 // A missing clip is a NORMAL state, not an error. Deleting a video never deletes
 // its run, so a run can outlive its footage by design, and this says so plainly
 // rather than showing a broken player.
+//
+// A clip that is PRESENT but will not load is a different thing and gets its own
+// message. It is the residue of an import that died partway — the file is real,
+// the bytes are not a video — and telling the coach "video deleted" there would
+// send them looking for something they never lost.
 
 import { useEffect, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
@@ -33,7 +39,8 @@ export function VideoPlayerModal({
   onClose: () => void;
 }) {
   const [clip, setClip] = useState<Clip | null>(null);
-  const [missing, setMissing] = useState(false);
+  /** null = still resolving. 'gone' = no file. 'broken' = a file that will not load. */
+  const [problem, setProblem] = useState<'gone' | 'broken' | null>(null);
 
   const player = useVideoPlayer(null, (p) => {
     p.muted = false;
@@ -43,19 +50,28 @@ export function VideoPlayerModal({
   useEffect(() => {
     if (!visible || !clipId) {
       setClip(null);
-      setMissing(false);
+      setProblem(null);
       return;
     }
     const found = getClip(clipId);
     setClip(found);
-    setMissing(!found);
+    setProblem(found ? null : 'gone');
     if (!found) return;
     let alive = true;
-    void player.replaceAsync(found.uri).then(() => {
-      // Autoplay: the coach opened this to watch it, and the loop means they do
-      // not have to catch a two-second clip on the first pass.
-      if (alive) player.play();
-    });
+    // CAUGHT, not just chained. replaceAsync rejects on a file AVFoundation
+    // cannot open, and an unhandled rejection here left the sheet showing a
+    // permanently black player with nothing said — the one failure mode that
+    // looks exactly like the app hanging.
+    player
+      .replaceAsync(found.uri)
+      .then(() => {
+        // Autoplay: the coach opened this to watch it, and the loop means they do
+        // not have to catch a two-second clip on the first pass.
+        if (alive) player.play();
+      })
+      .catch(() => {
+        if (alive) setProblem('broken');
+      });
     return () => {
       alive = false;
       player.pause();
@@ -82,12 +98,20 @@ export function VideoPlayerModal({
         </View>
 
         <View style={styles.stage}>
-          {missing ? (
+          {problem === 'gone' ? (
             <View style={styles.emptyCard}>
               <Text style={styles.emptyTitle}>Video deleted</Text>
               <Text style={styles.emptyBody}>
                 This run&apos;s video was removed to free space. The time is unaffected — deleting a
                 video never deletes its run.
+              </Text>
+            </View>
+          ) : problem === 'broken' ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>This video won&apos;t play</Text>
+              <Text style={styles.emptyBody}>
+                The file is here but cannot be read — usually an import that was interrupted. The
+                run and its time are unaffected. Delete it from Videos to free the space.
               </Text>
             </View>
           ) : clip ? (
@@ -97,7 +121,9 @@ export function VideoPlayerModal({
           )}
         </View>
 
-        {clip ? <Text style={styles.footnote}>{formatBytes(clip.bytes)} · stored in the app</Text> : null}
+        {clip && problem !== 'broken' ? (
+          <Text style={styles.footnote}>{formatBytes(clip.bytes)} · stored in the app</Text>
+        ) : null}
       </View>
     </Modal>
   );

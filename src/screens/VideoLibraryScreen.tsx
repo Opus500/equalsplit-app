@@ -36,7 +36,14 @@ import { Asset, requestPermissionsAsync } from 'expo-media-library';
 
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { clearMissingClips, listVideoRuns, type VideoRunRow } from '../db/database';
-import { deleteClip, formatBytes, listClips, totalBytes, type Clip } from '../video/clips';
+import {
+  deleteClip,
+  formatBytes,
+  listClips,
+  sweepBrokenClips,
+  totalBytes,
+  type Clip,
+} from '../video/clips';
 import { formatVideoSeconds, VIDEO_MODE } from '../video/timing';
 
 type Entry = {
@@ -53,8 +60,15 @@ export default function VideoLibraryScreen() {
   /** Runs whose clip is gone. Not an error — deleting a video keeps the run, and
    *  saying so stops it reading as data loss. */
   const [orphanRuns, setOrphanRuns] = useState(0);
+  /** Half-written clips cleared on this visit. Reported rather than done quietly:
+   *  space appearing from nowhere is the kind of thing a coach should be told. */
+  const [swept, setSwept] = useState(0);
 
   const load = useCallback(async () => {
+    // Before listing, not after: a directory left by an import that died partway
+    // holds no playable video and no recoverable time, and leaving it would put a
+    // row here offering Play, Camera roll and Share on a file that has none of it.
+    setSwept(sweepBrokenClips());
     const clips = listClips();
     const runs = await listVideoRuns();
     // Clip references that no longer resolve are cleared here rather than left to
@@ -225,6 +239,12 @@ export default function VideoLibraryScreen() {
             {orphanRuns} video run{orphanRuns === 1 ? '' : 's'} no longer{' '}
             {orphanRuns === 1 ? 'has' : 'have'} a clip. The times are kept — deleting a video never
             deletes its run.
+          </Text>
+        ) : null}
+        {swept > 0 ? (
+          <Text style={styles.footnote}>
+            {swept} unfinished import{swept === 1 ? '' : 's'} cleared. These were left behind when a
+            copy was interrupted; they held no video and no run.
           </Text>
         ) : null}
       </ScrollView>
