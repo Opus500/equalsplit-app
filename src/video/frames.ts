@@ -92,12 +92,21 @@ export async function probeGridAround(
   centre: number,
   frameDurSec: number,
   framesEitherSide = 8,
+  /**
+   * How much coverage is REQUIRED before this is a no-op, as opposed to how much
+   * is fetched when it is not.
+   *
+   * These were the same number, and that made stepping pay a full probe on every
+   * other press: a probe centred on C covers to C+9 frames, so stepping to C+1
+   * still needed C+9 and just fitted, and C+2 needed C+10 and did not. Read-ahead
+   * is the whole point of fetching a window — requiring only a couple of frames
+   * of margin turns one probe into roughly seven free steps.
+   */
+  requiredEitherSide = 2,
 ): Promise<{ grid: FrameGrid; ms: number; calls: number }> {
   const t0 = Date.now();
-  // Covered already: nothing to learn, and a scrubber revisits the same
-  // neighbourhood constantly, so this early exit is most of why dragging is cheap.
-  if (isCovered(grid, centre - framesEitherSide * frameDurSec) &&
-      isCovered(grid, centre + framesEitherSide * frameDurSec)) {
+  if (isCovered(grid, centre - requiredEitherSide * frameDurSec) &&
+      isCovered(grid, centre + requiredEitherSide * frameDurSec)) {
     return { grid, ms: 0, calls: 0 };
   }
 

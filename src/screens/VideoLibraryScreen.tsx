@@ -28,7 +28,11 @@ import {
   Text,
   View,
 } from 'react-native';
-import * as MediaLibrary from 'expo-media-library';
+// The class-based API, not the legacy shim. saveToLibraryAsync now comes from
+// legacyWarnings and warns on every call; Asset.create is its replacement.
+// requestPermissionsAsync is exported from the module root and is NOT deprecated
+// — only the asset verbs moved.
+import { Asset, requestPermissionsAsync } from 'expo-media-library';
 
 import { listVideoRuns, type VideoRunRow } from '../db/database';
 import { deleteClip, formatBytes, listClips, totalBytes, type Clip } from '../video/clips';
@@ -118,12 +122,12 @@ export default function VideoLibraryScreen() {
       // Write-only permission: the app never needs to READ the camera roll to put
       // something into it, and asking for full access to do a save is asking for
       // more than the job requires.
-      const perm = await MediaLibrary.requestPermissionsAsync(true);
+      const perm = await requestPermissionsAsync(true);
       if (!perm.granted) {
         Alert.alert('Photos access needed', 'EqualSplit needs permission to save into your camera roll.');
         return;
       }
-      await MediaLibrary.saveToLibraryAsync(entry.clip.uri);
+      await Asset.create(entry.clip.uri);
       Alert.alert('Saved', 'The video is in your camera roll. It stays in the app too.');
     } catch (e) {
       Alert.alert('Could not save', String(e));

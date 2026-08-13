@@ -72,7 +72,16 @@ const HANDLE_W = 22;
 
 type Which = 'start' | 'finish';
 
-export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) => void }) {
+export default function VideoMarkScreen({
+  isVisible = true,
+  onSaved,
+}: {
+  /** False while this screen is mounted but hidden behind the library pane. The
+   *  clip and both marks survive; the player is paused so it stops holding a
+   *  decoder for a screen nobody is looking at. */
+  isVisible?: boolean;
+  onSaved?: (ms: number) => void;
+}) {
   const [clip, setClip] = useState<Clip | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [tiles, setTiles] = useState<Tile[]>([]);
@@ -125,8 +134,20 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
 
   // Latest values for the pan responder, which is created once and would
   // otherwise close over the first render's state.
-  const live = useRef({ stripW: 0, duration: 0, startAt: 0, finishAt: 0 });
-  live.current = { stripW, duration, startAt, finishAt };
+  // Everything an async handler needs to read, refreshed every render. State read
+  // from a closure is whatever it was when that closure was created, which for a
+  // handler that awaits is the value from BEFORE the await — the bug behind both
+  // the compounding drag and the degrading step.
+  const live = useRef({
+    stripW: 0,
+    duration: 0,
+    startAt: 0,
+    finishAt: 0,
+    grid: emptyGrid(),
+    active: 'start' as Which,
+    frameDur: 1 / 30,
+  });
+  live.current = { stripW, duration, startAt, finishAt, grid, active, frameDur };
   /** The handle's position when the drag STARTED. See onPanResponderGrant. */
   const dragBase = useRef(0);
   /** Live-scrub bookkeeping: throttle state plus what the seeks actually cost, so
@@ -135,6 +156,10 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   /** What each interaction actually cost, shown on screen so "it feels slow" can
    *  be answered with a number instead of a guess. */
   const [perf, setPerf] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isVisible) player.pause();
+  }, [isVisible, player]);
 
   // ------------------------------------------------------------- import
 
@@ -215,8 +240,11 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   const settleAt = useCallback(
     async (seconds: number) => {
       if (!clip) return;
-      const r = await probeGridAround(player, grid, seconds, frameDur);
+      // From the ref, not the closure: a drag can release while a previous settle
+      // is still resolving, and the closure's grid would be the pre-drag one.
+      const r = await probeGridAround(player, live.current.grid, seconds, live.current.frameDur);
       setGrid(r.grid);
+      live.current.grid = r.grid;
       const m = markAt(r.grid, seconds);
       const t0 = Date.now();
       // Seek to the frame's MIDDLE — a request on a boundary is decided by float
@@ -228,7 +256,7 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
           (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
       );
     },
-    [clip, grid, player, frameDur],
+    [clip, player],
   );
 
   const startMark: VideoMark | null = useMemo(() => markAt(grid, startAt), [grid, startAt]);
@@ -326,27 +354,68 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
   const startPan = useMemo(() => responderFor('start'), [settleAt, frameDur]);
   const finishPan = useMemo(() => responderFor('finish'), [settleAt, frameDur]);
 
-  const step = useCallback(
-    async (delta: number) => {
-      const which = active;
-      const at = which === 'start' ? startAt : finishAt;
-      const r = await probeGridAround(player, grid, at, frameDur);
-      setGrid(r.grid);
-      const m = stepFrames(r.grid, at, delta);
-      if (!m) return;
-      // The handles cannot cross by stepping either, not just by dragging.
-      if (which === 'start') {
-        if (m.pts >= finishAt) return;
-        setStartAt(m.pts);
-      } else {
-        if (m.pts <= startAt) return;
-        setFinishAt(m.pts);
+  /**
+   * Frame stepping, serialised and coalesced.
+   *
+   * Presses used to each start their own async probe. Because they all captured
+   * the grid from before the first await, none of them saw the frames the others
+   * had found, so every one paid a full re-probe — and N rapid presses put N times
+   * seventeen extraction calls in flight at once, which is why it got WORSE the
+   * more it was pressed rather than merely slow. They also all computed from the
+   * same stale mark, so three presses could advance one frame.
+   *
+   * Now a press only adds to a counter. One worker drains it, reading current
+   * state from the live ref, and applies whatever has accumulated in a single
+   * probe and a single seek — so holding the button is one round trip, not twenty.
+   */
+  const stepQueue = useRef(0);
+  const stepping = useRef(false);
+
+  const drainSteps = useCallback(async () => {
+    if (stepping.current) return;
+    stepping.current = true;
+    try {
+      while (stepQueue.current !== 0) {
+        const delta = stepQueue.current;
+        stepQueue.current = 0;
+
+        const { active: which, startAt: s, finishAt: f, grid: g, frameDur: fd } = live.current;
+        const at = which === 'start' ? s : f;
+        const r = await probeGridAround(player, g, at, fd);
+        if (r.calls) setGrid(r.grid);
+
+        const m = stepFrames(r.grid, at, delta);
+        if (!m) continue;
+        // The handles cannot cross by stepping either, not just by dragging.
+        if (which === 'start') {
+          if (m.pts >= live.current.finishAt) continue;
+          setStartAt(m.pts);
+          live.current.startAt = m.pts;
+        } else {
+          if (m.pts <= live.current.startAt) continue;
+          setFinishAt(m.pts);
+          live.current.finishAt = m.pts;
+        }
+        // Written back to the ref as well as to state: the next lap of this loop
+        // runs before React has re-rendered, and would otherwise step from the
+        // position we just left.
+        live.current.grid = r.grid;
+
+        const t0 = Date.now();
+        player.currentTime = seekTimeFor(m);
+        setPerf(`step ${delta > 0 ? '+' : ''}${delta} · probe ${r.ms}ms/${r.calls} · seek ${Date.now() - t0}ms`);
       }
-      const t0 = Date.now();
-      player.currentTime = seekTimeFor(m);
-      setPerf(`probe ${r.ms}ms/${r.calls} · seek ${Date.now() - t0}ms`);
+    } finally {
+      stepping.current = false;
+    }
+  }, [player]);
+
+  const step = useCallback(
+    (delta: number) => {
+      stepQueue.current += delta;
+      void drainSteps();
     },
-    [active, startAt, finishAt, grid, player, frameDur],
+    [drainSteps],
   );
 
   // ------------------------------------------------------------- save
@@ -520,10 +589,10 @@ export default function VideoMarkScreen({ onSaved }: { onSaved?: (ms: number) =>
               pair each. Two sets of arrows invited stepping the wrong one, and the
               screen has to stay readable with a thumb over half of it. */}
           <View style={styles.stepRow}>
-            <Pressable style={styles.stepBtn} onPress={() => void step(-1)} hitSlop={8}>
+            <Pressable style={styles.stepBtn} onPress={() => step(-1)} hitSlop={8}>
               <Text style={styles.stepText}>‹ frame</Text>
             </Pressable>
-            <Pressable style={styles.stepBtn} onPress={() => void step(1)} hitSlop={8}>
+            <Pressable style={styles.stepBtn} onPress={() => step(1)} hitSlop={8}>
               <Text style={styles.stepText}>frame ›</Text>
             </Pressable>
           </View>

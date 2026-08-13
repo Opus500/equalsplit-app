@@ -3,12 +3,15 @@
 // Same shape as DrillsTab — a thin wrapper holding two sibling screens behind a
 // switch, so neither knows about the other.
 //
-// Mark is UNMOUNTED when Library is showing, unlike DrillsTab where the engine
-// screens stay mounted. There is no in-progress state worth preserving here (an
-// unsaved mark is cheap to redo), and it holds a video player plus a decoded
-// filmstrip which should not sit in memory behind a list. Library remounts on
-// every visit for the opposite reason: it reads the filesystem, and a stale list
-// after a delete elsewhere would be worse than a reload.
+// Mark stays MOUNTED and is hidden, like Timer and Drills. It was unmounted, on
+// the reasoning that an unsaved mark is cheap to redo — which was wrong: an
+// imported clip is a file copy plus a filmstrip build plus however long the coach
+// spent placing two handles, and losing all of that to a glance at the library is
+// not a cheap redo. It is told when it is hidden so it can pause the player and
+// stop holding a decoder for a screen nobody is looking at.
+//
+// Library still remounts on every visit, for the opposite reason: it reads the
+// filesystem, and a stale list after a delete would be worse than a reload.
 
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -24,7 +27,10 @@ export default function VideoTab() {
   return (
     <View style={styles.root}>
       <View style={styles.fill}>
-        {pane === 'mark' ? <VideoMarkScreen /> : <VideoLibraryScreen />}
+        <View style={[styles.fill, pane !== 'mark' && styles.hidden]}>
+          <VideoMarkScreen isVisible={pane === 'mark'} />
+        </View>
+        {pane === 'library' ? <VideoLibraryScreen /> : null}
       </View>
 
       <View style={styles.switch}>
@@ -51,6 +57,7 @@ function Seg({ label, active, onPress }: { label: string; active: boolean; onPre
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0e1116' },
   fill: { flex: 1 },
+  hidden: { display: 'none' },
   switch: {
     flexDirection: 'row',
     gap: 6,
