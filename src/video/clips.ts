@@ -13,6 +13,7 @@
 // honest: it is exactly what deleting reclaims, with nothing else to account for.
 
 import { Directory, File, Paths } from 'expo-file-system';
+import * as ImagePicker from 'expo-image-picker';
 
 /** Everything lives under one directory so a clip is deleted by removing a folder. */
 const ROOT = 'videos';
@@ -112,6 +113,62 @@ export async function importClip(pickedUri: string): Promise<Clip> {
     }
     throw e;
   }
+}
+
+/**
+ * What a pick came back as. A discriminated result rather than a nullable URI,
+ * because "the coach cancelled" and "the coach refused access" need different
+ * responses, and collapsing them into null loses that.
+ */
+export type PickResult =
+  | { status: 'picked'; uri: string }
+  | { status: 'cancelled' }
+  | { status: 'denied' };
+
+/** The refusal message, here beside the request it belongs to, so both entry
+ *  points say the same thing. */
+export const PHOTO_ACCESS_TITLE = 'Photo access needed';
+export const PHOTO_ACCESS_MESSAGE = 'EqualSplit needs to read the clip you recorded.';
+
+/**
+ * Ask for a video from the photo library.
+ *
+ * ONE copy of these options, because two of them are load-bearing and neither
+ * looks it. This call lived verbatim in both the marking screen and the attach
+ * path with the reasoning recorded only in the first — which is precisely how a
+ * flag that reads as gratuitous gets deleted from one of two copies, leaving the
+ * bug in whichever route is exercised less.
+ *
+ * PASSTHROUGH copies the original bytes. Any other preset re-encodes, and a
+ * re-encode normalises to a constant frame rate — quietly changing the frame
+ * timings this whole feature exists to measure. It matters most on the marking
+ * path, but a clip attached for review today may be marked properly tomorrow, and
+ * it must not have been resampled in between.
+ *
+ * SHOULDDOWNLOADFROMNETWORK is REQUIRED with Passthrough, and is the one nobody
+ * would guess. The Passthrough fast path streams the original resource through
+ * PHAssetResourceManager, whose network access is bound to this flag rather than
+ * to any of the picker's own settings — so with it false (the default) every clip
+ * that is not fully local fails with PHPhotosError 3164. Including clips the coach
+ * believes are on the phone, because iOS offloads them without asking.
+ *
+ * Deliberately shows no UI and imports nothing: this module owns storage, and a
+ * storage module that raises alerts cannot be called from anywhere that needs to
+ * handle a refusal differently.
+ */
+export async function pickVideo(): Promise<PickResult> {
+  const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+  if (!perm.granted) return { status: 'denied' };
+
+  const res = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ['videos'],
+    allowsEditing: false,
+    videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
+    shouldDownloadFromNetwork: true,
+  });
+
+  const uri = res.canceled ? null : (res.assets[0]?.uri ?? null);
+  return uri ? { status: 'picked', uri } : { status: 'cancelled' };
 }
 
 /**

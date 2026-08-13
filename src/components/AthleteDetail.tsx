@@ -19,8 +19,6 @@ import {
   View,
 } from 'react-native';
 
-import * as ImagePicker from 'expo-image-picker';
-
 import {
   deleteRun,
   getAthleteRuns,
@@ -32,7 +30,12 @@ import {
   type Drill,
 } from '../db/database';
 import { DrillPickerModal } from './DrillPicker';
-import { importClip } from '../video/clips';
+import {
+  importClip,
+  PHOTO_ACCESS_MESSAGE,
+  PHOTO_ACCESS_TITLE,
+  pickVideo,
+} from '../video/clips';
 import { seriesTimeSource } from '../video/timing';
 import { VideoPlayerModal } from './VideoPlayerModal';
 import {
@@ -279,32 +282,17 @@ export function AthleteDetailModal({
       attachBusy.current = true;
       setAttaching(runId);
       try {
-        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (!perm.granted) {
-          Alert.alert('Photo access needed', 'EqualSplit needs to read the clip you recorded.');
+        // Same pickVideo() the marking screen calls. Its Passthrough and
+        // shouldDownloadFromNetwork options are what stop a silent re-encode and
+        // PHPhotosError 3164, and they used to be a verbatim copy here with the
+        // reasoning recorded only in the other file.
+        const picked = await pickVideo();
+        if (picked.status === 'denied') {
+          Alert.alert(PHOTO_ACCESS_TITLE, PHOTO_ACCESS_MESSAGE);
           return;
         }
-        // These two options are a verbatim copy of VideoMarkScreen's picker call,
-        // and neither is optional — the reasons were only recorded there, which is
-        // how a flag that looks gratuitous gets deleted from one of two copies.
-        //
-        // Passthrough copies the original bytes; a transcode would re-encode to a
-        // constant frame rate and change the timings being measured. It matters
-        // less here (attached footage is for review, not measurement) but a clip
-        // attached today may be marked properly later, and it should not have been
-        // silently resampled in the meantime.
-        //
-        // shouldDownloadFromNetwork is REQUIRED with Passthrough: that path streams
-        // the original via PHAssetResourceManager, whose network access is bound to
-        // this flag, and without it every local clip fails with PHPhotosError 3164.
-        const res = await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ['videos'],
-          allowsEditing: false,
-          videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
-          shouldDownloadFromNetwork: true,
-        });
-        if (res.canceled || !res.assets[0]) return;
-        const imported = await importClip(res.assets[0].uri);
+        if (picked.status !== 'picked') return;
+        const imported = await importClip(picked.uri);
         await setRunClip(runId, imported.id);
         setRows((prev) => prev?.map((r) => (r.id === runId ? { ...r, clip_id: imported.id } : r)) ?? null);
       } catch (e) {

@@ -34,13 +34,20 @@ import {
 } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { Image } from 'expo-image';
-import * as ImagePicker from 'expo-image-picker';
 
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { saveRun, type Drill } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
-import { formatBytes, importClip, NotEnoughSpaceError, type Clip } from '../video/clips';
+import {
+  formatBytes,
+  importClip,
+  NotEnoughSpaceError,
+  PHOTO_ACCESS_MESSAGE,
+  PHOTO_ACCESS_TITLE,
+  pickVideo,
+  type Clip,
+} from '../video/clips';
 import { filmstrip, nominalFrameDur, probeGridAround, type Tile } from '../video/frames';
 import {
   BODY_PART_BIAS_MS,
@@ -206,25 +213,17 @@ export default function VideoMarkScreen({
     importing.current = true;
     setBusy('Importing…');
     try {
-      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert('Photo access needed', 'EqualSplit needs to read the clip you recorded.');
+      // The picker's options live in clips.ts, not here. Two of them are what stop
+      // PHPhotosError 3164 and a silent re-encode, and they were previously a
+      // verbatim copy in the attach path with the reasoning only in this one.
+      const picked = await pickVideo();
+      if (picked.status === 'denied') {
+        Alert.alert(PHOTO_ACCESS_TITLE, PHOTO_ACCESS_MESSAGE);
         return;
       }
-      const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ['videos'],
-        allowsEditing: false,
-        // Passthrough copies the original bytes. A transcode would re-encode to a
-        // constant frame rate and quietly change the very timings being measured.
-        videoExportPreset: ImagePicker.VideoExportPreset.Passthrough,
-        // Required with Passthrough: that path streams the original resource via
-        // PHAssetResourceManager, whose network access is bound to this flag, and
-        // without it local clips fail with PHPhotosError 3164.
-        shouldDownloadFromNetwork: true,
-      });
-      if (res.canceled || !res.assets[0]) return;
+      if (picked.status !== 'picked') return;
 
-      const imported = await importClip(res.assets[0].uri);
+      const imported = await importClip(picked.uri);
       setClip(imported);
       setGrid(emptyGrid());
       setTiles([]);
