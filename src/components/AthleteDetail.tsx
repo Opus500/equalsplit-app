@@ -26,9 +26,12 @@ import {
   getAthleteRuns,
   setRunClip,
   setRunNote,
+  updateRunDrill,
   type Athlete,
   type AthleteRunRow,
+  type Drill,
 } from '../db/database';
+import { DrillPickerModal } from './DrillPicker';
 import { importClip } from '../video/clips';
 import { seriesTimeSource } from '../video/timing';
 import { VideoPlayerModal } from './VideoPlayerModal';
@@ -281,6 +284,33 @@ export function AthleteDetailModal({
   );
 
   const [playing, setPlaying] = useState<{ clipId: string; title: string; sub: string } | null>(null);
+  const [assigning, setAssigning] = useState<string | null>(null);
+
+  /**
+   * Give a drill to a run that had none.
+   *
+   * `rows` is updated locally as well as in the database, and that is what makes
+   * the run MOVE without reopening the sheet: `prog` is a useMemo over `rows`, so
+   * a changed drill_id re-runs buildProgression, the run leaves `unlabeled` and
+   * joins that drill's series, and the pager re-renders around it. Reloading from
+   * SQLite would work too but would blink the whole screen.
+   */
+  const assignDrill = useCallback(
+    async (runId: string, drill: Drill | null) => {
+      try {
+        await updateRunDrill(runId, drill?.id ?? null);
+        setRows(
+          (prev) =>
+            prev?.map((r) =>
+              r.id === runId ? { ...r, drill_id: drill?.id ?? null, drill_name: drill?.name ?? null } : r,
+            ) ?? null,
+        );
+      } catch (e) {
+        Alert.alert('Could not assign that drill', String(e));
+      }
+    },
+    [],
+  );
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
@@ -322,13 +352,15 @@ export function AthleteDetailModal({
             <>
               <ChartPager
                 series={allSeries}
+                unlabeled={prog?.unlabeled ?? []}
+                onAssignDrill={setAssigning}
                 onDeleteRun={confirmDeleteRun}
                 onEditNote={editNote}
                 onAttachVideo={(id) => void attachVideo(id)}
-                onPlayVideo={(p, s) =>
+                onPlayVideo={(p, pageTitle) =>
                   setPlaying({
                     clipId: p.clipId!,
-                    title: `${formatMs(p.elapsedMs)}s · ${s.drillName}`,
+                    title: `${formatMs(p.elapsedMs)}s · ${pageTitle}`,
                     sub: `${athlete?.display_name ?? ''} · ${new Date(p.createdAt).toLocaleDateString()}`,
                   })
                 }
@@ -377,6 +409,19 @@ export function AthleteDetailModal({
         {/* Nested inside this modal, not a sibling — same iOS constraint as the
             edit form: dismissing one root-level Modal while presenting another in
             the same frame can drop the second. */}
+        <DrillPickerModal
+          visible={!!assigning}
+          currentId={null}
+          kind="all"
+          title="Which drill was this?"
+          onClose={() => setAssigning(null)}
+          onPick={(d) => {
+            const runId = assigning;
+            setAssigning(null);
+            if (runId) void assignDrill(runId, d);
+          }}
+        />
+
         <VideoPlayerModal
           visible={!!playing}
           clipId={playing?.clipId ?? null}
@@ -403,18 +448,25 @@ export function AthleteDetailModal({
  */
 function ChartPager({
   series,
+  unlabeled = [],
   onDeleteRun,
   onEditNote,
   onAttachVideo,
   onPlayVideo,
+  onAssignDrill,
   selectedRunId,
   onSelectRun,
 }: {
   series: Series[];
+  /** Runs with no drill. APPENDED as the final page rather than sorted into the
+   *  list — it is not a series and cannot compete for position, so "last" is a
+   *  property of the structure instead of a rule that could be re-sorted away. */
+  unlabeled?: SeriesPoint[];
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
-  onPlayVideo?: (point: SeriesPoint, series: Series) => void;
+  onPlayVideo?: (point: SeriesPoint, title: string) => void;
+  onAssignDrill?: (runId: string) => void;
   selectedRunId: string | null;
   onSelectRun: (runId: string | null) => void;
 }) {
@@ -439,13 +491,37 @@ function ChartPager({
     ref.current?.scrollTo({ x: i * pageW, animated: true });
   };
 
-  if (!series.length) return null;
+  // Pages = one per series, plus ONE appended for runs with no drill.
+  //
+  // Appended, not sorted in. It is not a Series and never competes for position,
+  // so "sorts last" is a property of the structure rather than a comparator that
+  // a later change could reorder.
+  const hasUnlabeled = unlabeled.length > 0;
+  const pageCount = series.length + (hasUnlabeled ? 1 : 0);
+  if (!pageCount) return null;
 
-  // The list always describes the chart currently on screen — "that series only".
-  const current = series[Math.min(page, series.length - 1)];
-  const runList = current ? (
+  const idx = Math.min(page, pageCount - 1);
+  const onUnlabeled = hasUnlabeled && idx === series.length;
+  const current = onUnlabeled ? null : series[idx];
+
+  // The list always describes the page currently on screen.
+  const runList = onUnlabeled ? (
     <RunList
-      series={current}
+      title="No drill"
+      points={unlabeled}
+      newestFirst={false}
+      selectedRunId={selectedRunId}
+      onSelectRun={onSelectRun}
+      onDeleteRun={onDeleteRun}
+      onEditNote={onEditNote}
+      onAttachVideo={onAttachVideo}
+      onPlayVideo={onPlayVideo}
+      onAssignDrill={onAssignDrill}
+    />
+  ) : current ? (
+    <RunList
+      title={seriesTitle(current)}
+      points={current.points}
       selectedRunId={selectedRunId}
       onSelectRun={onSelectRun}
       onDeleteRun={onDeleteRun}
@@ -455,19 +531,6 @@ function ChartPager({
     />
   ) : null;
 
-  if (series.length === 1)
-    return (
-      <>
-        <ProgressionChart
-          series={series[0]!}
-          onDeleteRun={onDeleteRun}
-          selectedRunId={selectedRunId}
-          onSelectRun={onSelectRun}
-        />
-        {runList}
-      </>
-    );
-
   return (
     <View onLayout={onLayout}>
       {pageW > 0 ? (
@@ -476,6 +539,7 @@ function ChartPager({
             ref={ref}
             horizontal
             pagingEnabled
+            scrollEnabled={pageCount > 1}
             showsHorizontalScrollIndicator={false}
             onMomentumScrollEnd={onEnd}
             decelerationRate="fast"
@@ -493,29 +557,72 @@ function ChartPager({
                 />
               </View>
             ))}
+            {hasUnlabeled ? (
+              <View key="__unlabeled" style={{ width: pageW }}>
+                <UnlabeledCard count={unlabeled.length} />
+              </View>
+            ) : null}
           </ScrollView>
 
-          <View style={styles.dots}>
-            {series.map((s, i) => (
-              <Pressable
-                key={seriesUid(s)}
-                onPress={() => goTo(i)}
-                hitSlop={10}
-                accessibilityRole="button"
-                accessibilityLabel={`Show ${s.drillName} chart, ${i + 1} of ${series.length}`}
-                style={styles.dotHit}
-              >
-                <View style={[styles.dot, i === page && styles.dotOn]} />
-              </Pressable>
-            ))}
-            <Text style={styles.pagerLabel}>
-              {page + 1} / {series.length}
-            </Text>
-          </View>
+          {pageCount > 1 ? (
+            <View style={styles.dots}>
+              {series.map((s, i) => (
+                <Pressable
+                  key={seriesUid(s)}
+                  onPress={() => goTo(i)}
+                  hitSlop={10}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Show ${s.drillName} chart, ${i + 1} of ${pageCount}`}
+                  style={styles.dotHit}
+                >
+                  <View style={[styles.dot, i === idx && styles.dotOn]} />
+                </Pressable>
+              ))}
+              {hasUnlabeled ? (
+                <Pressable
+                  key="__unlabeled"
+                  onPress={() => goTo(series.length)}
+                  hitSlop={10}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Show runs with no drill, ${pageCount} of ${pageCount}`}
+                  style={styles.dotHit}
+                >
+                  <View style={[styles.dot, onUnlabeled && styles.dotOn]} />
+                </Pressable>
+              ) : null}
+              <Text style={styles.pagerLabel}>
+                {idx + 1} / {pageCount}
+              </Text>
+            </View>
+          ) : null}
 
           {runList}
         </>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * The page for runs with no drill.
+ *
+ * Its chart is suppressed PERMANENTLY, not pending a threshold, and it says so.
+ * No number of untagged runs makes this chartable: they are different distances
+ * sharing nothing but the absence of a label, and a trend line across them would
+ * be the exact claim the grouping rule exists to prevent. Telling the coach
+ * "N more runs and a trend appears" here would be a promise that can never be
+ * kept.
+ */
+function UnlabeledCard({ count }: { count: number }) {
+  return (
+    <View style={styles.unlabeledCard}>
+      <Text style={styles.unlabeledTitle}>No drill</Text>
+      <Text style={styles.unlabeledBody}>
+        {count} run{count === 1 ? '' : 's'} saved without a drill. These are never charted at any
+        count — different distances share nothing but the missing label, and a line across them would
+        mean nothing.
+      </Text>
+      <Text style={styles.unlabeledHint}>Assign a drill to a run and it joins that drill's chart.</Text>
     </View>
   );
 }
@@ -536,28 +643,40 @@ function ChartPager({
  * time, which is why the actions are a row rather than a pair of fixed buttons.
  */
 function RunList({
-  series,
+  title,
+  points: given,
+  newestFirst = true,
   selectedRunId,
   onSelectRun,
   onDeleteRun,
   onEditNote,
   onAttachVideo,
   onPlayVideo,
+  onAssignDrill,
 }: {
-  series: Series;
+  title: string;
+  points: SeriesPoint[];
+  /** Series points arrive oldest-first (chart order); the unlabelled list is
+   *  already newest-first and must not be reversed again. */
+  newestFirst?: boolean;
   selectedRunId: string | null;
   onSelectRun: (runId: string | null) => void;
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
-  onPlayVideo?: (point: SeriesPoint, series: Series) => void;
+  onPlayVideo?: (point: SeriesPoint, title: string) => void;
+  /** Only offered where it is the obvious next action: a run with no drill. */
+  onAssignDrill?: (runId: string) => void;
 }) {
-  const points = useMemo(() => [...series.points].reverse(), [series.points]);
+  const points = useMemo(
+    () => (newestFirst ? [...given].reverse() : given),
+    [given, newestFirst],
+  );
 
   return (
     <View style={styles.listCard}>
       <Text style={styles.listTitle} numberOfLines={1}>
-        {seriesTitle(series).toUpperCase()} · {points.length} RUN{points.length === 1 ? '' : 'S'}
+        {title.toUpperCase()} · {points.length} RUN{points.length === 1 ? '' : 'S'}
       </Text>
 
       {points.map((p) => {
@@ -603,9 +722,17 @@ function RunList({
                 {/* Play when there is footage, attach when there is not. Never
                     both — the run has one video or none, and offering "attach"
                     beside a clip invites silently replacing it. */}
+                {onAssignDrill ? (
+                  <Pressable
+                    onPress={() => onAssignDrill(p.runId)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={[styles.actionText, styles.actionVideo]}>Assign drill</Text>
+                  </Pressable>
+                ) : null}
                 {p.clipId && onPlayVideo ? (
                   <Pressable
-                    onPress={() => onPlayVideo(p, series)}
+                    onPress={() => onPlayVideo(p, title)}
                     style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
                   >
                     <Text style={[styles.actionText, styles.actionVideo]}>Play video</Text>
@@ -747,6 +874,21 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { color: '#e2e8f0', fontSize: 15, fontWeight: '800' },
   emptyBody: { color: '#64748b', fontSize: 13, lineHeight: 19, marginTop: 6 },
+  unlabeledCard: {
+    backgroundColor: '#12151b',
+    borderRadius: 14,
+    padding: 18,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#243042',
+    // Roughly a chart's height, so this page is not a different size from its
+    // neighbours as the pager swipes past it.
+    minHeight: 232,
+    justifyContent: 'center',
+  },
+  unlabeledTitle: { color: '#e2e8f0', fontSize: 16, fontWeight: '800' },
+  unlabeledBody: { color: '#94a3b8', fontSize: 13, lineHeight: 19 },
+  unlabeledHint: { color: '#60a5fa', fontSize: 12, fontWeight: '600' },
   footnote: { color: '#475569', fontSize: 11, lineHeight: 16, marginTop: 14 },
   dim: { opacity: 0.5 },
 });

@@ -394,6 +394,49 @@ console.log('\n15. a video run never shares a series with a gate run');
   check('and are labelled', seriesTitle(hand.series.find((s) => s.timeSource === 'hand')), '30m · hand start');
 }
 
+console.log('\n16. runs with no drill are LISTED but never a series');
+{
+  // The no-mixing rule protects the AXIS. A 10m and a 40yd sharing a y-axis would
+  // draw a line that means nothing, so they still form no series — but they are
+  // real runs that need playing, annotating and deleting, and a LIST has no axis.
+  const p = buildProgression([
+    { id: 'u1', drillId: null, drillName: null, elapsedMs: 4200, createdAt: 10 },
+    { id: 'u2', drillId: null, drillName: null, elapsedMs: 9900, createdAt: 20 },
+    { id: 'd1', drillId: 'd30', drillName: '30m', elapsedMs: 4300, createdAt: 30 },
+  ]);
+  check('they form no series', p.series.length, 1);
+  check('and the one series is the labelled drill', p.series[0].drillId, 'd30');
+  check('but they are handed over for listing', p.unlabeled.length, 2);
+  check('the count still agrees', p.unlabeledRuns, 2);
+
+  // Newest first, like every other run list.
+  check('newest first', p.unlabeled.map((x) => x.runId), ['u2', 'u1']);
+
+  // THE CLAIM THAT MUST NOT BE MADE. A "personal best" across mixed distances is
+  // not a fact — 4.2s and 9.9s are not the same event — and marking one would be
+  // exactly the comparison the grouping rule forbids.
+  check('no run among them is marked a PB', p.unlabeled.filter((x) => x.isBest).length, 0);
+
+  // Everything the list needs travels with them.
+  const withVideo = buildProgression([
+    { id: 'u1', drillId: null, drillName: null, elapsedMs: 4200, createdAt: 1, clipId: 'c9', userNote: 'windy' },
+  ]);
+  check('the clip survives', withVideo.unlabeled[0].clipId, 'c9');
+  check('and the note', withVideo.unlabeled[0].userNote, 'windy');
+
+  // Assigning a drill moves the run: same input with a drillId, and it is gone
+  // from unlabeled and present in a series. This is what the screen relies on to
+  // reflect an assignment without reloading.
+  const after = buildProgression([
+    { id: 'u1', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 10 },
+    { id: 'u2', drillId: null, drillName: null, elapsedMs: 9900, createdAt: 20 },
+  ]);
+  check('the assigned run left the unlabelled list', after.unlabeled.map((x) => x.runId), ['u2']);
+  check('and joined a real series', after.series[0].points.map((x) => x.runId), ['u1']);
+
+  check('no unlabelled runs means an empty list, not a phantom page', buildProgression([]).unlabeled, []);
+}
+
 console.log('\n=============================');
 console.log(failures === 0 ? 'RESULT: OK — progression grouping and axis rules hold.' : `RESULT: ${failures} FAILURE(S)`);
 process.exitCode = failures === 0 ? 0 : 1;

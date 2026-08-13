@@ -102,7 +102,21 @@ export type Series = {
 
 export type Progression = {
   series: Series[];
-  /** runs with no drill record — deliberately NOT lumped into one series */
+  /**
+   * Runs with no drill record, as a flat list — NEVER a Series.
+   *
+   * They are kept out of `series` on purpose and that has not changed: a 10m and
+   * a 40yd both landing in one bucket would share a y-axis and draw a line that
+   * means nothing. But the no-mixing rule protects the AXIS, and a list has no
+   * axis. These runs are real and need playing, annotating and deleting like any
+   * other, so they are handed over separately for listing and are structurally
+   * incapable of being charted.
+   *
+   * isBest is false throughout: a "personal best" across mixed distances is not a
+   * fact, and marking one would be the exact claim the grouping rule forbids.
+   */
+  unlabeled: SeriesPoint[];
+  /** how many of them, kept as a plain count for footnotes */
   unlabeledRuns: number;
   /** runs rejected as unusable (non-finite / non-positive elapsed) */
   invalidRuns: number;
@@ -141,7 +155,7 @@ function slope(values: number[]): number {
  * 10m and a 40yd both landing there would draw a meaningless line.
  */
 export function buildProgression(runs: ProgressionRun[]): Progression {
-  let unlabeledRuns = 0;
+  const unlabeled: SeriesPoint[] = [];
   let invalidRuns = 0;
   const groups = new Map<
     string,
@@ -154,7 +168,16 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
       continue;
     }
     if (!r.drillId) {
-      unlabeledRuns++;
+      unlabeled.push({
+        runId: r.id,
+        elapsedMs: r.elapsedMs,
+        createdAt: r.createdAt,
+        // Never a PB — see Progression.unlabeled.
+        isBest: false,
+        note: r.note ?? null,
+        userNote: r.userNote ?? null,
+        clipId: r.clipId ?? null,
+      });
       continue;
     }
     // Drill AND source. Absent folds to gate: every run recorded before the field
@@ -213,9 +236,14 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
     return bLast - aLast;
   });
 
+  // Newest first, matching the run list everywhere else: a coach scanning a list
+  // is looking for what just happened.
+  unlabeled.sort((a, b) => b.createdAt - a.createdAt || (a.runId < b.runId ? 1 : -1));
+
   return {
     series,
-    unlabeledRuns,
+    unlabeled,
+    unlabeledRuns: unlabeled.length,
     invalidRuns,
     totalRuns: runs.length,
     hasGraphable: series.some((s) => s.graphable),
