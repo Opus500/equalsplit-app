@@ -18,6 +18,7 @@ import { useMemo, useState } from 'react';
 import { type LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import {
+  MIN_SERIES_RUNS,
   formatMs,
   seriesTitle,
   xFraction,
@@ -166,6 +167,21 @@ export function ProgressionChart({
         <Stat label="Latest" value={`${formatMs(series.latestMs)}s`} />
       </View>
 
+      {/* Below the threshold the GRAPH is suppressed — a line through one point is
+          not a trend and two points draw a straight segment that reads as one. The
+          stats above and the run list below are unaffected: they describe runs
+          that happened, and a single run is still a real run to play, annotate or
+          delete. Only the claim about a TREND needs a minimum. */}
+      {!series.graphable ? (
+        <View style={[styles.thin, { height: PLOT_H }]}>
+          <Text style={styles.thinTitle}>Not enough data to chart yet</Text>
+          <Text style={styles.thinBody}>
+            {MIN_SERIES_RUNS - n} more run{MIN_SERIES_RUNS - n === 1 ? '' : 's'} in this drill and a
+            trend line appears here.
+          </Text>
+        </View>
+      ) : (
+        <>
       <View style={styles.plotRow}>
         <View style={[styles.axis, { width: AXIS_W, height: PLOT_H }]}>
           {ticks.map((t) => (
@@ -329,6 +345,8 @@ export function ProgressionChart({
           </Text>
         )}
       </View>
+        </>
+      )}
     </View>
   );
 }
@@ -353,6 +371,11 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'be
 }
 
 const styles = StyleSheet.create({
+  // Occupies the plot's exact height, so a thin series does not make its page a
+  // different size from its neighbours in the pager.
+  thin: { alignItems: 'center', justifyContent: 'center', gap: 6, paddingHorizontal: 20 },
+  thinTitle: { color: '#94a3b8', fontSize: 14, fontWeight: '700' },
+  thinBody: { color: '#64748b', fontSize: 12, textAlign: 'center', lineHeight: 17 },
   wrap: {
     backgroundColor: '#161b22',
     borderRadius: 14,

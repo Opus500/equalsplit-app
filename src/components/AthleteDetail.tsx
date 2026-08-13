@@ -42,7 +42,6 @@ import {
 import { runCountLabel } from '../roster/labels';
 import { useRoster } from '../roster/RosterProvider';
 import {
-  MIN_SERIES_RUNS,
   buildProgression,
   formatMs,
   seriesTitle,
@@ -141,8 +140,19 @@ export function AthleteDetailModal({
     };
   }, [rows]);
 
-  const graphable = prog?.series.filter((s) => s.graphable) ?? [];
-  const thin = prog?.series.filter((s) => !s.graphable) ?? [];
+  // EVERY series reaches the pager, chartable or not.
+  //
+  // Thin ones used to be filtered out here and rendered as a summary card with no
+  // run list, which made their runs unreachable from this screen — no play, no
+  // note, no delete, for the runs most likely to need attention. The chart needs a
+  // minimum because a line through one point is not a trend; the LIST does not,
+  // because a single run is still a real run. Each page now suppresses its own
+  // graph and keeps everything else.
+  //
+  // Sorted graphable-first by buildProgression, so the pager still opens on
+  // something worth looking at.
+  const allSeries = prog?.series ?? [];
+  const graphable = allSeries.filter((s) => s.graphable);
 
   /**
    * Delete a run from the chart. A REAL delete through the same deleteRun() path
@@ -311,7 +321,7 @@ export function AthleteDetailModal({
           ) : (
             <>
               <ChartPager
-                series={graphable}
+                series={allSeries}
                 onDeleteRun={confirmDeleteRun}
                 onEditNote={editNote}
                 onAttachVideo={(id) => void attachVideo(id)}
@@ -326,32 +336,12 @@ export function AthleteDetailModal({
                 onSelectRun={setSelectedRunId}
               />
 
-              {/* Series that exist but can't be drawn yet. Listed rather than hidden:
-                  "two more runs and this becomes a chart" is actionable; a blank
-                  screen is not. */}
-              {thin.length ? (
-                <View style={styles.thinCard}>
-                  <Text style={styles.thinTitle}>
-                    {graphable.length ? 'OTHER DRILLS — NOT ENOUGH DATA YET' : 'NOT ENOUGH DATA YET'}
-                  </Text>
-                  {thin.map((s) => (
-                    <View key={seriesUid(s)} style={styles.thinRow}>
-                      <Text style={styles.thinName} numberOfLines={1}>
-                        {seriesTitle(s)}
-                      </Text>
-                      <Text style={styles.thinCount}>
-                        {s.points.length} run{s.points.length === 1 ? '' : 's'} · best{' '}
-                        {formatMs(s.bestMs)}s
-                      </Text>
-                      <Text style={styles.thinNeed}>
-                        +{MIN_SERIES_RUNS - s.points.length} to chart
-                      </Text>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
+              {/* The separate "not enough data yet" card is gone. It duplicated
+                  series the pager now carries, and it was the thing standing in
+                  for their runs while making those runs unreachable. Each page
+                  states its own shortfall where the graph would have been. */}
 
-              {!graphable.length && !thin.length ? (
+              {!allSeries.length ? (
                 <View style={styles.emptyCard}>
                   <Text style={styles.emptyTitle}>Nothing to chart yet</Text>
                   <Text style={styles.emptyBody}>
@@ -757,25 +747,6 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { color: '#e2e8f0', fontSize: 15, fontWeight: '800' },
   emptyBody: { color: '#64748b', fontSize: 13, lineHeight: 19, marginTop: 6 },
-  thinCard: {
-    backgroundColor: '#12151b',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#243042',
-  },
-  thinTitle: { color: '#94a3b8', fontSize: 12, fontWeight: '800', letterSpacing: 0.5, marginBottom: 8 },
-  thinRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 8,
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: '#1c2432',
-  },
-  thinName: { color: '#cbd5e1', fontSize: 14, fontWeight: '700', flex: 1 },
-  thinCount: { color: '#64748b', fontSize: 11 },
-  thinNeed: { color: '#475569', fontSize: 11, fontWeight: '700' },
   footnote: { color: '#475569', fontSize: 11, lineHeight: 16, marginTop: 14 },
   dim: { opacity: 0.5 },
 });
