@@ -314,6 +314,21 @@ console.log('\n13. SAVED sets chart the same as live ones (storage round-trip)')
     chartValueMs(cont.set),
   );
 
+  // THAT LINE ALONE PROVED ALMOST NOTHING, and it is worth being explicit about
+  // why. savedChartValueMs reads the VARIANT from the row but takes the VALUE from
+  // its second argument, and for a continuous set chartValueMs IS the total — so
+  // handing it the real total made the assertion `total === total`, passing even
+  // if parseRepSetJson returned garbage, as long as it returned non-null.
+  //
+  // Handing it a number that is not the total is what forces the branch to be
+  // read from the row. 3 intervals and a sentinel of 12_345: the continuous branch
+  // must return it untouched, and the rest branch would divide it to 4_115.
+  check('the value is the total it is handed', savedChartValueMs(cont.raw, 12_345), 12_345);
+  truthy(
+    'and the CONTINUOUS branch does not divide, whatever the interval count',
+    savedChartValueMs(cont.raw, 12_345) !== Math.round(12_345 / cont.set.intervals.length),
+  );
+
   // A LEGACY rest set (written before rest reps became ordinary runs) must still
   // chart its mean — re-interpreting stored data would move points on an existing
   // graph without anyone asking.

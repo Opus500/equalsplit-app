@@ -31,15 +31,29 @@ check(
   { a1: 'Varsity', a2: 'JV' },
 );
 
+// LOCALE-INDEPENDENT from here on. These assertions used to hardcode
+// 'added Jan 5' and 'added Jul 30', which is an en-* rendering — the code calls
+// toLocaleDateString(undefined, …) and takes the machine's locale, so the test
+// passed on the author's laptop and failed on anyone else's. A test that only
+// holds in one environment is not a test of the code.
+//
+// The date is rendered here through the SAME options the code uses, so the
+// month/day shape is still pinned; what is no longer pinned is the language. The
+// part that actually matters — that each athlete gets THEIR OWN date and the two
+// differ — is asserted directly.
+const JAN = localMs(2026, 0, 5);
+const JUL = localMs(2026, 6, 30);
+const added = (ms) =>
+  `added ${new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+
 console.log('\n3. no group given -> added-date fallback');
-check(
-  'dates distinguish',
-  detailsOf([
-    A('a1', 'Jayden', null, localMs(2026, 0, 5)),
-    A('a2', 'Jayden', null, localMs(2026, 6, 30)),
-  ]),
-  { a1: 'added Jan 5', a2: 'added Jul 30' },
-);
+{
+  const d = detailsOf([A('a1', 'Jayden', null, JAN), A('a2', 'Jayden', null, JUL)]);
+  check('dates distinguish', d, { a1: added(JAN), a2: added(JUL) });
+  check('each carries its own date, not the same one twice', d.a1 !== d.a2, true);
+  check('and both are date fallbacks, not group names', [d.a1, d.a2].every((s) => s.startsWith('added ')), true);
+  console.log(`       (this environment renders them "${d.a1}" and "${d.a2}")`);
+}
 
 console.log('\n4. last resort: same group, or added the same day');
 check(
@@ -47,11 +61,16 @@ check(
   detailsOf([A('a1x9f2', 'Jayden', 'Varsity'), A('a2b4e7', 'Jayden', 'Varsity')]),
   { a1x9f2: 'Varsity · #x9f2', a2b4e7: 'Varsity · #b4e7' },
 );
-check(
-  'same day, no groups',
-  detailsOf([A('id001122', 'Jayden'), A('id003344', 'Jayden')]),
-  { id001122: 'added Jul 30 · #1122', id003344: 'added Jul 30 · #3344' },
-);
+{
+  // Same day AND no groups, so the date collides too and only the id can separate
+  // them. The id suffix is the assertion; the date is whatever the locale says.
+  const d = detailsOf([A('id001122', 'Jayden'), A('id003344', 'Jayden')]);
+  check('same day, no groups', d, {
+    id001122: `${added(JUL)} · #1122`,
+    id003344: `${added(JUL)} · #3344`,
+  });
+  check('the id is what breaks the tie', [d.id001122.endsWith('#1122'), d.id003344.endsWith('#3344')], [true, true]);
+}
 
 console.log('\n5. case/accent variants count as the SAME name for ambiguity');
 check(

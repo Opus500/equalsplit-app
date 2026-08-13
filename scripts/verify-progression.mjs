@@ -11,6 +11,7 @@ import {
   buildProgression,
   formatDelta,
   seriesTitle,
+  seriesUid,
   xFraction,
   yBounds,
   yFraction,
@@ -435,6 +436,68 @@ console.log('\n16. runs with no drill are LISTED but never a series');
   check('and joined a real series', after.series[0].points.map((x) => x.runId), ['u1']);
 
   check('no unlabelled runs means an empty list, not a phantom page', buildProgression([]).unlabeled, []);
+}
+
+console.log('\n17. seriesUid is UNIQUE per series — it is a React key');
+{
+  // This exists because the bug already happened. When the source split landed,
+  // the pager was still keyed on drillId alone; one drill producing both a gate
+  // and a video series gave React duplicate keys, and React reuses a component's
+  // state across a duplicate — so one chart rendered with the other's selection.
+  // seriesUid was the fix and it had no test, which makes it the single most
+  // likely thing in this module to regress.
+  const p = buildProgression([
+    { id: 'g1', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
+    { id: 'g2', drillId: 'd30', drillName: '30m', elapsedMs: 4150, createdAt: 2, timeSource: 'gate' },
+    { id: 'v1', drillId: 'd30', drillName: '30m', elapsedMs: 4400, createdAt: 3, timeSource: 'video' },
+    { id: 'h1', drillId: 'd30', drillName: '30m', elapsedMs: 4500, createdAt: 4, timeSource: 'hand' },
+    { id: 'o1', drillId: 'd40', drillName: '40yd dash', elapsedMs: 5000, createdAt: 5, timeSource: 'gate' },
+  ]);
+
+  // THE INVARIANT, stated the way React consumes it: as many distinct keys as
+  // there are pages. drillId alone would give 2 distinct values for 4 series.
+  const uids = p.series.map(seriesUid);
+  check('one series per drill+source', p.series.length, 4);
+  check('every series has a distinct uid', new Set(uids).size, uids.length);
+  check(
+    'where drillId ALONE would have collided',
+    new Set(p.series.map((s) => s.drillId)).size,
+    2,
+  );
+
+  // Same drill, different source => different uid. Same source, different drill =>
+  // different uid. Both halves of the key have to be load-bearing or the collision
+  // comes back from the other direction.
+  const uidOf = (source, drillId = 'd30') =>
+    seriesUid(p.series.find((s) => s.drillId === drillId && s.timeSource === source));
+  truthy('source alone separates them', uidOf('gate') !== uidOf('video'));
+  truthy('and so does drill alone', uidOf('gate') !== uidOf('gate', 'd40'));
+
+  // STABLE across rebuilds, or React remounts every chart on each render.
+  const again = buildProgression([
+    { id: 'g1', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
+    { id: 'g2', drillId: 'd30', drillName: '30m', elapsedMs: 4150, createdAt: 2, timeSource: 'gate' },
+  ]);
+  check('the uid does not depend on what else was built', seriesUid(again.series[0]), uidOf('gate'));
+
+  // A RENAME must not change it. The drill record is the identity; the name is a
+  // label the coach can edit, and keying on it would remount the chart — losing
+  // the selected point — the moment a drill was renamed.
+  const renamed = buildProgression([
+    { id: 'g1', drillId: 'd30', drillName: 'Thirty metres', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
+    { id: 'g2', drillId: 'd30', drillName: 'Thirty metres', elapsedMs: 4150, createdAt: 2, timeSource: 'gate' },
+  ]);
+  check('a renamed drill keeps its uid', seriesUid(renamed.series[0]), uidOf('gate'));
+  truthy('even though the title changed', seriesTitle(renamed.series[0]) !== seriesTitle(again.series[0]));
+
+  // Absent source folds to gate here exactly as it does in grouping, so a legacy
+  // run and an explicit gate run cannot produce two keys for one page.
+  const legacy = buildProgression([
+    { id: 'a', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 1 },
+    { id: 'b', drillId: 'd30', drillName: '30m', elapsedMs: 4100, createdAt: 2, timeSource: 'gate' },
+  ]);
+  check('unknown and gate share one uid', seriesUid(legacy.series[0]), uidOf('gate'));
+  check('because they are one series', legacy.series.length, 1);
 }
 
 console.log('\n=============================');

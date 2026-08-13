@@ -303,13 +303,19 @@ export function gapProbes(grid: FrameGrid, frameDurSec: number): number[] {
  * frames — but they are nudged off the exact endpoints, because a request at or
  * past the clip's final frame is the one case where extraction has nothing to
  * return.
+ *
+ * Clamped at zero, which the degenerate branch already did and this one did not.
+ * The inconsistency was invisible because the only caller passes from = 0 — it
+ * surfaced from the other side, as a test asserting "never a negative time" that
+ * passed while the function returned -2.75. Negative times are meaningless to
+ * extraction, so both branches now agree rather than one of them being right.
  */
 export function filmstripTimes(from: number, to: number, count: number): number[] {
   const n = Math.max(1, Math.floor(count));
   if (!(to > from)) return [Math.max(0, from)];
   const step = (to - from) / n;
   const out: number[] = [];
-  for (let i = 0; i < n; i += 1) out.push(from + step * (i + 0.5));
+  for (let i = 0; i < n; i += 1) out.push(Math.max(0, from + step * (i + 0.5)));
   return out;
 }
 

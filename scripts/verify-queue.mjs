@@ -221,7 +221,12 @@ console.log('\n7d. UNDO of a skip restores the state EXACTLY, wrap included');
   check('and moved to the top', currentAthleteId(skipped.next, active()), 'A');
 
   check('undo restores the cursor', currentAthleteId(snapshot, active()), 'D');
-  check('undo restores up-next', upNext(snapshot, active(), 2), upNext(q, active(), 2));
+  // SPELT OUT, not compared against the state it was cloned from. This read
+  // `upNext(snapshot, …)` against `upNext(q, …)` where snapshot IS a deep clone of
+  // q — an assertion that holds for any implementation of upNext that is not
+  // actively random, and so proved nothing about undo at all. From D, up-next
+  // wraps: A then B.
+  check('undo restores up-next', upNext(snapshot, active(), 2), ['A', 'B']);
   check('undo restores the lineup', snapshot.athleteIds, ALL);
   // `wrapped` is DERIVED, never stored — so there is nothing to un-derive; the
   // UI only has to retract the announcement.
