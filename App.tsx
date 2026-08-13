@@ -92,9 +92,16 @@ function AppShell() {
             <DebugScreen onBack={() => setTab('settings')} />
           </View>
         )}
-        {/* Mounts on demand: it holds a video player and a decoded filmstrip, and
-            neither should survive leaving the screen. Unlike Timer there is no
-            in-progress state worth preserving — an unsaved mark is cheap to redo. */}
+        {/* Mounts on demand, and is UNMOUNTED on leaving: it holds a video player
+            and a decoded filmstrip, neither of which should outlive the screen.
+            The cost is real and known — leaving the Video tab discards an imported
+            clip and both its marks, exactly the loss that made VideoTab keep Mark
+            mounted behind the library pane. The two are not in conflict: a glance
+            at Videos is a move within the feature, while leaving for Timer or
+            Roster is not, and a decoder held open across an entire practice is a
+            worse trade than re-importing a clip. Revisit if that proves wrong on
+            a real session — the fix is the isVisible prop VideoTab already
+            threads. */}
         {tab === 'video' && (
           <View style={styles.fill}>
             <VideoTab />

@@ -68,14 +68,17 @@ export function seriesTimeSource(raw: string | null | undefined): TimeSource {
   return runTimeSource(raw) ?? 'gate';
 }
 
-/** Group key for a progression series. Drill AND source — never drill alone. */
+/**
+ * Group key for a progression series. Drill AND source — never drill alone.
+ *
+ * NOTE: the app does not call this. progression.ts builds the same key inline
+ * because it must stay import-free, and seriesUid() there is what the UI uses.
+ * This exists so verify-video can state the rule against the module that owns
+ * TimeSource; the rule as the app enforces it is proved by verify-progression
+ * block 15, against the real grouping path.
+ */
 export function seriesKey(drillId: string, source: TimeSource): string {
   return `${drillId}|${source}`;
-}
-
-/** Suffix for a series' display name. Gate runs read as they always did. */
-export function sourceLabel(source: TimeSource): string {
-  return source === 'gate' ? '' : source === 'video' ? 'video' : 'hand start';
 }
 
 // ------------------------------------------------------------------ marks

@@ -18,7 +18,6 @@ import {
   type MigrationDb,
 } from './migrations';
 import { EMPTY_QUEUE, type QueueState } from '../roster/queue';
-import { VIDEO_MODE } from '../video/timing';
 
 export const DEFAULT_REACTION_OFFSET_MS = 150;
 
