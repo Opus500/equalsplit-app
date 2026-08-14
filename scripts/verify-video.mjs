@@ -394,6 +394,37 @@ console.log('\n11b. GAP REPAIR is proportional to the damage');
   const gapOf = (mult) => gapProbes(ingestFrames(emptyGrid(), { from: 0, to: 1 }, [0, dur * mult]), dur);
   check('a gap just under 1.5 frames is left alone', gapOf(1.49), []);
   check('and one just over it is repaired', gapOf(1.51).length, 1);
+
+  // THE GAP BETWEEN TWO WINDOWS IS NOT DAMAGE, and this is the instance of the
+  // island bug that cost real time rather than only reporting a wrong number.
+  //
+  // Every window boundary read as a hole, so a probe on a well-scrubbed clip
+  // returned one repair per boundary — 39 of them after 40 windows, each an
+  // extraction at ~25ms, on a perfectly CONSTANT clip. And it compounded: a repair
+  // drops ONE frame into the middle of unprobed clip, splitting that gap in two,
+  // so the next probe found two holes where it had found one. The repair budget
+  // grew with every probe, which is what "lags badly and gets worse" looks like.
+  let many = emptyGrid();
+  for (let w = 0; w < 40; w += 1) {
+    const k0 = w * 90;
+    many = ingestFrames(
+      many,
+      { from: (k0 - 0.5) * dur, to: (k0 + 16.5) * dur },
+      Array.from({ length: 17 }, (_, i) => (k0 + i) * dur),
+    );
+  }
+  check('40 windows of a constant clip need 40 windows', many.windows.length, 40);
+  check('and not one repair probe between them', gapProbes(many, dur), []);
+
+  // A REAL hole still gets repaired — including one caused by a FAILED extraction
+  // on a constant clip, which is why this path is not VFR-only machinery.
+  const failedProbe = ingestFrames(
+    emptyGrid(),
+    { from: 0, to: 17 * dur },
+    Array.from({ length: 17 }, (_, i) => i * dur).filter((_, i) => i !== 8),
+  );
+  check('a frame lost to a failed extraction is still repaired', gapProbes(failedProbe, dur).length, 1);
+  near('at the midpoint of what is missing', gapProbes(failedProbe, dur)[0], 8 * dur, 1e-9);
 }
 
 console.log('\n11c. A MARK CAN NEVER LAND ON THE LAST FRAME');

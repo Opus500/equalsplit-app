@@ -328,6 +328,20 @@ export function gapProbes(grid: FrameGrid, frameDurSec: number): number[] {
   for (let i = 1; i < grid.frames.length; i += 1) {
     const a = grid.frames[i - 1]!;
     const b = grid.frames[i]!;
+    // WITHIN ONE WINDOW ONLY — the island rule again, and this was the instance
+    // that cost real time rather than only telling a lie.
+    //
+    // Without it, every boundary between probed windows reads as a hole: after a
+    // scrubbing session with 40 windows, a single probe returned 39 "repairs" on
+    // a perfectly constant clip, each one an extraction at ~25ms. Worse, it
+    // compounded — a repair probe drops ONE frame into the middle of unprobed
+    // clip, which splits that gap in two and yields two holes next time. The
+    // repair budget grew with every probe.
+    //
+    // A gap between two windows is not damage. It is clip nobody has looked at,
+    // and probing its midpoint discovers nothing useful.
+    const w = windowContaining(grid, a);
+    if (!w || b > w.to + 1e-9) continue;
     if (b - a > dur * 1.5) out.push((a + b) / 2);
   }
   return out;
@@ -483,9 +497,18 @@ export function markAt(grid: FrameGrid, t: number): VideoMark | null {
 /**
  * Step `delta` frames from the frame displayed at `t`.
  *
- * Refuses to leave the probed region rather than extrapolating by 1/fps — that
- * extrapolation is exactly what drifts on a variable-frame-rate clip, which iPhone
- * clips routinely are.
+ * Refuses to leave the probed region rather than extrapolating by 1/fps.
+ *
+ * The original reason given was that iPhone clips are "routinely" variable rate.
+ * That claim is now unsupported: with isVariableRate finally reporting something
+ * real, every clip tested — including one shot deliberately in poor light to
+ * provoke dropped frames — has come back constant. Modern iPhones appear to hold
+ * their capture rate far better than the assumption allowed.
+ *
+ * The refusal stands anyway, for a reason that does not depend on it: a FAILED
+ * extraction leaves exactly the same hole a dropped frame would, and that happens
+ * regardless of frame rate. Extrapolating by 1/fps across either one produces a
+ * timestamp for a frame nobody observed.
  */
 export function stepFrames(grid: FrameGrid, t: number, delta: number): VideoMark | null {
   const i = frameIndexAt(grid, t);
