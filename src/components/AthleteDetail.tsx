@@ -39,7 +39,7 @@ import {
   PHOTO_ACCESS_TITLE,
   pickVideo,
 } from '../video/clips';
-import { seriesTimeSource } from '../video/timing';
+import { acceptForReview, seriesTimeSource } from '../video/timing';
 import { VideoPlayerModal } from './VideoPlayerModal';
 import {
   HAND_START_ERROR_MS,
@@ -295,6 +295,11 @@ export function AthleteDetailModal({
           return;
         }
         if (picked.status !== 'picked') return;
+        // WARNED, not refused. Nothing computes a time from attached footage, and
+        // watching a sprint in slow motion is the reason you film it that way —
+        // refusing it here would remove a real use for no safety gain. The marking
+        // screen is where the refusal belongs, and it has one.
+        const verdict = acceptForReview(picked.timeScale);
         const imported = await importClip(picked.uri);
         // ORDER MATTERS on a replace. The new clip is imported and the reference
         // moved BEFORE the old file is deleted, so a cancelled pick or a failed
@@ -304,6 +309,7 @@ export function AthleteDetailModal({
         await setRunClip(runId, imported.id);
         setRows((prev) => prev?.map((r) => (r.id === runId ? { ...r, clip_id: imported.id } : r)) ?? null);
         if (previous && previous !== imported.id) deleteClip(previous);
+        if (verdict.accept && verdict.warn) Alert.alert('Attached', verdict.warn);
       } catch (e) {
         Alert.alert('Could not attach that video', String(e));
       } finally {

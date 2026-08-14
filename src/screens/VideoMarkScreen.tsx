@@ -50,6 +50,7 @@ import {
 } from '../video/clips';
 import { filmstrip, nominalFrameDur, probeGridAround, type Tile } from '../video/frames';
 import {
+  acceptForTiming,
   BODY_PART_BIAS_MS,
   emptyGrid,
   formatVideoSeconds,
@@ -225,7 +226,19 @@ export default function VideoMarkScreen({
       }
       if (picked.status !== 'picked') return;
 
+      // REFUSED BEFORE THE COPY, not after. A clip that can never be timed should
+      // not first cost tens of megabytes and a filmstrip build, and it should not
+      // land in the library for the coach to wonder about later.
+      const verdict = acceptForTiming(picked.timeScale);
+      if (!verdict.accept) {
+        Alert.alert('This clip cannot be timed', verdict.reason);
+        return;
+      }
+
       const imported = await importClip(picked.uri);
+      // A warning, not a gate. Shown after the import so it does not sit between
+      // the coach and a clip that is probably fine.
+      if (verdict.warn) Alert.alert('Check this clip', verdict.warn);
       setClip(imported);
       setGrid(emptyGrid());
       setTiles([]);

@@ -383,6 +383,74 @@ export function isCovered(grid: FrameGrid, t: number): boolean {
 }
 
 /**
+ * THE GRID IS ISLANDS, NOT A SEQUENCE.
+ *
+ * `frames` is one sorted array, but it is built from separate probed windows with
+ * unprobed clip in between — the import alone creates two, one at each end. So two
+ * entries that sit next to each other in the ARRAY are not necessarily next to
+ * each other in the VIDEO, and every statistic that treats them as adjacent is
+ * measuring across a gap nobody looked at.
+ *
+ * Three functions did exactly that, and all three were wrong on every clip:
+ *
+ *   measuredFps    (n-1)/(last-first) spanned the whole clip, so it started near
+ *                  zero and ROSE as more windows were probed, converging on the
+ *                  truth only at full coverage. On a 24s clip it read 0.67fps
+ *                  after import and 5.6 after scrubbing. True rate: 30.
+ *   isVariableRate  one cross-island delta is enormous, so max-min always cleared
+ *                  the tolerance and EVERY clip was flagged variable, including a
+ *                  perfectly constant one.
+ *   markAt          frames[i+1] could be the first frame of the NEXT island, so a
+ *                  mark on the trailing edge of a window took its "frame duration"
+ *                  from the gap: 9466ms instead of 33.3ms, and a +/-2733ms error
+ *                  bar written to a saved run.
+ *
+ * The window a frame belongs to is what makes the difference, so it is asked for
+ * explicitly rather than assumed.
+ */
+function windowContaining(grid: FrameGrid, t: number): FrameWindow | null {
+  // Windows are merged and non-overlapping, so at most one can match.
+  for (const w of grid.windows) if (t >= w.from - 1e-9 && t <= w.to + 1e-9) return w;
+  return null;
+}
+
+/**
+ * The duration of frame `i`, or null when it cannot be known.
+ *
+ * Null for the last frame overall — it has no successor — and null when the next
+ * frame lies beyond this one's window, because then the two were never observed
+ * as neighbours and the space between them may hold frames nobody probed.
+ */
+function frameDurAt(grid: FrameGrid, i: number): number | null {
+  const a = grid.frames[i];
+  const b = grid.frames[i + 1];
+  if (a === undefined || b === undefined) return null;
+  const w = windowContaining(grid, a);
+  if (!w || b > w.to + 1e-9) return null;
+  return b - a;
+}
+
+/**
+ * Gaps between frames that really are neighbours — the only spacings that say
+ * anything about the clip's frame rate. Cross-island pairs are dropped, not
+ * measured.
+ */
+export function adjacentDeltas(grid: FrameGrid): number[] {
+  const out: number[] = [];
+  for (let i = 0; i + 1 < grid.frames.length; i += 1) {
+    const d = frameDurAt(grid, i);
+    if (d !== null && d > 0) out.push(d);
+  }
+  return out;
+}
+
+function median(values: number[]): number {
+  const s = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
+}
+
+/**
  * Index of the frame displayed at time `t`, or null.
  *
  * Null when `t` is outside every probed window, and — importantly — also when `t`
@@ -394,7 +462,11 @@ export function frameIndexAt(grid: FrameGrid, t: number): number | null {
   if (!isCovered(grid, t)) return null;
   const { frames } = grid;
   for (let i = frames.length - 1; i >= 0; i -= 1) {
-    if (frames[i]! <= t + 1e-9) return i + 1 < frames.length ? i : null;
+    // Resolvable only when this frame's own duration is KNOWN — which rules out
+    // the last frame overall and, just as importantly, the last frame of any
+    // probed window. Its successor in the array belongs to a different island, and
+    // the distance to it is the size of an unprobed gap, not a frame length.
+    if (frames[i]! <= t + 1e-9) return frameDurAt(grid, i) === null ? null : i;
   }
   return null;
 }
@@ -403,7 +475,9 @@ export function frameIndexAt(grid: FrameGrid, t: number): number | null {
 export function markAt(grid: FrameGrid, t: number): VideoMark | null {
   const i = frameIndexAt(grid, t);
   if (i === null) return null;
-  return { pts: grid.frames[i]!, frameDurSec: grid.frames[i + 1]! - grid.frames[i]! };
+  const dur = frameDurAt(grid, i);
+  if (dur === null) return null;
+  return { pts: grid.frames[i]!, frameDurSec: dur };
 }
 
 /**
@@ -417,29 +491,126 @@ export function stepFrames(grid: FrameGrid, t: number, delta: number): VideoMark
   const i = frameIndexAt(grid, t);
   if (i === null) return null;
   const j = i + delta;
-  if (j < 0 || j + 1 >= grid.frames.length) return null;
-  return { pts: grid.frames[j]!, frameDurSec: grid.frames[j + 1]! - grid.frames[j]! };
+  if (j < 0) return null;
+  const dur = frameDurAt(grid, j);
+  if (dur === null) return null;
+  return { pts: grid.frames[j]!, frameDurSec: dur };
 }
 
-/** Measured frame rate over the probed frames, or null if too few to say. */
+/**
+ * Measured frame rate, or null if too few neighbouring frames to say.
+ *
+ * The MEDIAN of real neighbour spacings, not the count divided by the span. The
+ * span version silently measured the unprobed gaps between windows as though they
+ * were frames, so it began near zero and climbed as more of the clip was probed —
+ * see the note on windowContaining. The median also survives a dropped frame on a
+ * variable-rate clip, where a mean would be dragged by it.
+ */
 export function measuredFps(grid: FrameGrid): number | null {
-  if (grid.frames.length < 3) return null;
-  const span = grid.frames[grid.frames.length - 1]! - grid.frames[0]!;
-  if (!(span > 0)) return null;
-  return (grid.frames.length - 1) / span;
+  const deltas = adjacentDeltas(grid);
+  if (deltas.length < 2) return null;
+  const m = median(deltas);
+  return m > 0 ? 1 / m : null;
 }
 
-/** Whether the probed frames are evenly spaced. Uneven means 1/fps stepping lies. */
+/**
+ * Whether the probed frames are evenly spaced. Uneven means 1/fps stepping lies.
+ *
+ * Over neighbouring frames only. Across islands there is always one delta the size
+ * of an unprobed gap, so this used to answer "yes" for every clip ever opened,
+ * including a perfectly constant one — a flag that is always on tells you nothing.
+ */
 export function isVariableRate(grid: FrameGrid, toleranceSec = 0.0005): boolean {
-  if (grid.frames.length < 3) return false;
-  let min = Infinity;
-  let max = -Infinity;
-  for (let i = 1; i < grid.frames.length; i += 1) {
-    const d = grid.frames[i]! - grid.frames[i - 1]!;
-    if (d < min) min = d;
-    if (d > max) max = d;
+  const deltas = adjacentDeltas(grid);
+  if (deltas.length < 2) return false;
+  return Math.max(...deltas) - Math.min(...deltas) > toleranceSec;
+}
+
+// --------------------------------------------------------- time scaling
+
+/**
+ * Whether a clip's playback time is real time.
+ *
+ * iOS stores slow motion and time-lapse as EDITS on a normally-recorded asset,
+ * and the photo picker hands back the rendered result — a file whose duration has
+ * been stretched or compressed relative to what actually happened. Nothing in the
+ * file says so; it looks exactly like an ordinary clip of a different length.
+ *
+ * 'unknown' is a real answer, not a failure: a clip from Files has no photo-library
+ * asset behind it to ask, and neither refusing every such clip nor pretending it
+ * is normal would be honest.
+ */
+export type TimeScale = 'normal' | 'slow-motion' | 'time-lapse' | 'unknown';
+
+export type ClipVerdict =
+  /** Mark it. `warn` is shown but does not block. */
+  | { accept: true; warn: string | null }
+  /** Refuse, with the reason to put on screen. */
+  | { accept: false; reason: string };
+
+/**
+ * Whether a clip may be TIMED.
+ *
+ * Refuse rather than correct, and the reason is that a correction would be
+ * plausible. iPhone slow motion is RAMPED — only a segment is slowed — so there is
+ * no single factor to divide by: a mark inside the slow section, one outside it
+ * and one straddling the boundary each need a different number, and the ramp
+ * points live in adjustment data PhotoKit does not hand out. Dividing by 8 anyway
+ * would turn a visibly absurd time into a believable wrong one, and a believable
+ * wrong one is the failure a coach cannot catch.
+ *
+ * Time-lapse is refused for the same reason pointing the other way, and is the
+ * more dangerous of the two: compressed time reads as a personal best, which is
+ * the direction nobody questions.
+ */
+export function acceptForTiming(scale: TimeScale): ClipVerdict {
+  if (scale === 'slow-motion') {
+    return {
+      accept: false,
+      reason:
+        'This is a slow-motion clip. iOS hands over the slowed version, not the original, ' +
+        'so its playback time is not real time and any time marked from it would be wrong ' +
+        'by the slow-motion factor. The slowdown is ramped rather than constant, so it ' +
+        'cannot be corrected for either.',
+    };
   }
-  return max - min > toleranceSec;
+  if (scale === 'time-lapse') {
+    return {
+      accept: false,
+      reason:
+        'This is a time-lapse clip. Its playback time is compressed, so a time marked from ' +
+        'it would come out far too fast — which reads as a personal best rather than as an ' +
+        'error.',
+    };
+  }
+  if (scale === 'unknown') {
+    return {
+      accept: true,
+      warn:
+        'This clip is not from your photo library, so it cannot be checked for slow motion. ' +
+        'If it was recorded in slo-mo, the time will be wrong.',
+    };
+  }
+  return { accept: true, warn: null };
+}
+
+/**
+ * Whether a clip may be ATTACHED to a run as review footage.
+ *
+ * Deliberately more permissive: nothing computes a time from attached footage, and
+ * watching a sprint in slow motion is the point of filming it that way. Refusing
+ * here would remove a real use for no safety gain.
+ */
+export function acceptForReview(scale: TimeScale): ClipVerdict {
+  if (scale === 'slow-motion' || scale === 'time-lapse') {
+    return {
+      accept: true,
+      warn:
+        `Attached as ${scale === 'slow-motion' ? 'slow-motion' : 'time-lapse'} review footage. ` +
+        'It cannot be used to mark a time — its playback speed is not real time.',
+    };
+  }
+  return { accept: true, warn: null };
 }
 
 // ------------------------------------------------------------- storage

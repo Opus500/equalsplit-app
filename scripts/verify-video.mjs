@@ -44,6 +44,9 @@ const {
   filmstripTimes,
   lastMarkableTime,
   nominalSdMs,
+  adjacentDeltas,
+  acceptForTiming,
+  acceptForReview,
 } = await import('../src/video/timing.ts');
 const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble/repeats.ts');
 // The real grouping path, imported so block 3 can check that seriesKey — which no
@@ -272,7 +275,27 @@ console.log('\n9. VARIABLE FRAME RATE is detected, not assumed away');
     ...cfr(6 / 30 + 1 / 15, 30, 6),
   ]);
   check('an uneven clip is flagged', isVariableRate(uneven), true);
-  truthy('and its measured rate is below nominal', measuredFps(uneven) < 30);
+
+  // CHANGED DELIBERATELY, and worth being explicit about because a test that moves
+  // to match new behaviour is exactly how a regression gets waved through.
+  //
+  // This read `measuredFps(uneven) < 30`, which was a property of the OLD count-
+  // over-span definition: eleven gaps across 0.433s gave 25.4. That number
+  // described neither the camera nor the clip — it was the arithmetic mean dragged
+  // down by one dropped frame.
+  //
+  // The median is chosen precisely so a dropped frame does not move it. The camera
+  // recorded at 30fps and missed one; 30 is the honest answer, and the miss is
+  // reported by isVariableRate, which is where it belongs. The two facts are
+  // separate and are now stated separately.
+  near('its measured rate is still the camera rate', measuredFps(uneven), 30, 0.001);
+  truthy('with the dropped frame reported separately', isVariableRate(uneven));
+
+  // And it does track a genuinely different rate, so robustness is not deafness.
+  const at24 = ingestFrames(emptyGrid(), { from: 0, to: 1 }, cfr(0, 24, 20));
+  near('a real 24fps clip measures 24', measuredFps(at24), 24, 0.001);
+  const at240 = ingestFrames(emptyGrid(), { from: 0, to: 1 }, cfr(0, 240, 40));
+  near('and a real 240fps clip measures 240', measuredFps(at240), 240, 0.001);
 
   check('too few frames to judge', measuredFps(emptyGrid()), null);
   check('and no false VFR claim from them', isVariableRate(emptyGrid()), false);
@@ -417,6 +440,119 @@ console.log('\n11d. THE PROVISIONAL +/- IS THE SAME CLAIM, not a placeholder');
   }
   truthy('a faster clip still promises less error', nominalSdMs(1 / 240) < nominalSdMs(1 / 30));
   check('and a nonsense frame duration is not NaN', nominalSdMs(-1), 0);
+}
+
+console.log('\n11e. GRID STATISTICS NEVER MEASURE ACROSS AN UNPROBED GAP');
+{
+  // The grid is ISLANDS. `frames` is one sorted array built from separate probed
+  // windows with unprobed clip between them — the import alone makes two, one at
+  // each end. Two entries adjacent in the ARRAY need not be adjacent in the VIDEO.
+  //
+  // Three functions treated them as one sequence, and all three were wrong on
+  // EVERY clip, not only the exotic ones. Reproduced on a perfectly constant 30fps
+  // clip: measuredFps read 0.67 after import and climbed to 5.63 as the coach
+  // scrubbed, never converging; isVariableRate was true from the first frame; and
+  // a mark on the trailing edge of a window took its frame duration from the gap —
+  // 9466ms instead of 33.3ms, writing a +/-2733ms error bar onto a saved run.
+  const dur = 1 / 30;
+  const island = (from, n) => Array.from({ length: n }, (_, i) => from + i * dur);
+  let g = ingestFrames(emptyGrid(), { from: 2 - dur, to: 2 + 9 * dur }, island(2, 9));
+  g = ingestFrames(g, { from: 12 - dur, to: 12 + 9 * dur }, island(12, 9));
+
+  check('two islands, one array', g.frames.length, 18);
+  check('and two windows to say so', g.windows.length, 2);
+
+  // MEASURED RATE is the median of real neighbour gaps, so it is right immediately
+  // and does not drift as coverage grows.
+  near('the rate is the real rate of the clip, not count over span', measuredFps(g), 30, 1e-6);
+  const before = measuredFps(g);
+  g = ingestFrames(g, { from: 20 - dur, to: 20 + 9 * dur }, island(20, 9));
+  near('and probing more of the clip does not move it', measuredFps(g), before, 1e-9);
+
+  // VARIABLE-RATE must not fire on the gaps between windows.
+  check('a constant clip is not flagged variable', isVariableRate(g), false);
+
+  // A genuinely variable island still is.
+  const vfr = ingestFrames(emptyGrid(), { from: 0, to: 1 }, [0, dur, dur * 2, dur * 3.4, dur * 4.4]);
+  check('a genuinely uneven island still is', isVariableRate(vfr), true);
+
+  // THE ERROR BAR. The last frame of an island has no known successor, exactly as
+  // the last frame of the clip does not.
+  const mid = markAt(g, 2 + 3 * dur);
+  near('a mark inside a window carries a real frame duration', mid.frameDurSec, dur, 1e-9);
+  check('a mark on the last frame of an island resolves to nothing', markAt(g, 2 + 8 * dur), null);
+  check('and cannot be stepped onto either', stepFrames(g, 2 + 7 * dur, 1), null);
+  truthy('while stepping within the island is unaffected', stepFrames(g, 2 + 3 * dur, 1) !== null);
+
+  // The deltas themselves: 8 real gaps per 9-frame island, and not one gap of 10s.
+  const deltas = adjacentDeltas(g);
+  check('three islands give 8 neighbour gaps each', deltas.length, 24);
+  truthy('and none of them is an unprobed span', Math.max(...deltas) < dur * 1.5);
+
+  // COVERAGE IS WIDER THAN USABILITY, and probeGridAround has to allow for it.
+  //
+  // A window runs one frame past the last frame in it, so its final frame has no
+  // in-window successor and cannot be resolved. That makes the region where marks
+  // actually work one frame narrower than the region isCovered() reports, at each
+  // end — and probeGridAround's early exit checks coverage. Requiring only the
+  // frames the coach is standing on let it skip a probe while they stood on the
+  // unusable edge, so forward stepping stalled with nothing willing to extend the
+  // window. It now demands one frame MORE than it needs, which is why.
+  const anchor = 2.0;
+  const one = ingestFrames(
+    emptyGrid(),
+    { from: anchor - 8 * dur, to: anchor + 9 * dur },
+    Array.from({ length: 17 }, (_, i) => anchor + (i - 8) * dur),
+  );
+  const edge = anchor + 8 * dur;
+  truthy('the covered region includes the last frame of a window', isCovered(one, edge));
+  check('but that frame cannot be resolved', markAt(one, edge), null);
+  check('nor stepped onto from the frame before', stepFrames(one, anchor + 7 * dur, 1), null);
+  truthy(
+    'so a 2-frame margin still reports covered where stepping already fails',
+    isCovered(one, anchor + 7 * dur + 2 * dur),
+  );
+  check(
+    'while a 3-frame margin does not, and forces the probe that unsticks it',
+    isCovered(one, anchor + 7 * dur + 3 * dur),
+    false,
+  );
+}
+
+console.log('\n11f. TIME-SCALED CLIPS ARE REFUSED, not corrected');
+{
+  // A rendered slow-motion clip has its duration stretched by the slow-motion
+  // factor, and nothing in the file says so. Correcting is not on the table: the
+  // iPhone ramp slows only a SEGMENT, so there is no single divisor — a mark inside
+  // the slow section, one outside it and one straddling the boundary each need a
+  // different number. Dividing anyway turns a visibly absurd time into a believable
+  // wrong one, which is the failure a coach cannot catch.
+  const slow = acceptForTiming('slow-motion');
+  check('slow motion cannot be timed', slow.accept, false);
+  truthy('and the refusal says why, not just no', slow.reason.length > 80);
+  truthy('naming the ramp, since that is why it cannot be corrected', /ramp/i.test(slow.reason));
+
+  const lapse = acceptForTiming('time-lapse');
+  check('time-lapse cannot be timed either', lapse.accept, false);
+  // The more dangerous direction: compressed time reads as a personal best.
+  truthy('and it says the time comes out too FAST', /fast|best/i.test(lapse.reason));
+
+  check('an ordinary clip is accepted', acceptForTiming('normal'), { accept: true, warn: null });
+
+  // UNKNOWN IS NOT REFUSED. A clip from Files has no photo-library asset to ask,
+  // and blocking every unidentifiable clip is worse than the risk it covers.
+  const unknown = acceptForTiming('unknown');
+  check('an unidentifiable clip is allowed through', unknown.accept, true);
+  truthy('but it is warned about', (unknown.warn ?? '').length > 0);
+
+  // REVIEW is deliberately more permissive: nothing computes a time from attached
+  // footage, and watching a sprint in slow motion is the point of filming it.
+  check('slow motion may still be ATTACHED for review', acceptForReview('slow-motion').accept, true);
+  truthy(
+    'with a note that it cannot be used for timing',
+    /cannot be used to mark a time/i.test(acceptForReview('slow-motion').warn),
+  );
+  check('and an ordinary clip attaches silently', acceptForReview('normal'), { accept: true, warn: null });
 }
 
 console.log('\n12. FAN-OUT batching');

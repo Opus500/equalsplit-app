@@ -105,8 +105,17 @@ export async function probeGridAround(
   requiredEitherSide = 2,
 ): Promise<{ grid: FrameGrid; ms: number; calls: number }> {
   const t0 = Date.now();
-  if (isCovered(grid, centre - requiredEitherSide * frameDurSec) &&
-      isCovered(grid, centre + requiredEitherSide * frameDurSec)) {
+  // ONE FRAME MORE THAN ASKED FOR, on each side.
+  //
+  // Coverage is not the same as usability. The last frame inside a probed window
+  // has no successor within that window, so its duration is unknown and markAt
+  // refuses it — correctly. That makes the RESOLVABLE region one frame narrower
+  // than the covered one at each end, and checking plain coverage let the early
+  // exit fire while the coach was standing on the unusable edge: the probe was
+  // skipped as unnecessary, the step then found no frame, and forward stepping
+  // stalled one frame short of the window with nothing willing to extend it.
+  const margin = (requiredEitherSide + 1) * frameDurSec;
+  if (isCovered(grid, centre - margin) && isCovered(grid, centre + margin)) {
     return { grid, ms: 0, calls: 0 };
   }
 

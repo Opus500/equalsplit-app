@@ -14,6 +14,9 @@
 
 import { Directory, File, Paths } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
+import { Asset, MediaSubtype } from 'expo-media-library';
+
+import type { TimeScale } from './timing';
 
 /** Everything lives under one directory so a clip is deleted by removing a folder. */
 const ROOT = 'videos';
@@ -121,9 +124,50 @@ export async function importClip(pickedUri: string): Promise<Clip> {
  * responses, and collapsing them into null loses that.
  */
 export type PickResult =
-  | { status: 'picked'; uri: string }
+  | {
+      status: 'picked';
+      uri: string;
+      /**
+       * Whether the clip's playback time is real time. Resolved here rather than
+       * left to the caller, because it needs the photo-library asset behind the
+       * file and that identity is only available at the moment of picking.
+       */
+      timeScale: TimeScale;
+    }
   | { status: 'cancelled' }
   | { status: 'denied' };
+
+/**
+ * Ask iOS whether an asset is slow motion or time-lapse.
+ *
+ * iOS knows — it sets `PHAssetMediaSubtype.videoHighFrameRate` on a slo-mo capture
+ * and `.videoTimelapse` on a time-lapse — and this is the only reliable signal.
+ * The rendered file itself carries nothing that distinguishes it from an ordinary
+ * clip of the same length, which is exactly why the problem is invisible.
+ *
+ * Returns 'unknown' rather than throwing or guessing. A clip picked from Files has
+ * no PHAsset, `assetId` comes back null, and there is genuinely nothing to check.
+ */
+export async function timeScaleOf(assetId: string | null | undefined): Promise<TimeScale> {
+  if (!assetId) return 'unknown';
+  try {
+    // The `ph://` prefix is REQUIRED and its absence fails silently. Asset's
+    // constructor is `String(id.dropFirst("ph://".count))` — it removes five
+    // characters unconditionally, whether or not the prefix is there. A bare
+    // identifier therefore reaches PhotoKit with its first five characters gone
+    // and simply matches no asset, so the check would come back 'unknown' for
+    // every clip and quietly degrade to no checking at all.
+    const subtypes = await new Asset(`ph://${assetId}`).getMediaSubtypes();
+    if (subtypes.includes(MediaSubtype.HIGH_FRAME_RATE)) return 'slow-motion';
+    if (subtypes.includes(MediaSubtype.TIME_LAPSE)) return 'time-lapse';
+    return 'normal';
+  } catch {
+    // Includes Android, where media subtypes do not exist. Unknown, not normal:
+    // claiming a clip is fine because we failed to ask is the one answer that
+    // could produce a wrong time silently.
+    return 'unknown';
+  }
+}
 
 /** The refusal message, here beside the request it belongs to, so both entry
  *  points say the same thing. */
@@ -167,8 +211,9 @@ export async function pickVideo(): Promise<PickResult> {
     shouldDownloadFromNetwork: true,
   });
 
-  const uri = res.canceled ? null : (res.assets[0]?.uri ?? null);
-  return uri ? { status: 'picked', uri } : { status: 'cancelled' };
+  const asset = res.canceled ? null : (res.assets[0] ?? null);
+  if (!asset?.uri) return { status: 'cancelled' };
+  return { status: 'picked', uri: asset.uri, timeScale: await timeScaleOf(asset.assetId) };
 }
 
 /**
