@@ -42,6 +42,8 @@ const {
   chunk,
   seekTimeFor,
   filmstripTimes,
+  lastMarkableTime,
+  nominalSdMs,
 } = await import('../src/video/timing.ts');
 const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble/repeats.ts');
 // The real grouping path, imported so block 3 can check that seriesKey — which no
@@ -369,6 +371,52 @@ console.log('\n11b. GAP REPAIR is proportional to the damage');
   const gapOf = (mult) => gapProbes(ingestFrames(emptyGrid(), { from: 0, to: 1 }, [0, dur * mult]), dur);
   check('a gap just under 1.5 frames is left alone', gapOf(1.49), []);
   check('and one just over it is repaired', gapOf(1.51).length, 1);
+}
+
+console.log('\n11c. A MARK CAN NEVER LAND ON THE LAST FRAME');
+{
+  // This is a bug that shipped twice. The last frame of a clip has no measured
+  // successor, so frameIndexAt refuses it on purpose — an error bar computed from
+  // an unmeasured frame length would be invented. That refusal is right, and it
+  // makes any position at or past the last frame a dead end: no mark, no stepping,
+  // no time, and no way back because dragging further does nothing.
+  //
+  // The import path backed off by 1.5 frames. The DRAG clamped to the raw duration
+  // and put the handle exactly there, so a handle dragged to the right edge stuck
+  // permanently. One rule, enforced in two places, right in one of them — so the
+  // rule is now a function and this is the test that keeps them together.
+  const dur = 1 / 30;
+  const d = 10;
+  const at = lastMarkableTime(d, dur);
+  truthy('the bound sits strictly inside the clip', at < d);
+  near('by a frame and a half', d - at, dur * 1.5, 1e-9);
+
+  // THE PROOF, through the grid rather than by restating the arithmetic: a mark at
+  // the bound resolves, and a mark at the raw duration does not.
+  const frames = [];
+  for (let t = d - 6 * dur; t < d; t += dur) frames.push(t);
+  const g = ingestFrames(emptyGrid(), { from: d - 7 * dur, to: d + dur }, frames);
+  truthy('a mark at the bound resolves to a real frame', markAt(g, at) !== null);
+  truthy('and can still be stepped backwards', stepFrames(g, at, -1) !== null);
+  check('while a mark at the raw duration resolves to nothing', markAt(g, d), null);
+  check('which is exactly why it could not be stepped off', stepFrames(g, d, -1), null);
+
+  // Degenerate clips must not produce a negative bound.
+  check('a clip shorter than a frame clamps to zero', lastMarkableTime(0.01, dur), 0);
+  check('and a zero frame duration falls back rather than dividing by nothing', lastMarkableTime(10, 0) < 10, true);
+}
+
+console.log('\n11d. THE PROVISIONAL +/- IS THE SAME CLAIM, not a placeholder');
+{
+  // Shown while a handle is moving, before the grid around it has been probed. It
+  // has to be the SAME arithmetic as the settled figure or the number would visibly
+  // jump on release for reasons that are about the code rather than the clip.
+  for (const fps of [24, 30, 60, 240]) {
+    const settled = timeFromMarks({ pts: 0, frameDurSec: 1 / fps }, { pts: 2, frameDurSec: 1 / fps });
+    near(`${fps}fps: provisional equals settled for equal frames`, nominalSdMs(1 / fps), settled.quantSdMs, 1e-9);
+  }
+  truthy('a faster clip still promises less error', nominalSdMs(1 / 240) < nominalSdMs(1 / 30));
+  check('and a nonsense frame duration is not NaN', nominalSdMs(-1), 0);
 }
 
 console.log('\n12. FAN-OUT batching');

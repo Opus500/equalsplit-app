@@ -31,6 +31,9 @@ import {
 } from '../db/database';
 import { DrillPickerModal } from './DrillPicker';
 import {
+  deleteClip,
+  formatBytes,
+  getClip,
   importClip,
   PHOTO_ACCESS_MESSAGE,
   PHOTO_ACCESS_TITLE,
@@ -293,8 +296,14 @@ export function AthleteDetailModal({
         }
         if (picked.status !== 'picked') return;
         const imported = await importClip(picked.uri);
+        // ORDER MATTERS on a replace. The new clip is imported and the reference
+        // moved BEFORE the old file is deleted, so a cancelled pick or a failed
+        // import leaves the existing video exactly where it was. Deleting first
+        // would mean an out-of-space import destroyed the footage it was replacing.
+        const previous = rows?.find((r) => r.id === runId)?.clip_id ?? null;
         await setRunClip(runId, imported.id);
         setRows((prev) => prev?.map((r) => (r.id === runId ? { ...r, clip_id: imported.id } : r)) ?? null);
+        if (previous && previous !== imported.id) deleteClip(previous);
       } catch (e) {
         Alert.alert('Could not attach that video', String(e));
       } finally {
@@ -302,7 +311,68 @@ export function AthleteDetailModal({
         setAttaching(null);
       }
     },
-    [],
+    [rows],
+  );
+
+  /**
+   * Swap the video on a run that already has one.
+   *
+   * Confirmed first, because the old footage is destroyed once the new clip lands
+   * and there is no undo. Play and Attach were made mutually exclusive precisely so
+   * a replacement could never happen silently — this is that same rule with the
+   * deliberate path added rather than removed.
+   */
+  const replaceVideo = useCallback(
+    (runId: string) => {
+      Alert.alert(
+        'Replace this video?',
+        'You pick a new clip, and the current one is deleted once it lands. The run and its time are unaffected.\n\n' +
+          'If you cancel the picker or the import fails, nothing changes.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Choose a video', onPress: () => void attachVideo(runId) },
+        ],
+      );
+    },
+    [attachVideo],
+  );
+
+  /**
+   * Take the video off a run and reclaim the space.
+   *
+   * Deletes the file rather than only clearing the reference. A detached clip is
+   * exactly what the library labels "NO RUN — SAFE TO DELETE", so leaving it would
+   * mean the coach had to do this twice to get the outcome they asked for. The
+   * confirm says both halves out loud, and the run's time is never touched.
+   */
+  const removeVideo = useCallback(
+    (runId: string) => {
+      const clipId = rows?.find((r) => r.id === runId)?.clip_id ?? null;
+      if (!clipId) return;
+      const size = getClip(clipId)?.bytes ?? 0;
+      Alert.alert(
+        'Remove this video?',
+        `The video file is deleted${size ? ` and ${formatBytes(size)} freed` : ''}. ` +
+          'The run and its time are kept.\n\nThis cannot be undone.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Remove video',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                await setRunClip(runId, null);
+                setRows((prev) => prev?.map((r) => (r.id === runId ? { ...r, clip_id: null } : r)) ?? null);
+                deleteClip(clipId);
+              } catch (e) {
+                Alert.alert('Could not remove that video', String(e));
+              }
+            },
+          },
+        ],
+      );
+    },
+    [rows],
   );
 
   const [playing, setPlaying] = useState<{ clipId: string; title: string; sub: string } | null>(null);
@@ -379,6 +449,8 @@ export function AthleteDetailModal({
                 onDeleteRun={confirmDeleteRun}
                 onEditNote={editNote}
                 onAttachVideo={(id) => void attachVideo(id)}
+                onReplaceVideo={replaceVideo}
+                onRemoveVideo={removeVideo}
                 attachingRunId={attaching}
                 onPlayVideo={(p, pageTitle) =>
                   setPlaying({
@@ -475,6 +547,8 @@ function ChartPager({
   onDeleteRun,
   onEditNote,
   onAttachVideo,
+  onReplaceVideo,
+  onRemoveVideo,
   attachingRunId,
   onPlayVideo,
   onAssignDrill,
@@ -489,6 +563,8 @@ function ChartPager({
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
+  onReplaceVideo?: (runId: string) => void;
+  onRemoveVideo?: (runId: string) => void;
   /** Which run is mid-import, so the button can say so. Copying a clip is a file
    *  copy of tens of megabytes and a silent button reads as a dead one. */
   attachingRunId?: string | null;
@@ -550,6 +626,8 @@ function ChartPager({
       onDeleteRun={onDeleteRun}
       onEditNote={onEditNote}
       onAttachVideo={onAttachVideo}
+      onReplaceVideo={onReplaceVideo}
+      onRemoveVideo={onRemoveVideo}
       attachingRunId={attachingRunId}
       onPlayVideo={onPlayVideo}
       onAssignDrill={onAssignDrill}
@@ -563,6 +641,8 @@ function ChartPager({
       onDeleteRun={onDeleteRun}
       onEditNote={onEditNote}
       onAttachVideo={onAttachVideo}
+      onReplaceVideo={onReplaceVideo}
+      onRemoveVideo={onRemoveVideo}
       attachingRunId={attachingRunId}
       onPlayVideo={onPlayVideo}
     />
@@ -688,6 +768,8 @@ function RunList({
   onDeleteRun,
   onEditNote,
   onAttachVideo,
+  onReplaceVideo,
+  onRemoveVideo,
   attachingRunId,
   onPlayVideo,
   onAssignDrill,
@@ -702,6 +784,8 @@ function RunList({
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
+  onReplaceVideo?: (runId: string) => void;
+  onRemoveVideo?: (runId: string) => void;
   /** see ChartPager */
   attachingRunId?: string | null;
   onPlayVideo?: (point: SeriesPoint, title: string) => void;
@@ -776,6 +860,32 @@ function RunList({
                     style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
                   >
                     <Text style={[styles.actionText, styles.actionVideo]}>Play video</Text>
+                  </Pressable>
+                ) : null}
+                {/* Both named, both confirmed. Attach stays absent while a clip is
+                    present — that rule was right and is unchanged — but "no silent
+                    replacement" was never meant to mean "no replacement", and a
+                    clip you attached to the wrong run had no way off it. */}
+                {p.clipId && onReplaceVideo ? (
+                  <Pressable
+                    onPress={() => onReplaceVideo(p.runId)}
+                    disabled={!!attachingRunId}
+                    style={({ pressed }) => [
+                      styles.actionBtn,
+                      (pressed || !!attachingRunId) && styles.dim,
+                    ]}
+                  >
+                    <Text style={styles.actionText}>
+                      {attachingRunId === p.runId ? 'Copying…' : 'Replace video'}
+                    </Text>
+                  </Pressable>
+                ) : null}
+                {p.clipId && onRemoveVideo ? (
+                  <Pressable
+                    onPress={() => onRemoveVideo(p.runId)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={[styles.actionText, styles.actionDanger]}>Remove video</Text>
                   </Pressable>
                 ) : null}
                 {!p.clipId && onAttachVideo ? (

@@ -55,8 +55,10 @@ import {
   formatVideoSeconds,
   formatVideoTime,
   isVariableRate,
+  lastMarkableTime,
   markAt,
   measuredFps,
+  nominalSdMs,
   seekTimeFor,
   stepFrames,
   timeFromMarks,
@@ -258,7 +260,7 @@ export default function VideoMarkScreen({
       // there, so the anchor failed, the grid stayed empty and the Finish arrows
       // silently did nothing. And with no grid at all, neither arrow could resolve
       // a frame until a handle had been dragged.
-      const endAt = Math.max(0, d - dur * 1.5);
+      const endAt = lastMarkableTime(d, dur);
       let g = emptyGrid();
       g = (await probeGridAround(player, g, 0, dur)).grid;
       g = (await probeGridAround(player, g, endAt, dur)).grid;
@@ -371,7 +373,20 @@ export default function VideoMarkScreen({
         const { stripW: w, duration: d } = live.current;
         if (!w || !d) return;
         let next = dragBase.current + (g.dx / w) * d;
-        next = Math.max(0, Math.min(d, next));
+        // NOT Math.min(d, …). The last frame of a clip has no measured successor,
+        // so its duration is unknown and markAt/stepFrames both refuse it — by
+        // design, because an error bar computed from a frame length nobody
+        // measured would be a fabrication. Landing a handle exactly on `d` therefore
+        // resolved to no frame at all, and the mark could not be stepped in either
+        // direction or dragged any further right: permanently stuck.
+        //
+        // This is the same trap the import path already avoids with
+        // `endAt = d - dur * 1.5`; the drag never got the same treatment. It went
+        // unnoticed on ordinary clips because slamming into the right edge is
+        // something you do by accident, and it surfaced on a slow-motion clip
+        // because the stretched duration makes the drag many times more sensitive
+        // in seconds per point — you hit the edge without meaning to.
+        next = Math.max(0, Math.min(lastMarkableTime(d, frameDur), next));
         // The handles cannot cross. A finish before a start is not a measurement
         // to warn about later, it is a state to prevent now.
         const clamped =
@@ -582,12 +597,25 @@ export default function VideoMarkScreen({
         {clip ? (
           <View style={styles.readout}>
             <Text style={styles.elapsed}>{formatVideoSeconds(liveMs)}s</Text>
-            {/* The ± is what licenses the second decimal. At 30fps the spread is
-                wider than the digit shown, and saying so is more use than quietly
-                rounding the digit away. */}
-            <Text style={styles.pm}>
-              {timing ? `± ${Math.round(timing.quantSdMs)}ms frame timing` : 'release to snap to frames'}
-            </Text>
+            {/* The ± is what licenses the second decimal, and it is ALWAYS a ±.
+                It used to be replaced by the words "release to snap to frames"
+                whenever the marks were not yet resolved, so the line under the
+                number you are reading swapped between a figure and a sentence on
+                every drag — a flicker exactly where the eye is.
+
+                The precision STATE now has its own slot to the right, at a fixed
+                width, so it changes without moving or replacing anything else. And
+                the provisional ± is not a placeholder: nominalSdMs is the same
+                arithmetic timeFromMarks uses for two frames of equal length, so
+                the number only tightens when the real frame durations arrive. */}
+            <View style={styles.pmRow}>
+              <Text style={styles.pm}>
+                ± {Math.round(timing ? timing.quantSdMs : nominalSdMs(frameDur))}ms frame timing
+              </Text>
+              <Text style={[styles.snap, timing ? styles.snapOn : styles.snapOff]}>
+                {timing ? 'ON FRAME' : 'SNAPPING'}
+              </Text>
+            </View>
           </View>
         ) : null}
       </View>
@@ -777,7 +805,13 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
   },
   elapsed: { color: '#fff', fontSize: 34, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  pm: { color: '#cbd5e1', fontSize: 11 },
+  pmRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pm: { color: '#cbd5e1', fontSize: 11, fontVariant: ['tabular-nums'] },
+  /** Fixed width so the state changing never reflows the ± beside it — the whole
+   *  point of moving it out of that line. */
+  snap: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5, minWidth: 58, textAlign: 'right' },
+  snapOn: { color: '#34d399' },
+  snapOff: { color: '#fbbf24' },
   // Capped so a long clip's controls never grow into the preview; scrolls instead.
   controls: { maxHeight: 310, flexGrow: 0 },
   controlsBody: { padding: 10, paddingBottom: 28, gap: 10 },

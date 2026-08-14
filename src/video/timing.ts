@@ -242,6 +242,43 @@ export function seekTimeFor(mark: VideoMark): number {
 }
 
 /**
+ * The furthest into a clip a mark may be placed.
+ *
+ * The final frame of a clip has no measured successor, so its duration is unknown
+ * and `frameIndexAt` deliberately refuses to resolve it — an error bar computed
+ * from a frame length nobody measured would be invented. That refusal is correct,
+ * but it means any position at or past the last frame is a dead end: no mark, no
+ * stepping, no time.
+ *
+ * So it must never be reachable, and that has to be enforced in ONE place. It was
+ * enforced in two — the import path backed off by 1.5 frames, the drag clamped to
+ * the raw duration — and only one of them was right. A handle dragged to the right
+ * edge stuck there permanently.
+ *
+ * 1.5 frames rather than 1: at exactly one frame back the last frame is still the
+ * one displayed, and float error decides which side of the boundary the request
+ * lands on.
+ */
+export function lastMarkableTime(durationSec: number, frameDurSec: number): number {
+  const dur = frameDurSec > 0 ? frameDurSec : 1 / 30;
+  return Math.max(0, durationSec - dur * 1.5);
+}
+
+/**
+ * The +/- a clip can support before any frame has actually been measured.
+ *
+ * Same arithmetic as `timeFromMarks` for two frames of equal length — variance
+ * d^2/12 at each end, added in quadrature — so a provisional figure and the final
+ * one are the same claim computed from the same rule, not a placeholder that
+ * happens to look similar. Used while a handle is moving, when the grid around it
+ * has not been probed yet and there is no measured pair to work from.
+ */
+export function nominalSdMs(frameDurSec: number): number {
+  const d = Math.max(0, frameDurSec) * 1000;
+  return Math.sqrt((d * d + d * d) / 12);
+}
+
+/**
  * Times to request in order to discover the frames around a KNOWN frame.
  *
  * One probe per frame, each half a frame past a real boundary — which is only
