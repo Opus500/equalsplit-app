@@ -42,6 +42,7 @@ import {
   type Clip,
 } from '../video/clips';
 import { formatVideoSeconds, VIDEO_MODE } from '../video/timing';
+import { effectiveRunDate } from '../runs/rundate';
 
 type Entry = {
   clip: Clip;
@@ -58,7 +59,13 @@ export default function VideoLibraryScreen() {
    *  saying so stops it reading as data loss. */
   const [orphanRuns, setOrphanRuns] = useState(0);
   /** Half-written clips cleared on this visit. Reported rather than done quietly:
-   *  space appearing from nowhere is the kind of thing a coach should be told. */
+   *  space appearing from nowhere is the kind of thing a coach should be told.
+   *
+   *  The message no longer claims these held "no run". sweepBrokenClips deletes any
+   *  directory getClip() cannot resolve, which includes a zero-byte file a run
+   *  still points at — rare, but the sentence asserted something nothing checked,
+   *  and an unchecked claim in a message is how the orphan footnote got its count
+   *  wrong in the first place. */
   const [swept, setSwept] = useState(0);
 
   const load = useCallback(async () => {
@@ -170,7 +177,9 @@ export default function VideoLibraryScreen() {
               </Text>
               <Text style={styles.cardSub} numberOfLines={1}>
                 {e.run
-                  ? `${e.run.athlete_name ?? 'Unassigned'} · ${dateOf(e.run.created_at)}`
+                  ? `${e.run.athlete_name ?? 'Unassigned'} · ${dateOf(
+                      effectiveRunDate(e.run.performed_at, e.run.created_at),
+                    )}`
                   : 'Imported, then left — no run was recorded'}
               </Text>
               <Text style={[styles.kind, styles[`kind_${kind}`]]}>
@@ -234,8 +243,8 @@ export default function VideoLibraryScreen() {
         ) : null}
         {swept > 0 ? (
           <Text style={styles.footnote}>
-            {swept} unfinished import{swept === 1 ? '' : 's'} cleared. These were left behind when a
-            copy was interrupted; they held no video and no run.
+            {swept} unfinished import{swept === 1 ? '' : 's'} cleared. These held no playable video —
+            usually a copy interrupted partway.
           </Text>
         ) : null}
       </ScrollView>
@@ -250,7 +259,9 @@ export default function VideoLibraryScreen() {
         }
         subtitle={
           playing?.run
-            ? `${playing.run.athlete_name ?? 'Unassigned'} · ${dateOf(playing.run.created_at)}`
+            ? `${playing.run.athlete_name ?? 'Unassigned'} · ${dateOf(
+                effectiveRunDate(playing.run.performed_at, playing.run.created_at),
+              )}`
             : undefined
         }
         onClose={() => setPlaying(null)}

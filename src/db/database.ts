@@ -446,6 +446,10 @@ export type VideoRunRow = {
   mode: number;
   total_ms: number;
   created_at: number;
+  /** see RunRow.performed_at — the library dates its rows the same way every other
+   *  screen does, or a backdated run reads as two different days depending on where
+   *  you look at it from. */
+  performed_at: number | null;
   clip_id: string;
   athlete_name: string | null;
   drill_name: string | null;
@@ -464,7 +468,7 @@ export type VideoRunRow = {
 export async function listVideoRuns(): Promise<VideoRunRow[]> {
   const db = await getDb();
   return db.getAllAsync<VideoRunRow>(
-    `SELECT r.id, r.mode, r.total_ms, r.created_at, r.clip_id,
+    `SELECT r.id, r.mode, r.total_ms, r.created_at, r.performed_at, r.clip_id,
             a.display_name AS athlete_name,
             d.name         AS drill_name
        FROM runs r
