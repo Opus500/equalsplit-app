@@ -26,7 +26,6 @@ import {
   Alert,
   type LayoutChangeEvent,
   PanResponder,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -38,16 +37,9 @@ import { Image } from 'expo-image';
 
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
-import { getAthleteRuns, saveRun, type Drill } from '../db/database';
-import {
-  dateImpact,
-  effectiveRunDate,
-  isBackdated,
-  parseDateInput,
-  sameLocalDay,
-  toDateInput,
-} from '../runs/rundate';
-import { formatDelta } from '../roster/progression';
+import { saveRun, type Drill } from '../db/database';
+import { effectiveRunDate, isBackdated, sameLocalDay } from '../runs/rundate';
+import { RunDateModal, confirmRunDate } from '../runs/RunDateEditor';
 import { useRoster } from '../roster/RosterProvider';
 import {
   formatBytes,
@@ -71,7 +63,6 @@ import {
   measuredFps,
   nominalSdMs,
   seekTimeFor,
-  seriesTimeSource,
   stepFrames,
   timeFromMarks,
   videoRunRawJson,
@@ -610,109 +601,27 @@ export default function VideoMarkScreen({
   /**
    * Set the date, after showing what it will DO.
    *
-   * The impact is computed against the runs this one would actually join — same
-   * athlete, same drill, same time source, because that is what a series is. With
-   * no drill chosen there is no series to disturb and nothing to warn about.
+   * The rule itself lives in RunDateEditor, because the athlete run list asks the
+   * same question about an already-saved run and the two must not drift. What is
+   * local to this screen is only WHICH run is being dated: one that does not exist
+   * yet, timed from this clip.
    */
+  const [pickingDate, setPickingDate] = useState(false);
+
   const confirmDate = useCallback(
     async (at: number) => {
-      // A date in today is not backdating and gets no ceremony.
-      if (sameLocalDay(at, Date.now()) || !athleteId || !drill || !timing) {
-        setPerformedAt(at);
-        return;
-      }
-      let existing: { elapsedMs: number; at: number }[] = [];
-      try {
-        const rows = await getAthleteRuns(athleteId);
-        existing = rows
-          .filter(
-            (r) =>
-              r.status === 'valid' &&
-              r.drill_id === drill.id &&
-              seriesTimeSource(r.raw_json) === 'video',
-          )
-          .map((r) => ({ elapsedMs: r.total_ms, at: effectiveRunDate(r.performed_at, r.created_at) }));
-      } catch {
-        // A failed lookup must not block the edit; it only costs the warning.
-        existing = [];
-      }
-
-      const impact = dateImpact(existing, { elapsedMs: Math.round(timing.elapsedMs), at });
-      if (!impact.insertsIntoHistory) {
-        setPerformedAt(at);
-        return;
-      }
-
-      // WHAT IT DOES, in the order it matters: where the run lands, then what the
-      // drill's trend becomes. The trend line is omitted when it does not move,
-      // because a warning that always says the same thing stops being read.
-      const lines = [
-        impact.becomesEarliest
-          ? `This becomes the EARLIEST of ${impact.total} ${drill.name} runs.`
-          : `This lands ${impact.rank} of ${impact.total} ${drill.name} runs, not last.`,
-      ];
-      if (
-        impact.deltaBeforeMs !== null &&
-        impact.deltaAfterMs !== null &&
-        formatDelta(impact.deltaBeforeMs) !== formatDelta(impact.deltaAfterMs)
-      ) {
-        lines.push(
-          `The trend for this drill changes from ${formatDelta(impact.deltaBeforeMs)} to ` +
-            `${formatDelta(impact.deltaAfterMs)}.`,
-        );
-      }
-      lines.push('The chart orders runs by sequence, so a wrong year reshapes the whole series.');
-
-      Alert.alert(`Date it ${toDateInput(at)}?`, lines.join('\n\n'), [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Use this date', onPress: () => setPerformedAt(at) },
-      ]);
+      await confirmRunDate({
+        at,
+        athleteId,
+        drill: drill ? { id: drill.id, name: drill.name } : null,
+        elapsedMs: timing?.elapsedMs ?? 0,
+        // A run marked on this screen is video-timed by construction.
+        timeSource: 'video',
+        onConfirm: setPerformedAt,
+      });
     },
     [athleteId, drill, timing],
   );
-
-  /**
-   * Edit the date this run happened on.
-   *
-   * Alert.prompt, for the same reason the note editor uses it: it is a system
-   * control that cannot be laid out wrong, and the last inline field added to this
-   * app shipped invisible. It matters less here than it would elsewhere, because
-   * the field is seeded from the footage and most coaches will never open it.
-   *
-   * THE GUARD IS THE CONSEQUENCE, NOT THE VALUE. Echoing "2025-08-13, is that
-   * right?" back at someone who just typed it catches nothing — they typed what
-   * they meant to type, and the mistake is in what it DOES. So the confirmation
-   * says where the run lands and what it does to the drill's trend. A wrong day
-   * produces no alarming sentence and needs none; a wrong year produces one that
-   * cannot be read past.
-   */
-  const editDate = useCallback(() => {
-    if (Platform.OS !== 'ios') {
-      Alert.alert('Dates need iOS for now', 'The date editor is not built for Android yet.');
-      return;
-    }
-    const current = effectiveRunDate(performedAt, Date.now());
-    Alert.prompt(
-      'When was this filmed?',
-      'The date the run happened, not the date you are marking it. Format 2026-08-13.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Set date',
-          onPress: (text?: string) => {
-            const parsed = parseDateInput(text ?? '');
-            if (!parsed.ok) {
-              Alert.alert('That date will not do', parsed.reason);
-              return;
-            }
-            void confirmDate(parsed.at);
-          },
-        },
-      ],
-      'plain-text',
-      toDateInput(current),
-    );
-  }, [performedAt, confirmDate]);
 
   // ------------------------------------------------------------ render
 
@@ -883,7 +792,7 @@ export default function VideoMarkScreen({
           {/* Seeded from the footage, so this normally needs no attention at all.
               The hint says WHERE the date came from, because "3 Sept" means one
               thing if the clip says so and another if the app assumed today. */}
-          <Pressable style={styles.tagRow} onPress={editDate}>
+          <Pressable style={styles.tagRow} onPress={() => setPickingDate(true)}>
             <Text style={styles.tagLabel}>Filmed</Text>
             <Text style={styles.tagValue}>
               {new Date(effectiveRunDate(performedAt, Date.now())).toLocaleDateString(undefined, {
@@ -908,6 +817,19 @@ export default function VideoMarkScreen({
           >
             <Text style={styles.primaryText}>Keep</Text>
           </Pressable>
+
+          {/* The wheel. Mounted here with the other pickers so a date edit behaves
+              like every other attribution change on this screen. */}
+          <RunDateModal
+            visible={pickingDate}
+            value={effectiveRunDate(performedAt, Date.now())}
+            title="When was this filmed?"
+            onCancel={() => setPickingDate(false)}
+            onPick={(at) => {
+              setPickingDate(false);
+              void confirmDate(at);
+            }}
+          />
 
           <DrillPickerModal
             visible={pickingDrill}

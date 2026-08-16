@@ -14,10 +14,14 @@ import {
   dateImpact,
   effectiveRunDate,
   isBackdated,
+  localNoon,
   parseDateInput,
   sameLocalDay,
   toDateInput,
 } from '../src/runs/rundate.ts';
+// The exact wording the alert shows. Asserting the numbers alone would let the
+// sign flip be real and the sentence describing it be wrong.
+import { formatDelta } from '../src/roster/progression.ts';
 
 let failures = 0;
 const check = (label, got, want) => {
@@ -168,6 +172,78 @@ console.log('\n5. degenerate series');
   // "it was added later". Deterministic either way, which is what matters.
   const tie = dateImpact([{ elapsedMs: 4400, at: at(2026, 8, 1) }], { elapsedMs: 4200, at: at(2026, 8, 1) });
   check('a tie appends rather than inserting', [tie.rank, tie.insertsIntoHistory], [2, false]);
+}
+
+console.log('\n6. RE-DATING A SAVED RUN is a MOVE, not an addition');
+{
+  // The saved-run editor asks the same question as the marking screen about a run
+  // that is ALREADY in the series. Treated as an addition, the arithmetic goes
+  // wrong twice over: the run is counted alongside itself, so a series of four
+  // reports five; and "before" means a chart with the run deleted, which is a chart
+  // the coach has never seen and never will.
+  const series = [
+    { elapsedMs: 4400, at: at(2025, 3, 1) },
+    { elapsedMs: 4300, at: at(2025, 4, 1) },
+    { elapsedMs: 4200, at: at(2025, 5, 1) },
+  ];
+  // The run being moved, currently sitting last at 4100.
+  const mine = { elapsedMs: 4100, at: at(2025, 6, 1) };
+
+  const moved = dateImpact(series, { ...mine, at: at(2025, 2, 1) }, { at: mine.at });
+  check('the total counts the run once', moved.total, 4);
+  check('it lands first', moved.rank, 1);
+  check('and it knows where it came from', moved.previousRank, 4);
+  check('so it reorders', moved.reorders, true);
+  check('and becomes the earliest', moved.becomesEarliest, true);
+
+  // BEFORE is the chart as it stands TODAY — with this run last, 4400 -> 4100, an
+  // improvement of 0.30s. Not the chart without it (4400 -> 4200, 0.20s), which is
+  // the number an addition-shaped call would report.
+  check('before is the trend the coach can currently see', moved.deltaBeforeMs, 4100 - 4400);
+  check('after puts the fast run first and the season reads as a decline', moved.deltaAfterMs, 4200 - 4100);
+  truthy(
+    'so the warning reports a sign flip',
+    formatDelta(moved.deltaBeforeMs) === '0.30s faster' && formatDelta(moved.deltaAfterMs) === '0.10s slower',
+  );
+
+  // A MOVE THAT MOVES NOTHING IS NOT A WARNING. Nudging a date within the gap it
+  // already occupies changes no ranks, so the chart is identical and there is
+  // nothing to report. A warning that fires on a no-op gets clicked through, and
+  // then it is not a warning any more.
+  const nudged = dateImpact(series, { ...mine, at: at(2025, 6, 20) }, { at: mine.at });
+  check('still last', nudged.rank, 4);
+  check('as it was', nudged.previousRank, 4);
+  check('so it does not warn', nudged.reorders, false);
+  check('and the trend is unmoved', nudged.deltaAfterMs, nudged.deltaBeforeMs);
+
+  // THE CASE THAT SEPARATES "moved" FROM "not last". A run sitting in the MIDDLE of
+  // a season, nudged by a few days without crossing anybody, still satisfies
+  // rank < total — so a guard keyed on insertsIntoHistory fires every time a coach
+  // corrects a mid-season date by a day. Only the comparison against where the run
+  // ALREADY sat can tell the difference.
+  const middle = { elapsedMs: 4250, at: at(2025, 4, 15) };
+  const shuffled = dateImpact(series, { ...middle, at: at(2025, 4, 20) }, { at: middle.at });
+  check('a mid-series run is not last', shuffled.rank < shuffled.total, true);
+  check('and would trip an insertion test', shuffled.insertsIntoHistory, true);
+  check('but its rank is unchanged', [shuffled.rank, shuffled.previousRank], [3, 3]);
+  check('so it does NOT warn', shuffled.reorders, false);
+
+  // Crossing exactly one neighbour is still a reorder, however small the step.
+  const crossed = dateImpact(series, { ...mine, at: at(2025, 4, 15) }, { at: mine.at });
+  check('crossing one run reorders', crossed.reorders, true);
+  check('by exactly one place', crossed.rank, 3);
+
+  // ADDING is unchanged — `replacing` omitted must behave exactly as before, or
+  // this extension silently rewrote the marking screen's guard.
+  const added = dateImpact(series, { elapsedMs: 4100, at: at(2025, 2, 1) });
+  check('an added run has no previous rank', added.previousRank, null);
+  check('and reorders because it inserts', added.reorders, added.insertsIntoHistory);
+  check('total counts it as new', added.total, 4);
+  check('before is the series without it', added.deltaBeforeMs, 4200 - 4400);
+
+  // An added run dated today lands last and says nothing at all.
+  const appended = dateImpact(series, { elapsedMs: 4100, at: at(2025, 7, 1) });
+  check('appending is not a reorder', appended.reorders, false);
 }
 
 console.log('\n=============================');

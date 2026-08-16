@@ -125,6 +125,19 @@ export function parseDateInput(text: string, now = Date.now()): ParsedDate {
   return { ok: true, at };
 }
 
+/**
+ * The same calendar day, anchored at local NOON.
+ *
+ * The wheel picker hands back midnight in the device's zone. Storing that leaves a
+ * date one hour from rolling backwards over a DST boundary or a timezone change —
+ * the run would silently move to the previous day. Noon is the furthest point from
+ * both edges, which is why parseDateInput builds its result there too.
+ */
+export function localNoon(at: number): number {
+  const d = new Date(at);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(), 12, 0, 0, 0).getTime();
+}
+
 /** YYYY-MM-DD, for seeding the input with a date the coach can edit in place. */
 export function toDateInput(at: number): string {
   const d = new Date(at);
@@ -148,7 +161,24 @@ export type DateImpact = {
    */
   insertsIntoHistory: boolean;
   becomesEarliest: boolean;
-  /** first-to-latest delta WITHOUT this run, or null with fewer than two runs */
+  /**
+   * Where the run sits NOW, when it is already in the series (see `replacing`).
+   * Null for a run being added, which is nowhere yet.
+   */
+  previousRank: number | null;
+  /**
+   * Does this date change where the run sits RELATIVE TO THE OTHERS?
+   *
+   * The trigger for warning, and the honest one in both directions. Adding a run
+   * anywhere but last reorders the series. MOVING a run only reorders it if the
+   * new date crosses another run — retyping the same day, or nudging a date within
+   * the gap it already occupies, changes nothing on the chart and should not raise
+   * a warning that then gets clicked through out of habit.
+   */
+  reorders: boolean;
+  /** first-to-latest delta as the series stands TODAY — without this run when it is
+   *  being added, with it at its current date when it is being moved. Null with
+   *  fewer than two runs. */
   deltaBeforeMs: number | null;
   /** the same delta WITH this run at the candidate date */
   deltaAfterMs: number | null;
@@ -167,13 +197,30 @@ export type DateImpact = {
 export function dateImpact(
   existing: { elapsedMs: number; at: number }[],
   candidate: { elapsedMs: number; at: number },
+  /**
+   * Where the candidate sits TODAY, when it is already a saved run being re-dated
+   * rather than a new one being added.
+   *
+   * Without this, "before" means the series with the run removed entirely, which is
+   * a chart the coach has never seen — so the warning would report a change against
+   * a baseline that does not exist, and would count the run twice in the total.
+   */
+  replacing?: { at: number },
 ): DateImpact {
-  const before = [...existing].sort((a, b) => a.at - b.at);
-  const after = [...before, candidate].sort((a, b) => a.at - b.at);
+  const others = [...existing].sort((a, b) => a.at - b.at);
+  const current = replacing ? { elapsedMs: candidate.elapsedMs, at: replacing.at } : null;
+  const before = current ? [...others, current].sort((a, b) => a.at - b.at) : others;
+  const after = [...others, candidate].sort((a, b) => a.at - b.at);
 
   // Ties go to the NEW run being later, matching "it was added afterwards".
   let rank = after.findIndex((r) => r === candidate) + 1;
   if (rank < 1) rank = after.length;
+
+  let previousRank: number | null = null;
+  if (current) {
+    previousRank = before.findIndex((r) => r === current) + 1;
+    if (previousRank < 1) previousRank = before.length;
+  }
 
   const deltaOf = (rows: { elapsedMs: number }[]) =>
     rows.length >= 2 ? rows[rows.length - 1]!.elapsedMs - rows[0]!.elapsedMs : null;
@@ -182,7 +229,9 @@ export function dateImpact(
     rank,
     total: after.length,
     insertsIntoHistory: rank < after.length,
-    becomesEarliest: rank === 1 && before.length > 0,
+    becomesEarliest: rank === 1 && others.length > 0,
+    previousRank,
+    reorders: previousRank === null ? rank < after.length : rank !== previousRank,
     deltaBeforeMs: deltaOf(before),
     deltaAfterMs: deltaOf(after),
   };

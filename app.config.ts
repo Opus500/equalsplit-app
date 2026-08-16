@@ -85,6 +85,11 @@ const config: ExpoConfig = {
         isAccessMediaLocationEnabled: false,
       },
     ],
+    // The native date wheel. No options: it adds no permissions and no Info.plist
+    // keys, it exists in the plugin list only so prebuild links the native module.
+    // Ordering is irrelevant here for the same reason — it touches nothing the
+    // photo plugins above are arguing over.
+    '@react-native-community/datetimepicker',
   ],
   extra: {
     eas: {

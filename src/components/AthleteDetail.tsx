@@ -24,6 +24,7 @@ import {
   getAthleteRuns,
   setRunClip,
   setRunNote,
+  setRunPerformedAt,
   updateRunDrill,
   type Athlete,
   type AthleteRunRow,
@@ -44,7 +45,8 @@ import {
   pickVideo,
 } from '../video/clips';
 import { acceptForReview, seriesTimeSource } from '../video/timing';
-import { effectiveRunDate, isBackdated } from '../runs/rundate';
+import { effectiveRunDate, isBackdated, sameLocalDay } from '../runs/rundate';
+import { RunDateModal, confirmRunDate } from '../runs/RunDateEditor';
 import { VideoPlayerModal } from './VideoPlayerModal';
 import {
   HAND_START_ERROR_MS,
@@ -459,6 +461,49 @@ export function AthleteDetailModal({
 
   const [playing, setPlaying] = useState<{ clipId: string; title: string; sub: string } | null>(null);
   const [assigning, setAssigning] = useState<string | null>(null);
+  /** Which saved run is having its date changed. */
+  const [dating, setDating] = useState<string | null>(null);
+
+  /**
+   * Re-date a run that already exists.
+   *
+   * Same guard as the marking screen and the same code — RunDateEditor owns it,
+   * because a rule that decides whether to warn about reshaping a chart is exactly
+   * the kind that must not exist twice.
+   *
+   * MOVING, not adding, and confirmRunDate is told so. A saved run is already in
+   * its series: comparing it against a series that still contains it would count it
+   * twice and report a "before" trend the coach has never seen.
+   */
+  const editRunDate = useCallback(
+    async (runId: string, at: number) => {
+      const row = rows?.find((r) => r.id === runId);
+      if (!row) return;
+      await confirmRunDate({
+        at,
+        athleteId: athlete?.id ?? null,
+        drill: row.drill_id ? { id: row.drill_id, name: row.drill_name ?? 'this drill' } : null,
+        elapsedMs: row.total_ms,
+        timeSource: seriesTimeSource(row.raw_json),
+        runId,
+        currentAt: effectiveRunDate(row.performed_at, row.created_at),
+        onConfirm: (chosen) => {
+          // NULL when the date lands on the day the row was written. Storing an
+          // explicit timestamp there would mark the run BACKDATED for agreeing with
+          // itself, and the marker would stop meaning anything.
+          const next = sameLocalDay(chosen, row.created_at) ? null : chosen;
+          setRunPerformedAt(runId, next)
+            .then(() =>
+              setRows(
+                (prev) => prev?.map((r) => (r.id === runId ? { ...r, performed_at: next } : r)) ?? null,
+              ),
+            )
+            .catch((e) => Alert.alert('Could not change that date', String(e)));
+        },
+      });
+    },
+    [rows, athlete],
+  );
 
   /**
    * Give a drill to a run that had none.
@@ -535,6 +580,7 @@ export function AthleteDetailModal({
                 onExportVideo={(id) => void exportVideo(id)}
                 onReplaceVideo={replaceVideo}
                 onRemoveVideo={removeVideo}
+                onEditDate={setDating}
                 clipPresent={clipPresent}
                 attachingRunId={attaching}
                 onPlayVideo={(p, pageTitle) =>
@@ -589,6 +635,20 @@ export function AthleteDetailModal({
         {/* Nested inside this modal, not a sibling — same iOS constraint as the
             edit form: dismissing one root-level Modal while presenting another in
             the same frame can drop the second. */}
+        <RunDateModal
+          visible={!!dating}
+          value={(() => {
+            const r = rows?.find((x) => x.id === dating);
+            return r ? effectiveRunDate(r.performed_at, r.created_at) : Date.now();
+          })()}
+          onCancel={() => setDating(null)}
+          onPick={(at) => {
+            const runId = dating;
+            setDating(null);
+            if (runId) void editRunDate(runId, at);
+          }}
+        />
+
         <DrillPickerModal
           visible={!!assigning}
           currentId={null}
@@ -639,6 +699,7 @@ function ChartPager({
   attachingRunId,
   onPlayVideo,
   onAssignDrill,
+  onEditDate,
   clipPresent,
   selectedRunId,
   onSelectRun,
@@ -660,6 +721,8 @@ function ChartPager({
   attachingRunId?: string | null;
   onPlayVideo?: (point: SeriesPoint, title: string) => void;
   onAssignDrill?: (runId: string) => void;
+  /** Re-date a saved run. See AthleteDetailModal.editRunDate. */
+  onEditDate?: (runId: string) => void;
   /** Whether a clip id still has a FILE behind it. See AthleteDetailModal. */
   clipPresent?: (clipId: string) => boolean;
   selectedRunId: string | null;
@@ -740,6 +803,7 @@ function ChartPager({
       attachingRunId={attachingRunId}
       onPlayVideo={onPlayVideo}
       onAssignDrill={onAssignDrill}
+      onEditDate={onEditDate}
       clipPresent={clipPresent}
     />
   ) : current ? (
@@ -757,6 +821,7 @@ function ChartPager({
       onRemoveVideo={onRemoveVideo}
       attachingRunId={attachingRunId}
       onPlayVideo={onPlayVideo}
+      onEditDate={onEditDate}
       clipPresent={clipPresent}
     />
   ) : null;
@@ -893,6 +958,7 @@ function RunList({
   attachingRunId,
   onPlayVideo,
   onAssignDrill,
+  onEditDate,
   clipPresent,
 }: {
   title: string;
@@ -914,6 +980,8 @@ function RunList({
   onPlayVideo?: (point: SeriesPoint, title: string) => void;
   /** Only offered where it is the obvious next action: a run with no drill. */
   onAssignDrill?: (runId: string) => void;
+  /** see ChartPager */
+  onEditDate?: (runId: string) => void;
   /** see ChartPager. Absent means "assume present", which is what every caller
    *  without video wants. */
   clipPresent?: (clipId: string) => boolean;
@@ -997,6 +1065,18 @@ function RunList({
                     style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
                   >
                     <Text style={[styles.actionText, styles.actionVideo]}>Assign drill</Text>
+                  </Pressable>
+                ) : null}
+                {/* On EVERY run, not just video ones. A run gets its date wrong for
+                    reasons that have nothing to do with how it was timed — a session
+                    entered the morning after, a clip filmed last season. The marker
+                    in the row above says when one has been moved. */}
+                {onEditDate ? (
+                  <Pressable
+                    onPress={() => onEditDate(p.runId)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={styles.actionText}>Change date</Text>
                   </Pressable>
                 ) : null}
                 {p.clipId && onPlayVideo ? (

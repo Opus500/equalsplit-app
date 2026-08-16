@@ -476,6 +476,22 @@ export async function listVideoRuns(): Promise<VideoRunRow[]> {
 }
 
 /**
+ * Set (or clear) the date a run HAPPENED.
+ *
+ * NEVER touches created_at. Two questions, two fields: created_at is when the row
+ * was written and is the app's own audit trail, performed_at is the coach's claim
+ * about the world. Overwriting the first with the second would destroy the ability
+ * to tell a backdated run from one recorded at the time — permanently, with no way
+ * back — and provenance is what makes a correction reversible.
+ *
+ * NULL means "the same day it was recorded", which is what every run timed live is.
+ */
+export async function setRunPerformedAt(runId: string, at: number | null): Promise<void> {
+  const db = await getDb();
+  await db.runAsync('UPDATE runs SET performed_at = ? WHERE id = ?', [at, runId]);
+}
+
+/**
  * Attach a clip to a run, or detach it.
  *
  * Deliberately touches ONLY clip_id. Attaching review footage to a gate-timed run
