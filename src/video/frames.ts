@@ -130,6 +130,10 @@ export async function probeGridAround(
     frameDurSec,
     framesEitherSide,
     framesEitherSide,
+    // The clip's length, so the tail is not probed past its own end. A finish mark
+    // sits near the end by definition, which is exactly where the unbounded version
+    // spent eight extractions re-fetching the last frame.
+    player.duration,
   );
   const results = await fanOut(times.map((t) => () => oneFrame(player, t, PROBE_SIZE)));
   const found = results.filter((r): r is { actualTime: number; ref: unknown } => r !== null);

@@ -284,21 +284,59 @@ export function nominalSdMs(frameDurSec: number): number {
  *
  * On a variable-rate clip the alignment drifts and some probes land twice in one
  * frame, leaving a hole — `gapProbes` repairs those, and only those.
+ *
+ * BOUNDED AT BOTH ENDS. Probes at or below zero were always dropped; probes past
+ * the end of the clip were not, and near a finish mark that is up to eight
+ * extractions returning the same clamped last frame — roughly 200ms of pure waste,
+ * at precisely the moment the coach is nudging the mark that decides the time.
+ *
+ * ONE probe is kept when the tail is cut, aimed a millisecond inside the end. That
+ * is not tidiness, it is the difference between this and the regression it would
+ * otherwise be: the last frame IN the clip is what gives the second-to-last frame a
+ * successor, and without a successor markAt refuses the second-to-last frame too.
+ * Dropping the tail wholesale would shrink the markable region by an extra frame
+ * every time — the same shape as the coverage-versus-usability bug in
+ * probeGridAround, arrived at from the other direction.
+ *
+ * A MILLISECOND, not half a frame. A clip's final frame is usually a PARTIAL one —
+ * duration is rarely an exact multiple of the frame period — and aiming half a
+ * frame back lands in the frame before it whenever that remainder is short, which
+ * is precisely the case the rescue exists for. Any frame long enough to mark is
+ * longer than a millisecond.
  */
 export function alignedProbes(
   anchorPts: number,
   frameDurSec: number,
   framesBefore: number,
   framesAfter: number,
+  /** Clip length. Omit (or pass 0) to leave the tail unbounded, as before. */
+  durationSec?: number,
 ): { window: FrameWindow; times: number[] } {
   const dur = frameDurSec > 0 ? frameDurSec : 1 / 30;
+  const end = durationSec && durationSec > 0 ? durationSec : Infinity;
   const times: number[] = [];
+  let cut = false;
   for (let k = -framesBefore; k <= framesAfter; k += 1) {
     const t = anchorPts + (k + 0.5) * dur;
-    if (t > 0) times.push(t);
+    if (t <= 0) continue;
+    if (t >= end) {
+      cut = true;
+      continue;
+    }
+    times.push(t);
+  }
+  if (cut) {
+    const tail = end - 0.001;
+    const last = times[times.length - 1];
+    if (tail > 0 && (last === undefined || tail > last + 1e-9)) times.push(tail);
   }
   return {
     window: {
+      // NOT clamped to `durationSec`, deliberately. A window records where the
+      // decoder has been ASKED, and "past the end, nothing there" is a real answer
+      // worth remembering. Clamping it would make isCovered false forever beyond
+      // the last frame, so every step near the finish would re-probe a region
+      // already known to be empty — a stall in place of a saving.
       from: Math.max(0, anchorPts - framesBefore * dur),
       to: anchorPts + (framesAfter + 1) * dur,
     },
@@ -506,9 +544,28 @@ export function stepFrames(grid: FrameGrid, t: number, delta: number): VideoMark
   if (i === null) return null;
   const j = i + delta;
   if (j < 0) return null;
+  const from = grid.frames[i];
+  const to = grid.frames[j];
+  if (from === undefined || to === undefined) return null;
+  // SAME ISLAND, or it is not a step.
+  //
+  // `i + delta` is an index into a FLAT array built from disjoint windows, so
+  // adding to it walks off the end of one island and into the next — which is a
+  // different part of the clip, often many seconds away. frameDurAt alone does not
+  // catch it: it checks that the LANDING frame has a successor in its own window,
+  // and a frame in the middle of the next island passes that happily.
+  //
+  // Reachable, not theoretical. The step worker coalesces rapid presses into one
+  // delta, so a held arrow produces a delta of five or ten. Measured on a grid with
+  // a head and a tail window: +3 was correctly refused at the window edge, and +4
+  // silently jumped twenty seconds down the clip. The refusal that should stop you
+  // is bypassed by pressing HARDER, which is the worst possible shape for this.
+  const wi = windowContaining(grid, from);
+  const wj = windowContaining(grid, to);
+  if (!wi || !wj || wi.from !== wj.from || wi.to !== wj.to) return null;
   const dur = frameDurAt(grid, j);
   if (dur === null) return null;
-  return { pts: grid.frames[j]!, frameDurSec: dur };
+  return { pts: to, frameDurSec: dur };
 }
 
 /**

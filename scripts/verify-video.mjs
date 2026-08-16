@@ -48,6 +48,10 @@ const {
   acceptForReview,
 } = await import('../src/video/timing.ts');
 const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble/repeats.ts');
+// The REAL probe path. frames.ts imports expo-video for types only, so it loads
+// standalone — which is what lets block 11h drive it against a fake decoder rather
+// than reasoning about what it would do.
+const { probeGridAround } = await import('../src/video/frames.ts');
 // The real grouping path — the ONLY thing that groups anything, now that
 // timing.ts's callerless seriesKey() copy of the rule is gone.
 const { buildProgression, seriesUid, sourceGroup } = await import('../src/roster/progression.ts');
@@ -593,6 +597,173 @@ console.log('\n11f. TIME-SCALED CLIPS ARE REFUSED, not corrected');
     /cannot be used to mark a time/i.test(acceptForReview('slow-motion').warn),
   );
   check('and an ordinary clip attaches silently', acceptForReview('normal'), { accept: true, warn: null });
+}
+
+console.log('\n11g. STEPPING NEVER CROSSES AN ISLAND');
+{
+  // The island bug's fifth site, and the one that survived four rounds of fixing
+  // it. measuredFps, isVariableRate, markAt and gapProbes all learned to ask which
+  // window a frame belongs to; stepFrames still did `i + delta` on the flat array.
+  //
+  // frameDurAt does not catch it. It asks whether the LANDING frame has a successor
+  // inside its own window, and a frame in the middle of the next island passes that
+  // happily. Only the pair of frames — where you left and where you arrived — shows
+  // the crossing.
+  const D = 1 / 30;
+  let g = emptyGrid();
+  const head = [];
+  for (let k = 0; k < 6; k += 1) head.push(k * D);
+  g = ingestFrames(g, { from: 0, to: 6 * D }, head);
+  const tail = [];
+  for (let k = 0; k < 6; k += 1) tail.push(20 + k * D);
+  g = ingestFrames(g, { from: 20, to: 20 + 6 * D }, tail);
+
+  check('two windows, twelve frames, one array', g.frames.length, 12);
+  check('and the array hides the gap', g.windows.length, 2);
+
+  // Standing on frame 2 of the head island. Frames 3 and 4 are real neighbours;
+  // frame 5 is the last of its window so its duration is unknown; anything beyond
+  // is a different part of the clip.
+  const at = 2 * D;
+  near('+1 is the next frame', stepFrames(g, at, 1).pts, 3 * D, 1e-9);
+  near('+2 likewise', stepFrames(g, at, 2).pts, 4 * D, 1e-9);
+  check('+3 refused — last frame of the window, duration unknown', stepFrames(g, at, 3), null);
+
+  // THE SIGNATURE THAT MAKES THIS SO BAD: before the fix, +3 was refused and +4
+  // succeeded, twenty seconds away. The refusal was bypassed by pressing HARDER,
+  // which is exactly what a coach does when the arrows appear to do nothing — and
+  // the step worker coalesces held presses into one large delta, so it is a normal
+  // way to use the screen rather than a stress test.
+  check('+4 does not jump to the next island', stepFrames(g, at, 4), null);
+  check('nor +5', stepFrames(g, at, 5), null);
+  check('nor +8', stepFrames(g, at, 8), null);
+
+  // Backwards too. The same arithmetic, the same hole.
+  const at2 = 20 + 2 * D;
+  near('-1 within the island', stepFrames(g, at2, -1).pts, 20 + D, 1e-9);
+  check('-3 refused at the edge', stepFrames(g, at2, -3), null);
+  check('-4 does not fall back into the head island', stepFrames(g, at2, -4), null);
+
+  // A CONTIGUOUS grid must be unaffected — the fix must refuse gaps, not distance.
+  let one = emptyGrid();
+  const all = [];
+  for (let k = 0; k < 12; k += 1) all.push(k * D);
+  one = ingestFrames(one, { from: 0, to: 12 * D }, all);
+  check('one window, one island', one.windows.length, 1);
+  near('a long step inside one island is fine', stepFrames(one, 2 * D, 8).pts, 10 * D, 1e-9);
+  check('and the window edge still refuses', stepFrames(one, 2 * D, 9), null);
+}
+
+console.log('\n11h. PROBING STOPS AT THE END OF THE CLIP — and still finds the last frame');
+{
+  // WALKED, NOT REASONED ABOUT. Narrowing coverage near a window edge has already
+  // produced one stepping regression on this screen: the last frame of a window has
+  // no successor, so markAt refuses it, so the USABLE region is a frame narrower
+  // than the covered one at each end. Cutting the tail probes wholesale would take
+  // another frame off that — silently, and only at the finish mark.
+  //
+  // So this drives the real probeGridAround against a decoder that behaves like
+  // AVFoundation (a request past the end returns the last frame), then walks a mark
+  // through the final window one press at a time.
+  // A PARTIAL FINAL FRAME, because that is the real case. Clip durations are not
+  // multiples of the frame period, so the last frame is a short remainder — here
+  // 10ms of a 33ms period. A rescue probe aimed half a frame back would land in
+  // frame 59 and never discover frame 60, which is the failure this block exists to
+  // make visible: it costs the SECOND-to-last frame, one further in than it looks.
+  const FPS = 30;
+  const D = 1 / FPS;
+  const DURATION = 2.01; // frames 0..60; frame 60 starts at 2.000 and runs 10ms
+  const LAST = 60;
+  /** The last frame that can be MARKED: 60 has no successor, so its length is
+   *  unknown and an error bar computed from it would be invented. */
+  const LAST_MARKABLE = LAST - 1;
+
+  const fakePlayer = () => {
+    let calls = 0;
+    return {
+      duration: DURATION,
+      seen: () => calls,
+      generateThumbnailsAsync: async ([t]) => {
+        calls += 1;
+        if (!(t >= 0)) return [];
+        // AVFoundation clamps a request past the end to the last frame rather than
+        // failing — which is why the unbounded version looked harmless.
+        const i = Math.min(LAST, Math.floor(t / D + 1e-9));
+        return [{ actualTime: i * D }];
+      },
+    };
+  };
+
+  // Centred a few frames back from the end, NOT on the last frame. Anchoring on the
+  // final frame would let the anchor call discover it single-handed and hide
+  // whether the tail probes did their job at all.
+  const p = fakePlayer();
+  const r = await probeGridAround(p, emptyGrid(), 58 * D, D);
+
+  // 1 anchor + the aligned probes that fall inside the clip + ONE kept tail probe.
+  // The point is not the exact number but that it is far below the unbounded 18.
+  truthy(`the tail costs fewer than 18 calls (was ${r.calls})`, r.calls < 18);
+  truthy('and more than a bare anchor', r.calls > 1);
+
+  // THE FRAME THAT MATTERS. Without the kept tail probe the last frame is never
+  // discovered, and then the second-to-last has no successor and becomes
+  // unmarkable — the regression, one frame further in than it looks.
+  const has = (i) => r.grid.frames.some((f) => Math.abs(f - i * D) < 1e-6);
+  truthy('the short final frame was found', has(LAST));
+  truthy('and so was the one before it', has(LAST_MARKABLE));
+  // The consequence, stated as the coach meets it rather than as a frame list.
+  truthy('so the last markable frame really is markable', markAt(r.grid, LAST_MARKABLE * D) !== null);
+
+  // WALK IT. Start well inside the probed tail and press "next frame" repeatedly,
+  // asserting each press moves exactly one frame until the clip legitimately runs
+  // out. A stall shows up as a refusal arriving EARLY; a crossing shows up as a
+  // jump. Neither can hide in an aggregate.
+  let at = (LAST - 6) * D;
+  const walked = [];
+  for (let press = 0; press < 10; press += 1) {
+    const m = stepFrames(r.grid, at, 1);
+    if (!m) break;
+    walked.push(Math.round(m.pts / D));
+    at = m.pts;
+  }
+  check('every press advances exactly one frame', walked, [
+    LAST - 5,
+    LAST - 4,
+    LAST - 3,
+    LAST - 2,
+    LAST - 1,
+  ]);
+
+  // WHERE IT STOPS IS THE WHOLE ASSERTION. Stopping at 59 is correct — frame 60 has
+  // no successor. Stopping at 58 is the regression, and it is invisible on device:
+  // the arrows simply go dead one frame early, at the finish mark, where the coach
+  // is least likely to blame the tool.
+  check('the walk ends on the last MARKABLE frame', walked[walked.length - 1], LAST_MARKABLE);
+  check('and one more press is refused', stepFrames(r.grid, LAST_MARKABLE * D, 1), null);
+
+  // The drag clamp agrees with the walk, so dragging and stepping cannot disagree
+  // about where the end of the clip is.
+  const clamp = lastMarkableTime(DURATION, D);
+  truthy('the drag clamp stops no later than the walk', Math.floor(clamp / D + 1e-9) <= LAST_MARKABLE);
+  truthy('and no earlier than one frame before it', Math.floor(clamp / D + 1e-9) >= LAST_MARKABLE - 1);
+
+  // MID-CLIP IS UNCHANGED. The clamp must cost nothing where the tail is not near.
+  const p2 = fakePlayer();
+  const mid = await probeGridAround(p2, emptyGrid(), 1.0, D);
+  check('a mid-clip probe still costs anchor plus seventeen', mid.calls, 18);
+
+  // And a walk through the middle advances one frame at a time for as far as the
+  // window reaches, with no refusal in the interior.
+  let at2 = 1.0;
+  let steps = 0;
+  for (let press = 0; press < 6; press += 1) {
+    const m = stepFrames(mid.grid, at2, 1);
+    if (!m) break;
+    near(`mid-clip press ${press + 1} moves one frame`, m.pts - at2, D, 1e-6);
+    at2 = m.pts;
+    steps += 1;
+  }
+  check('six presses, six frames, no early refusal', steps, 6);
 }
 
 console.log('\n12. FAN-OUT batching');
