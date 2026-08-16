@@ -858,8 +858,9 @@ export default function VideoMarkScreen({
           <Text style={styles.caveat}>
             Video timing is not gate-accurate. Beyond the ±{timing ? timing.quantSdMs.toFixed(0) : '—'}ms
             above, a camera that is not square to the finish line and the body part you judge add more
-            — around {BODY_PART_BIAS_MS}ms for the latter. Video runs are charted separately from gate
-            runs for that reason.
+            — around {BODY_PART_BIAS_MS}ms for the latter, in one direction rather than either. Video
+            runs share a chart with gate runs and are marked on it, so that difference stays visible
+            without splitting the drill in two.
           </Text>
 
           {/* Attribution. A video run is not a different kind of record, so it

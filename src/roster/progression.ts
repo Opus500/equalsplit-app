@@ -9,13 +9,29 @@
 // comparable, so putting them on one y-axis would draw a "trend" that is really just
 // the athlete alternating between two distances.
 //
-// The same rule now extends to HOW the time was produced. A gate fires on the first
-// thing through the beam; a coach judging a video frame reads the torso. At 8 m/s
-// that is a systematic ~37ms in one direction — a bias, not noise, so it never
-// averages out no matter how many runs accumulate. Mixing them would draw a step
-// change on the day the coach picked up their phone instead of the gates. So the
-// group key is drill AND source, and the split is structural rather than a naming
-// convention someone has to remember.
+// HOW the time was produced splits a series only when the two ways disagree by more
+// than the thing being measured. That is one line, drawn deliberately, and it does
+// not fall in the same place for every source:
+//
+//   gate + video  ONE series. A gate fires on the first thing through the beam; a
+//                 coach judging a video frame reads the torso, and that is a
+//                 systematic difference in one direction rather than noise. But it
+//                 is bounded by a body, roughly a frame either way at 30fps, and a
+//                 30m is a 30m — splitting it hid runs behind a second half-empty
+//                 chart, and with MIN_SERIES_RUNS at 2 the split could push BOTH
+//                 halves below the threshold and chart neither. Video points are
+//                 MARKED instead, so the difference is visible where it matters
+//                 without costing the athlete their line.
+//
+//   hand          ITS OWN series, unchanged. A hand start is human reaction time,
+//                 ~200ms (HAND_START_ERROR_MS) — not a bias you can mark and move
+//                 past, but an error larger than a season's improvement, and with
+//                 the spread to match. Track and field converts between hand and
+//                 electronic times rather than plotting them together, for exactly
+//                 this reason. Merging it would not blur the trend; it would BE the
+//                 trend.
+//
+// So the group key is drill AND source GROUP, where video and gate share a group.
 
 /**
  * Fewest runs in one drill before a graph is drawn.
@@ -42,6 +58,20 @@ const Y_PAD = 0.12;
  * and the raw_json reader that produces it — is src/video/timing.ts.
  */
 export type TimeSource = 'gate' | 'hand' | 'video';
+
+/**
+ * Which SERIES a time source belongs to — the grouping key, not the source itself.
+ *
+ * Two values, not three, and that is the whole of the merge: 'timed' holds gate and
+ * video together, 'hand' stays alone. Kept as a named type rather than an inline
+ * ternary so the rule has one home and a test can point at it.
+ */
+export type SeriesGroup = 'timed' | 'hand';
+
+/** See SeriesGroup. Unknown folds to gate before it gets here. */
+export function sourceGroup(source: TimeSource): SeriesGroup {
+  return source === 'hand' ? 'hand' : 'timed';
+}
 
 export type ProgressionRun = {
   id: string;
@@ -80,6 +110,15 @@ export type SeriesPoint = {
   runId: string;
   elapsedMs: number;
   createdAt: number;
+  /**
+   * How THIS point was timed.
+   *
+   * On the point rather than only on the series, because a series can now hold more
+   * than one source. This is what lets the chart mark a video point and the readout
+   * say how the number was got — the merge is only defensible if the distinction
+   * survives it somewhere visible.
+   */
+  timeSource: TimeSource;
   /** ties count as best — a matched PB is still a PB */
   isBest: boolean;
   /** see ProgressionRun.note */
@@ -95,9 +134,15 @@ export type SeriesPoint = {
 export type Series = {
   drillId: string;
   drillName: string;
-  /** what produced these times. Every point in a series shares it — that is the
-   *  whole point of the split. */
-  timeSource: TimeSource;
+  /** which bucket this series is — see SeriesGroup. NOT "what produced these
+   *  times": a 'timed' series can hold gate and video points together. */
+  group: SeriesGroup;
+  /** the distinct sources actually present, in a stable order. One entry is the
+   *  ordinary case; two means gate and video are sharing this line. */
+  sources: TimeSource[];
+  /** shorthand for sources.length > 1. The caveat that a trend is drawn across two
+   *  ways of measuring belongs on the chart, not in a help page. */
+  mixed: boolean;
   /** chronological, oldest first */
   points: SeriesPoint[];
   bestMs: number;
@@ -137,6 +182,9 @@ export type Progression = {
   hasGraphable: boolean;
 };
 
+/** Stable reporting order for Series.sources. */
+const ORDERED_SOURCES: TimeSource[] = ['gate', 'video', 'hand'];
+
 function isUsable(r: ProgressionRun): boolean {
   return Number.isFinite(r.elapsedMs) && r.elapsedMs > 0;
 }
@@ -171,7 +219,7 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
   let invalidRuns = 0;
   const groups = new Map<
     string,
-    { drillId: string; source: TimeSource; name: string; runs: ProgressionRun[] }
+    { drillId: string; group: SeriesGroup; name: string; runs: ProgressionRun[] }
   >();
 
   for (const r of runs) {
@@ -190,17 +238,20 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
         userNote: r.userNote ?? null,
         clipId: r.clipId ?? null,
         backdated: r.backdated ?? false,
+        timeSource: r.timeSource ?? 'gate',
       });
       continue;
     }
-    // Drill AND source. Absent folds to gate: every run recorded before the field
-    // existed is gate-timed, and a fourth "unknown" bucket would split the whole
-    // of an existing season in half for no gain.
+    // Drill AND source GROUP — so gate and video land together and hand does not.
+    // Absent folds to gate: every run recorded before the field existed is
+    // gate-timed, and an "unknown" bucket would split an existing season in half
+    // for no gain.
     const source: TimeSource = r.timeSource ?? 'gate';
-    const key = `${r.drillId}|${source}`;
+    const group = sourceGroup(source);
+    const key = `${r.drillId}|${group}`;
     let g = groups.get(key);
     if (!g) {
-      g = { drillId: r.drillId, source, name: r.drillName?.trim() || 'Untitled drill', runs: [] };
+      g = { drillId: r.drillId, group, name: r.drillName?.trim() || 'Untitled drill', runs: [] };
       groups.set(key, g);
     }
     // A later row carrying a name wins over a blank one, so a renamed drill shows
@@ -217,10 +268,15 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
     const times = sorted.map((r) => r.elapsedMs);
     const bestMs = Math.min(...times);
     const worstMs = Math.max(...times);
+    // Declared order, not encounter order: a series must not report its sources
+    // differently depending on which run happened to come first.
+    const present = ORDERED_SOURCES.filter((src) => sorted.some((r) => (r.timeSource ?? 'gate') === src));
     series.push({
       drillId: g.drillId,
       drillName: g.name,
-      timeSource: g.source,
+      group: g.group,
+      sources: present,
+      mixed: present.length > 1,
       points: sorted.map((r) => ({
         runId: r.id,
         elapsedMs: r.elapsedMs,
@@ -230,6 +286,7 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
         userNote: r.userNote ?? null,
         clipId: r.clipId ?? null,
         backdated: r.backdated ?? false,
+        timeSource: r.timeSource ?? 'gate',
       })),
       bestMs,
       worstMs,
@@ -267,26 +324,39 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
 /**
  * Display title for a series.
  *
- * A gate series reads exactly as it always did — no suffix — so nothing about an
- * existing chart changes. The suffix appears only on times that are NOT gate-timed,
- * which is where the coach needs to be told, and it doubles as the visible reason
- * two series of the same drill now sit side by side in the pager.
+ * The drill's own name, with a suffix only where two series of the SAME drill can
+ * sit side by side in the pager — which since the merge is the hand-started case
+ * alone. A video series is titled "30m" like any other, because it is the athlete's
+ * 30m; which runs came off a phone is said per POINT, where the difference actually
+ * applies, rather than in a heading that would also be describing the gate runs
+ * sharing the line.
  */
 export function seriesTitle(s: Series): string {
-  if (s.timeSource === 'gate') return s.drillName;
-  return `${s.drillName} · ${s.timeSource === 'video' ? 'video' : 'hand start'}`;
+  return s.group === 'hand' ? `${s.drillName} · hand start` : s.drillName;
+}
+
+/** How one point was timed, for the chart readout. Gate is unlabelled — it is the
+ *  baseline every other source is being compared to. */
+export function pointSourceLabel(source: TimeSource): string | null {
+  if (source === 'video') return 'video-timed';
+  if (source === 'hand') return 'hand-started';
+  return null;
 }
 
 /**
  * Stable unique identity for a series — for React keys and for "did the series
  * change?" comparisons.
  *
- * drillId ALONE is no longer unique: since the source split, one drill can produce
- * a gate series and a video series at the same time. Keying a list on drillId would
- * give React duplicate keys and let it reuse the wrong chart's state.
+ * drillId ALONE is not unique: one drill can produce a timed series and a
+ * hand-started one at the same time. Keying a list on drillId would give React
+ * duplicate keys and let it reuse the wrong chart's state.
+ *
+ * The GROUP, never the sources. A series' uid must not change when a video run
+ * joins a gate series — that would remount the chart and drop the coach's selection
+ * for a reason they did nothing to cause.
  */
 export function seriesUid(s: Series): string {
-  return `${s.drillId}|${s.timeSource}`;
+  return `${s.drillId}|${s.group}`;
 }
 
 /**

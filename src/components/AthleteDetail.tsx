@@ -143,9 +143,10 @@ export function AthleteDetailModal({
             // One helper so the chart, this list and History cannot disagree.
             createdAt: effectiveRunDate(r.performed_at, r.created_at),
             backdated: isBackdated(r.performed_at, r.created_at),
-            // Drill AND source. A gate time and a video time of the same distance
-            // are not comparable — the bias between them is systematic — so they
-            // are kept in separate series rather than trusted to a naming habit.
+            // Drill AND source GROUP. A gate time and a video time of the same
+            // distance now share a series and the video points are marked; a
+            // hand-started time still does not, because its error is bigger than
+            // the trend. buildProgression owns which is which.
             timeSource: seriesTimeSource(r.raw_json),
             userNote: r.note,
             // From the COLUMN, not raw_json. Attaching footage to a gate run must
@@ -778,9 +779,9 @@ function ChartPager({
             onMomentumScrollEnd={onScroll}
             decelerationRate="fast"
           >
-            {/* seriesUid, not drillId: since the source split one drill can produce
-                both a gate and a video series, and duplicate keys would let React
-                reuse the wrong chart's state. */}
+            {/* seriesUid, not drillId: one drill can produce a timed series and a
+                hand-started one, and duplicate keys would let React reuse the wrong
+                chart's state. */}
             {series.map((s) => (
               <View key={seriesUid(s)} style={{ width: pageW }}>
                 <ProgressionChart
@@ -958,6 +959,11 @@ function RunList({
                   in the list next to the time rather than inside the expanded
                   row: a strange-looking chart has to be explainable at a glance. */}
               {p.backdated ? <Text style={styles.backdated}>BACKDATED</Text> : null}
+              {/* Which runs on this line came off a phone. In the LIST as well as on
+                  the chart, because at a season's density the chart drops ordinary
+                  dots and the shape marker goes with them — this is where the
+                  distinction survives when the plot can no longer carry it. */}
+              {p.timeSource === 'video' ? <Text style={styles.videoTimed}>VIDEO</Text> : null}
               <View style={styles.runMid}>
                 <Text style={styles.runDate}>{listDate(p.createdAt)}</Text>
                 {/* The derived shape (a rep set's splits, a hand start) and the
@@ -1154,6 +1160,7 @@ const styles = StyleSheet.create({
   actionVideo: { color: '#60a5fa' },
   hasVideo: { color: '#60a5fa', fontSize: 10 },
   backdated: { color: '#fbbf24', fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
+  videoTimed: { color: '#a78bfa', fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
   dots: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, marginTop: 2 },
   dotHit: { paddingHorizontal: 5, paddingVertical: 8 },
   dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#334155' },

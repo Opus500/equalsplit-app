@@ -20,6 +20,7 @@ import { type LayoutChangeEvent, Pressable, StyleSheet, Text, View } from 'react
 import {
   MIN_SERIES_RUNS,
   formatMs,
+  pointSourceLabel,
   seriesTitle,
   xFraction,
   yBounds,
@@ -160,6 +161,15 @@ export function ProgressionChart({
         </Text>
       </View>
 
+      {/* Said once, on the chart, when the line is drawn across two ways of
+          measuring. Gate and video share a series deliberately — a 30m is a 30m —
+          but the difference between a beam break and a judged frame is systematic,
+          not noise, so a trend spanning both has to admit it. Absent on the ordinary
+          single-source chart, because a caveat that is always there is wallpaper. */}
+      {series.mixed ? (
+        <Text style={styles.mixed}>■ video-timed · read against gate times with care</Text>
+      ) : null}
+
       {/* Best and latest only. A first→latest delta reads as a verdict on two
           arbitrary points — the chart already shows the shape between them. */}
       <View style={styles.statRow}>
@@ -233,6 +243,11 @@ export function ProgressionChart({
                 // latest, or whatever is selected.
                 if (dense && !p.isBest && !isLatest && !isSel) return null;
                 const size = isSel ? DOT_SEL : dense ? Math.max(dotSize, DOT_MIN + 3) : dotSize;
+                // SHAPE says how it was timed, COLOUR says whether it is the best.
+                // Two independent facts, two independent channels — so a video PB
+                // still reads as a PB and still reads as video, which is exactly the
+                // point on which a merged series could otherwise mislead.
+                const square = p.timeSource === 'video';
                 return (
                   <View
                     key={p.runId}
@@ -244,7 +259,7 @@ export function ProgressionChart({
                       {
                         width: size,
                         height: size,
-                        borderRadius: size / 2,
+                        borderRadius: square ? Math.min(2, size / 4) : size / 2,
                         left: p.x - size / 2,
                         top: p.y - size / 2,
                       },
@@ -260,7 +275,9 @@ export function ProgressionChart({
                   accessibilityRole="button"
                   accessibilityLabel={`Run ${i + 1} of ${n}, ${formatMs(p.elapsedMs)} seconds, ${shortDate(
                     p.createdAt,
-                  )}${p.isBest ? ', personal best' : ''}`}
+                  )}${p.isBest ? ', personal best' : ''}${
+                    pointSourceLabel(p.timeSource) ? `, ${pointSourceLabel(p.timeSource)}` : ''
+                  }`}
                   style={{
                     position: 'absolute',
                     left: p.x - colW / 2,
@@ -314,6 +331,13 @@ export function ProgressionChart({
               <Text style={styles.readoutText} numberOfLines={1}>
                 <Text style={styles.readoutStrong}>Run {(sel ?? 0) + 1}</Text> ·{' '}
                 {formatMs(shown.elapsedMs)}s · {shortDate(shown.createdAt)}
+                {/* HOW it was timed, on every selected point that is not a gate
+                    time. The dot's shape carries this at a glance; the readout is
+                    where it is stated in words, and it is the reason a merged
+                    series is not a claim that the two are interchangeable. */}
+                {pointSourceLabel(shown.timeSource) ? (
+                  <Text style={styles.sourceTag}> · {pointSourceLabel(shown.timeSource)}</Text>
+                ) : null}
                 {shown.isBest ? <Text style={styles.pbTag}>  ★ PB</Text> : null}
               </Text>
               {/* A multi-interval run's splits — one point on the axis, full
@@ -342,6 +366,7 @@ export function ProgressionChart({
         ) : (
           <Text style={styles.readoutHint} numberOfLines={1}>
             {dense ? 'Tap or step through runs · ★ best' : 'Tap a point for the run · ★ marks the best'}
+            {series.mixed ? ' · ■ video' : ''}
           </Text>
         )}
       </View>
@@ -387,6 +412,7 @@ const styles = StyleSheet.create({
   headRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 },
   drill: { color: '#fff', fontSize: 16, fontWeight: '800', flex: 1 },
   runCount: { color: '#64748b', fontSize: 12, fontWeight: '600' },
+  mixed: { color: '#a78bfa', fontSize: 10.5, fontWeight: '700', marginTop: 6 },
   statRow: { flexDirection: 'row', gap: 10, marginTop: 10, marginBottom: 14 },
   stat: { flex: 1 },
   statLabel: { color: '#64748b', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
@@ -446,6 +472,7 @@ const styles = StyleSheet.create({
   readoutStrong: { color: '#fff', fontWeight: '800' },
   readoutHint: { color: '#475569', fontSize: 12, flex: 1 },
   pbTag: { color: '#fbbf24', fontWeight: '800' },
+  sourceTag: { color: '#a78bfa', fontWeight: '700' },
   delBtn: {
     paddingHorizontal: 12,
     paddingVertical: 8,

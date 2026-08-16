@@ -33,7 +33,7 @@ export type TimeSource = 'gate' | 'hand' | 'video';
 
 /**
  * Read a run's time source back from storage. ONE helper, so History, the chart
- * and the series split cannot disagree about which times are comparable.
+ * and the series grouping cannot disagree about how a time was produced.
  *
  * Returns null when the row says nothing, which is every run recorded before this
  * existed. Those are gate-timed by construction, but claiming so from an absent
@@ -61,24 +61,15 @@ export function runTimeSource(raw: string | null | undefined): TimeSource | null
  *
  * Not the same call as `runTimeSource` returning null: the UI must never claim an
  * old run was gate-timed, but grouping has to put it somewhere, and every run
- * predating this field genuinely is gate-timed. Folding to a fourth "unknown"
- * bucket would split every existing series in half for no gain.
+ * predating this field genuinely is gate-timed. Folding to an "unknown" bucket
+ * would split every existing series in half for no gain.
+ *
+ * What the group DOES with the answer lives in progression.ts's sourceGroup —
+ * gate and video share a series, hand does not. There is no second copy of that
+ * rule here; there used to be, and it was free to drift.
  */
 export function seriesTimeSource(raw: string | null | undefined): TimeSource {
   return runTimeSource(raw) ?? 'gate';
-}
-
-/**
- * Group key for a progression series. Drill AND source — never drill alone.
- *
- * NOTE: the app does not call this. progression.ts builds the same key inline
- * because it must stay import-free, and seriesUid() there is what the UI uses.
- * This exists so verify-video can state the rule against the module that owns
- * TimeSource; the rule as the app enforces it is proved by verify-progression
- * block 15, against the real grouping path.
- */
-export function seriesKey(drillId: string, source: TimeSource): string {
-  return `${drillId}|${source}`;
 }
 
 // ------------------------------------------------------------------ marks

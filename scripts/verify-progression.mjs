@@ -10,8 +10,10 @@ import {
   MIN_Y_SPAN_MS,
   buildProgression,
   formatDelta,
+  pointSourceLabel,
   seriesTitle,
   seriesUid,
+  sourceGroup,
   xFraction,
   yBounds,
   yFraction,
@@ -341,12 +343,18 @@ console.log('\n14. degenerate inputs');
   check('but the count explains why the screen is empty', allUnlabeled.unlabeledRuns, 2);
 }
 
-console.log('\n15. a video run never shares a series with a gate run');
+console.log('\n15. video SHARES a series with gate; hand does not');
 {
-  // Same drill, same athlete, same distance — but a gate fires on the first thing
-  // through the beam while a coach marks the torso. That is a systematic offset in
-  // one direction, so a merged series would show a step change on the day they
-  // switched tools and read it as a performance change.
+  // REVERSED DELIBERATELY, and this block is where the reversal is recorded. It
+  // used to assert that a video run never shares a series with a gate run.
+  //
+  // The bias is real and unchanged: a gate fires on the first thing through the
+  // beam, a coach marks the torso, and that is a systematic offset in one
+  // direction. What changed is the judgement about which cost is larger. A 30m is
+  // a 30m, MIN_SERIES_RUNS is 2, and splitting could leave BOTH halves below the
+  // threshold and chart neither — a certain, everyday loss weighed against a
+  // bounded one. So the difference is MARKED rather than segregated, and the
+  // marking is what these assertions protect.
   const run = (id, at, ms, timeSource) => ({
     id,
     drillId: 'd30',
@@ -362,22 +370,37 @@ console.log('\n15. a video run never shares a series with a gate run');
     run('v1', 4, 4400, 'video'),
     run('v2', 5, 4380, 'video'),
   ]);
-  check('one drill, two sources, two series', p.series.length, 2);
+  check('one drill, one series', p.series.length, 1);
+  const merged = p.series[0];
+  check('holding every run in run order', merged.points.map((x) => x.runId), ['g1', 'g2', 'g3', 'v1', 'v2']);
 
-  const gate = p.series.find((s) => s.timeSource === 'gate');
-  const video = p.series.find((s) => s.timeSource === 'video');
-  check('the gate series holds only gate runs', gate.points.map((x) => x.runId), ['g1', 'g2', 'g3']);
-  check('the video series holds only video runs', video.points.map((x) => x.runId), ['v1', 'v2']);
-  check('they share a drill id', gate.drillId, video.drillId);
+  // The distinction has to SURVIVE the merge or the merge is a lie. Per point,
+  // because after grouping that is the only place it is still true.
+  check('each point says how it was timed', merged.points.map((x) => x.timeSource), [
+    'gate',
+    'gate',
+    'gate',
+    'video',
+    'video',
+  ]);
+  check('and the series knows it is mixed', merged.mixed, true);
+  check('naming both sources, in a stable order', merged.sources, ['gate', 'video']);
 
-  // The bias must not reach the stats. A merged series would have called the video
-  // runs a 0.2s decline; split, each series is judged against its own kind.
-  check('the gate best is a gate time', gate.bestMs, 4150);
-  check('and the video best is a video time', video.bestMs, 4380);
+  // The stats are now across both — which is the trade, stated out loud. The video
+  // runs are slower here, so the merged best is still a gate time, and the trend
+  // now has the change of tools inside it.
+  check('best is across the whole line', merged.bestMs, 4150);
+  check('and the trend spans both sources', merged.deltaMs, 4380 - 4200);
 
-  // Naming: gate reads exactly as it always did, so no existing chart changes.
-  check('a gate series is untitled by source', seriesTitle(gate), '30m');
-  check('a video series says so', seriesTitle(video), '30m · video');
+  // Title carries no source: it would be describing the gate runs too.
+  check('a merged series is titled by its drill alone', seriesTitle(merged), '30m');
+
+  // A video-only series is still just the drill's chart — the athlete's 30m, not a
+  // second-class one. mixed is false because nothing is mixed.
+  const videoOnly = buildProgression([run('v1', 1, 4400, 'video'), run('v2', 2, 4380, 'video')]);
+  check('a video-only series is titled by its drill', seriesTitle(videoOnly.series[0]), '30m');
+  check('and is not marked mixed', videoOnly.series[0].mixed, false);
+  check('though its points still say video', videoOnly.series[0].sources, ['video']);
 
   // Absent source folds to gate rather than making a third bucket.
   const legacy = buildProgression([
@@ -388,11 +411,36 @@ console.log('\n15. a video run never shares a series with a gate run');
   check('unknown and explicit gate are ONE series', legacy.series.length, 1);
   check('holding all three', legacy.series[0].points.length, 3);
   check('titled as it always was', seriesTitle(legacy.series[0]), '30m');
+  check('and not mixed — unknown IS gate', legacy.series[0].mixed, false);
 
-  // A hand start carries ~200ms of reaction error — the same argument as video.
-  const hand = buildProgression([run('h1', 1, 64000, 'hand'), run('h2', 2, 65000, 'hand'), run('g1', 3, 4200, 'gate')]);
-  check('hand-started runs split too', hand.series.length, 2);
-  check('and are labelled', seriesTitle(hand.series.find((s) => s.timeSource === 'hand')), '30m · hand start');
+  // THE LINE THAT DID NOT MOVE. A hand start is human reaction time, ~200ms
+  // (HAND_START_ERROR_MS) with the spread to match — not a bias you can mark and
+  // read past, but an error larger than a season's improvement. Merging it would
+  // not blur the trend, it would BE the trend.
+  const hand = buildProgression([
+    run('h1', 1, 4600, 'hand'),
+    run('h2', 2, 4650, 'hand'),
+    run('g1', 3, 4200, 'gate'),
+    run('v1', 4, 4250, 'video'),
+  ]);
+  check('hand-started runs still split off', hand.series.length, 2);
+  const handSeries = hand.series.find((x) => x.group === 'hand');
+  const timedSeries = hand.series.find((x) => x.group === 'timed');
+  check('the hand series holds only hand runs', handSeries.points.map((x) => x.runId), ['h1', 'h2']);
+  check('gate and video share the other', timedSeries.points.map((x) => x.runId), ['g1', 'v1']);
+  check('and the hand series is labelled', seriesTitle(handSeries), '30m · hand start');
+  check('the timed one is not', seriesTitle(timedSeries), '30m');
+
+  // The grouping rule itself, pinned directly rather than only through its effects.
+  check('video groups with gate', sourceGroup('video'), 'timed');
+  check('gate groups with gate', sourceGroup('gate'), 'timed');
+  check('hand stands alone', sourceGroup('hand'), 'hand');
+
+  // The readout's words. Gate is unlabelled BECAUSE it is the baseline; labelling
+  // it would put a tag on every point in the app, which is no signal at all.
+  check('a video point is named in words', pointSourceLabel('video'), 'video-timed');
+  check('a hand point too', pointSourceLabel('hand'), 'hand-started');
+  check('a gate point carries no tag', pointSourceLabel('gate'), null);
 }
 
 console.log('\n16. runs with no drill are LISTED but never a series');
@@ -441,11 +489,17 @@ console.log('\n16. runs with no drill are LISTED but never a series');
 console.log('\n17. seriesUid is UNIQUE per series — it is a React key');
 {
   // This exists because the bug already happened. When the source split landed,
-  // the pager was still keyed on drillId alone; one drill producing both a gate
-  // and a video series gave React duplicate keys, and React reuses a component's
-  // state across a duplicate — so one chart rendered with the other's selection.
-  // seriesUid was the fix and it had no test, which makes it the single most
-  // likely thing in this module to regress.
+  // the pager was still keyed on drillId alone; one drill producing two series
+  // gave React duplicate keys, and React reuses a component's state across a
+  // duplicate — so one chart rendered with the other's selection. seriesUid was
+  // the fix and it had no test, which makes it the single most likely thing in
+  // this module to regress.
+  //
+  // The merge SHRANK the number of ways to collide (gate and video now share a
+  // page) without removing them: one drill still produces a timed series and a
+  // hand-started one. The key is the GROUP, so a video run joining a gate series
+  // must not change that series' uid — a remount would drop the coach's selected
+  // point for a reason they did nothing to cause.
   const p = buildProgression([
     { id: 'g1', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
     { id: 'g2', drillId: 'd30', drillName: '30m', elapsedMs: 4150, createdAt: 2, timeSource: 'gate' },
@@ -457,7 +511,7 @@ console.log('\n17. seriesUid is UNIQUE per series — it is a React key');
   // THE INVARIANT, stated the way React consumes it: as many distinct keys as
   // there are pages. drillId alone would give 2 distinct values for 4 series.
   const uids = p.series.map(seriesUid);
-  check('one series per drill+source', p.series.length, 4);
+  check('one series per drill+group', p.series.length, 3);
   check('every series has a distinct uid', new Set(uids).size, uids.length);
   check(
     'where drillId ALONE would have collided',
@@ -465,20 +519,29 @@ console.log('\n17. seriesUid is UNIQUE per series — it is a React key');
     2,
   );
 
-  // Same drill, different source => different uid. Same source, different drill =>
+  // Same drill, different group => different uid. Same group, different drill =>
   // different uid. Both halves of the key have to be load-bearing or the collision
   // comes back from the other direction.
-  const uidOf = (source, drillId = 'd30') =>
-    seriesUid(p.series.find((s) => s.drillId === drillId && s.timeSource === source));
-  truthy('source alone separates them', uidOf('gate') !== uidOf('video'));
-  truthy('and so does drill alone', uidOf('gate') !== uidOf('gate', 'd40'));
+  const uidOf = (group, drillId = 'd30') =>
+    seriesUid(p.series.find((s) => s.drillId === drillId && s.group === group));
+  truthy('group alone separates them', uidOf('timed') !== uidOf('hand'));
+  truthy('and so does drill alone', uidOf('timed') !== uidOf('timed', 'd40'));
+
+  // THE MERGE'S OWN INVARIANT: the gate-and-video page carries the same key the
+  // gate-only page would have. Without this, filming one rep would remount the
+  // chart the coach was looking at.
+  const gateOnly = buildProgression([
+    { id: 'g1', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
+    { id: 'g2', drillId: 'd30', drillName: '30m', elapsedMs: 4150, createdAt: 2, timeSource: 'gate' },
+  ]);
+  check('a video run joining does not change the key', seriesUid(gateOnly.series[0]), uidOf('timed'));
 
   // STABLE across rebuilds, or React remounts every chart on each render.
   const again = buildProgression([
     { id: 'g1', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
     { id: 'g2', drillId: 'd30', drillName: '30m', elapsedMs: 4150, createdAt: 2, timeSource: 'gate' },
   ]);
-  check('the uid does not depend on what else was built', seriesUid(again.series[0]), uidOf('gate'));
+  check('the uid does not depend on what else was built', seriesUid(again.series[0]), uidOf('timed'));
 
   // A RENAME must not change it. The drill record is the identity; the name is a
   // label the coach can edit, and keying on it would remount the chart — losing
@@ -487,7 +550,7 @@ console.log('\n17. seriesUid is UNIQUE per series — it is a React key');
     { id: 'g1', drillId: 'd30', drillName: 'Thirty metres', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
     { id: 'g2', drillId: 'd30', drillName: 'Thirty metres', elapsedMs: 4150, createdAt: 2, timeSource: 'gate' },
   ]);
-  check('a renamed drill keeps its uid', seriesUid(renamed.series[0]), uidOf('gate'));
+  check('a renamed drill keeps its uid', seriesUid(renamed.series[0]), uidOf('timed'));
   truthy('even though the title changed', seriesTitle(renamed.series[0]) !== seriesTitle(again.series[0]));
 
   // Absent source folds to gate here exactly as it does in grouping, so a legacy
@@ -496,7 +559,7 @@ console.log('\n17. seriesUid is UNIQUE per series — it is a React key');
     { id: 'a', drillId: 'd30', drillName: '30m', elapsedMs: 4200, createdAt: 1 },
     { id: 'b', drillId: 'd30', drillName: '30m', elapsedMs: 4100, createdAt: 2, timeSource: 'gate' },
   ]);
-  check('unknown and gate share one uid', seriesUid(legacy.series[0]), uidOf('gate'));
+  check('unknown and gate share one uid', seriesUid(legacy.series[0]), uidOf('timed'));
   check('because they are one series', legacy.series.length, 1);
 }
 

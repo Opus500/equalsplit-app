@@ -19,7 +19,6 @@ const {
   VIDEO_MODE,
   runTimeSource,
   seriesTimeSource,
-  seriesKey,
   timeFromMarks,
   VIDEO_DECIMALS,
   formatVideoSeconds,
@@ -49,9 +48,9 @@ const {
   acceptForReview,
 } = await import('../src/video/timing.ts');
 const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble/repeats.ts');
-// The real grouping path, imported so block 3 can check that seriesKey — which no
-// app code calls — still describes what the app actually does.
-const { buildProgression, seriesUid } = await import('../src/roster/progression.ts');
+// The real grouping path — the ONLY thing that groups anything, now that
+// timing.ts's callerless seriesKey() copy of the rule is gone.
+const { buildProgression, seriesUid, sourceGroup } = await import('../src/roster/progression.ts');
 
 let failures = 0;
 const check = (label, got, want) => {
@@ -106,29 +105,39 @@ console.log('\n3. GROUPING folds unknown to gate, but the UI is never told that'
   check('grouping folds unknown to gate', seriesTimeSource('{"engine":"v2"}'), 'gate');
   check('while the display helper stays silent', runTimeSource('{"engine":"v2"}'), null);
 
+  // WHERE THE LINE IS DRAWN, read off the real grouping rule. Video joins gate
+  // because the difference between them is bounded by a body — roughly a frame
+  // either way. Hand does not, because human reaction time is larger than the
+  // trend being plotted and has the spread to match.
   const vid = videoRunRawJson({ startPts: 0, endPts: 4, fps: 30, quantSdMs: 13.6 });
-  truthy(
-    'a video run and a gate run of the SAME drill never share a key',
-    seriesKey('d1', seriesTimeSource(vid)) !== seriesKey('d1', seriesTimeSource(null)),
-  );
-  check('the same drill and source do share one', seriesKey('d1', 'video'), seriesKey('d1', 'video'));
-  truthy('and two drills never share one', seriesKey('d1', 'gate') !== seriesKey('d2', 'gate'));
+  const rest = restRepRawJson({ ms: 64000, closeUs: 1, closeAtMs: 1, lockoutMs: 1000, gateId: 1 });
+  check('a video run groups with gate', sourceGroup(seriesTimeSource(vid)), 'timed');
+  check('and so does a run that says nothing', sourceGroup(seriesTimeSource(null)), 'timed');
+  check('a hand-started rep stays apart', sourceGroup(seriesTimeSource(rest)), 'hand');
 
-  // TIED TO THE REAL GROUPING PATH, because seriesKey has no caller in the app:
-  // progression.ts builds the same key inline, since it must stay import-free. So
-  // everything above proved a rule against a COPY, and a change to either side
-  // would have left this block cheerfully proving a rule the app no longer
-  // followed. These two assertions are what make the copy provably in step.
+  // STATED THROUGH buildProgression, not through a second copy of the key.
+  // timing.ts used to export a seriesKey() with no caller in the app, so every
+  // assertion about grouping here proved a rule the app was free to stop
+  // following. It is deleted; buildProgression is the only thing that groups.
   const p = buildProgression([
-    { id: 'g', drillId: 'd1', drillName: '30m', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
-    { id: 'v', drillId: 'd1', drillName: '30m', elapsedMs: 4400, createdAt: 2, timeSource: 'video' },
+    { id: 'g', drillId: 'd1', drillName: '30m', elapsedMs: 4200, createdAt: 1, timeSource: seriesTimeSource(null) },
+    { id: 'v', drillId: 'd1', drillName: '30m', elapsedMs: 4400, createdAt: 2, timeSource: seriesTimeSource(vid) },
+    { id: 'h', drillId: 'd1', drillName: '30m', elapsedMs: 4600, createdAt: 3, timeSource: seriesTimeSource(rest) },
   ]);
-  check('the app really does split one drill by source', p.series.length, 2);
-  check(
-    'and seriesKey predicts exactly the keys it grouped by',
-    p.series.map(seriesUid).sort(),
-    [seriesKey('d1', 'gate'), seriesKey('d1', 'video')].sort(),
-  );
+  check('gate and video share a page, hand takes its own', p.series.length, 2);
+  check('and the keys say which is which', p.series.map(seriesUid).sort(), ['d1|hand', 'd1|timed']);
+
+  const timed = p.series.find((s) => s.group === 'timed');
+  check('the merged page names both its sources', timed.sources, ['gate', 'video']);
+  check('and every point still says its own', timed.points.map((x) => x.timeSource), ['gate', 'video']);
+
+  // Two drills never share a page. That rule is older than the source split and
+  // was never subordinate to it.
+  const two = buildProgression([
+    { id: 'a', drillId: 'd1', drillName: '30m', elapsedMs: 4200, createdAt: 1, timeSource: 'gate' },
+    { id: 'b', drillId: 'd2', drillName: '40yd', elapsedMs: 5200, createdAt: 2, timeSource: 'gate' },
+  ]);
+  check('two drills, two keys', new Set(two.series.map(seriesUid)).size, 2);
 }
 
 console.log('\n4. TWO MARKS to an elapsed time');
@@ -622,7 +631,7 @@ console.log('\n13. FILMSTRIP tiles');
 
 console.log(
   failures === 0
-    ? '\nRESULT: OK — video timing, series split and lazy grid rules hold.\n'
+    ? '\nRESULT: OK — video timing, series grouping and lazy grid rules hold.\n'
     : `\nRESULT: ${failures} FAILURE(S)\n`,
 );
 process.exit(failures === 0 ? 0 : 1);
