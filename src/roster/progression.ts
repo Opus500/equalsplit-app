@@ -64,6 +64,16 @@ export type ProgressionRun = {
   /** Stored video for this run, if any. Independent of `timeSource`: a gate run
    *  can carry review footage without being a video-TIMED run. */
   clipId?: string | null;
+  /**
+   * Whether `createdAt` is a date the coach set rather than when the row was
+   * written.
+   *
+   * Carried through to the point so the chart can MARK it. The x-axis is run
+   * order, so a backdated run does not merely sit further left — it changes which
+   * run is first, and therefore the series' whole trend. A chart with an odd shape
+   * needs its explanation on the chart, not one screen away.
+   */
+  backdated?: boolean;
 };
 
 export type SeriesPoint = {
@@ -78,6 +88,8 @@ export type SeriesPoint = {
   userNote: string | null;
   /** see ProgressionRun.clipId */
   clipId: string | null;
+  /** see ProgressionRun.backdated */
+  backdated: boolean;
 };
 
 export type Series = {
@@ -177,6 +189,7 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
         note: r.note ?? null,
         userNote: r.userNote ?? null,
         clipId: r.clipId ?? null,
+        backdated: r.backdated ?? false,
       });
       continue;
     }
@@ -216,6 +229,7 @@ export function buildProgression(runs: ProgressionRun[]): Progression {
         note: r.note ?? null,
         userNote: r.userNote ?? null,
         clipId: r.clipId ?? null,
+        backdated: r.backdated ?? false,
       })),
       bestMs,
       worstMs,

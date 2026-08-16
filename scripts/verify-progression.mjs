@@ -500,6 +500,36 @@ console.log('\n17. seriesUid is UNIQUE per series — it is a React key');
   check('because they are one series', legacy.series.length, 1);
 }
 
+console.log('\n18. a BACKDATED run sorts by the date it was given, and says it was given one');
+{
+  // The caller passes the EFFECTIVE date as createdAt (see effectiveRunDate), so
+  // grouping needs no special case — but the flag has to survive into the point,
+  // because the x-axis is run ORDER and a backdated run changes which run is
+  // first. A chart with an odd shape needs its explanation on the chart.
+  const p = buildProgression([
+    { id: 'a', drillId: 'd30', drillName: '30m', elapsedMs: 4400, createdAt: T0 + 10 * DAY },
+    { id: 'b', drillId: 'd30', drillName: '30m', elapsedMs: 4300, createdAt: T0 + 20 * DAY },
+    // Marked today from footage filmed months earlier: it belongs at the FRONT.
+    { id: 'old', drillId: 'd30', drillName: '30m', elapsedMs: 4500, createdAt: T0, backdated: true },
+  ]);
+  const s = p.series[0];
+  check('it sorts to the position its date earns', s.points.map((x) => x.runId), ['old', 'a', 'b']);
+  check('and carries the marker', s.points.map((x) => x.backdated), [true, false, false]);
+
+  // THE CONSEQUENCE the marker exists to explain: it is now firstMs, so the whole
+  // series trend is measured from a run recorded last.
+  check('the backdated run is the series baseline', s.firstMs, 4500);
+  check('so the trend is measured from it', s.deltaMs, 4300 - 4500);
+
+  // Absent flag defaults false rather than undefined, so a render can test it.
+  check('runs without the field are not marked', buildProgression([
+    { id: 'x', drillId: 'd', drillName: 'x', elapsedMs: 100, createdAt: T0 },
+  ]).series[0].points[0].backdated, false);
+  check('and neither are unlabelled ones', buildProgression([
+    { id: 'u', drillId: null, drillName: null, elapsedMs: 100, createdAt: T0 },
+  ]).unlabeled[0].backdated, false);
+}
+
 console.log('\n=============================');
 console.log(failures === 0 ? 'RESULT: OK — progression grouping and axis rules hold.' : `RESULT: ${failures} FAILURE(S)`);
 process.exitCode = failures === 0 ? 0 : 1;

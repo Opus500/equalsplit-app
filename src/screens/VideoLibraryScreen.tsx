@@ -27,16 +27,13 @@ import {
   Text,
   View,
 } from 'react-native';
-// The class-based API, not the legacy shim. saveToLibraryAsync now comes from
-// legacyWarnings and warns on every call; Asset.create is its replacement.
-// requestPermissionsAsync is exported from the module root and is NOT deprecated
-// — only the asset verbs moved.
-import { Asset, requestPermissionsAsync } from 'expo-media-library';
-
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
 import { countMissingClips, listVideoRuns, type VideoRunRow } from '../db/database';
 import {
+  CAMERA_ROLL_DENIED_MESSAGE,
+  CAMERA_ROLL_DENIED_TITLE,
   deleteClip,
+  exportClipToCameraRoll,
   formatBytes,
   listClips,
   shareClip,
@@ -123,16 +120,10 @@ export default function VideoLibraryScreen() {
   const exportToRoll = useCallback(async (entry: Entry) => {
     setWorking(entry.clip.id);
     try {
-      // Write-only permission: the app never needs to READ the camera roll to put
-      // something into it, and asking for full access to do a save is asking for
-      // more than the job requires.
-      const perm = await requestPermissionsAsync(true);
-      if (!perm.granted) {
-        Alert.alert('Photos access needed', 'EqualSplit needs permission to save into your camera roll.');
-        return;
-      }
-      await Asset.create(entry.clip.uri);
-      Alert.alert('Saved', 'The video is in your camera roll. It stays in the app too.');
+      const r = await exportClipToCameraRoll(entry.clip.id);
+      if (r === 'denied') Alert.alert(CAMERA_ROLL_DENIED_TITLE, CAMERA_ROLL_DENIED_MESSAGE);
+      else if (r === 'missing') Alert.alert('Video deleted', 'There is nothing left to save.');
+      else Alert.alert('Saved', 'The video is in your camera roll. It stays in the app too.');
     } catch (e) {
       Alert.alert('Could not save', String(e));
     } finally {

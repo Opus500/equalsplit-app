@@ -16,7 +16,7 @@ import { Share } from 'react-native';
 
 import { Directory, File, Paths } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
-import { Asset, MediaSubtype } from 'expo-media-library';
+import { Asset, MediaSubtype, requestPermissionsAsync } from 'expo-media-library';
 
 import type { TimeScale } from './timing';
 
@@ -135,6 +135,15 @@ export type PickResult =
        * file and that identity is only available at the moment of picking.
        */
       timeScale: TimeScale;
+      /**
+       * When the footage was CAPTURED, from the photo library, or null when there
+       * is no asset to ask.
+       *
+       * The point of reading it here: a coach marking a clip filmed last September
+       * should not have to type a date at all, and a date that is derived cannot be
+       * mistyped. Typing is the fallback, not the mechanism.
+       */
+      capturedAt: number | null;
     }
   | { status: 'cancelled' }
   | { status: 'denied' };
@@ -150,6 +159,18 @@ export type PickResult =
  * Returns 'unknown' rather than throwing or guessing. A clip picked from Files has
  * no PHAsset, `assetId` comes back null, and there is genuinely nothing to check.
  */
+export async function capturedAtOf(assetId: string | null | undefined): Promise<number | null> {
+  if (!assetId) return null;
+  try {
+    // Same `ph://` requirement as timeScaleOf — see the note there. This reads
+    // phAsset.creationDate, which is when the camera recorded it.
+    const at = await new Asset(`ph://${assetId}`).getCreationTime();
+    return Number.isFinite(at) && at ? at : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function timeScaleOf(assetId: string | null | undefined): Promise<TimeScale> {
   if (!assetId) return 'unknown';
   try {
@@ -215,7 +236,13 @@ export async function pickVideo(): Promise<PickResult> {
 
   const asset = res.canceled ? null : (res.assets[0] ?? null);
   if (!asset?.uri) return { status: 'cancelled' };
-  return { status: 'picked', uri: asset.uri, timeScale: await timeScaleOf(asset.assetId) };
+  // Both asked in parallel: two independent PHAsset property reads, and making
+  // the coach wait for them in sequence buys nothing.
+  const [timeScale, capturedAt] = await Promise.all([
+    timeScaleOf(asset.assetId),
+    capturedAtOf(asset.assetId),
+  ]);
+  return { status: 'picked', uri: asset.uri, timeScale, capturedAt };
 }
 
 /**
@@ -334,6 +361,34 @@ export async function shareClip(clipId: string | null | undefined): Promise<bool
   await Share.share({ url: clip.uri });
   return true;
 }
+
+/**
+ * Copy a stored clip into the camera roll.
+ *
+ * Alongside shareClip and for the same reason: getting a video OUT of the app is
+ * a thing you do to a clip, and the Videos pane was only the first place it
+ * appeared. Returns 'missing' rather than throwing when the file is gone, so a
+ * caller can say something better than a raw error.
+ *
+ * WRITE-ONLY permission. The app never needs to READ the camera roll to put
+ * something into it, and asking for full access to perform a save is asking for
+ * more than the job requires.
+ */
+export async function exportClipToCameraRoll(
+  clipId: string | null | undefined,
+): Promise<'saved' | 'missing' | 'denied'> {
+  if (!clipId) return 'missing';
+  const clip = getClip(clipId);
+  if (!clip) return 'missing';
+  const perm = await requestPermissionsAsync(true);
+  if (!perm.granted) return 'denied';
+  await Asset.create(clip.uri);
+  return 'saved';
+}
+
+export const CAMERA_ROLL_DENIED_TITLE = 'Photos access needed';
+export const CAMERA_ROLL_DENIED_MESSAGE =
+  'EqualSplit needs permission to save into your camera roll.';
 
 /** Total bytes across all stored clips — the honest figure for a storage line. */
 export function totalBytes(): number {

@@ -324,6 +324,24 @@ export async function ensureSchema(db: MigrationDb): Promise<void> {
   if (!runCols.includes('clip_id')) {
     await db.execAsync('ALTER TABLE runs ADD COLUMN clip_id TEXT');
   }
+  // When the run actually HAPPENED, as against created_at, which is when the row
+  // was written. NULL for every run timed live — for those the two are the same
+  // thing by construction, and storing a duplicate would invite them to disagree.
+  //
+  // A SECOND COLUMN rather than editing created_at, and the reason is the same one
+  // that put the clip in a column instead of raw_json: two different questions.
+  // Overwriting created_at would destroy the ability to tell a backdated run from
+  // one recorded at the time — permanently, with no way back — and provenance is
+  // exactly what makes a correction reversible.
+  //
+  // Only the progression chart and the run lists read it; sessions deliberately do
+  // NOT. A session is a record of an afternoon, and moving a run out of the one it
+  // was recorded in is a bigger claim than fixing where a point sits on a chart.
+  //
+  // No SCHEMA_VERSION bump — a pure column add with nothing to backfill.
+  if (!runCols.includes('performed_at')) {
+    await db.execAsync('ALTER TABLE runs ADD COLUMN performed_at INTEGER');
+  }
 
   const sessionCols = await tableColumns(db, 'sessions');
   if (!sessionCols.includes('custom_name')) {

@@ -37,7 +37,13 @@ import { REPEAT_MODE, parseRepSetJson, runStartSource } from '../ble/repeats';
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
-import { shareClip } from '../video/clips';
+import {
+  CAMERA_ROLL_DENIED_MESSAGE,
+  CAMERA_ROLL_DENIED_TITLE,
+  exportClipToCameraRoll,
+  shareClip,
+} from '../video/clips';
+import { effectiveRunDate, isBackdated } from '../runs/rundate';
 import { runShareLine, sessionShareText, shareText } from '../share';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
@@ -83,6 +89,17 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
    * are "share this run" and they send completely different things, so both exist
    * and each says which it is.
    */
+  const exportRunVideo = useCallback(async (clipId: string | null) => {
+    try {
+      const r = await exportClipToCameraRoll(clipId);
+      if (r === 'denied') Alert.alert(CAMERA_ROLL_DENIED_TITLE, CAMERA_ROLL_DENIED_MESSAGE);
+      else if (r === 'missing') Alert.alert('Video deleted', 'There is nothing left to save.');
+      else Alert.alert('Saved', 'The video is in your camera roll. It stays in the app too.');
+    } catch (e) {
+      Alert.alert('Could not save', String(e));
+    }
+  }, []);
+
   const shareRunVideo = useCallback(async (clipId: string | null) => {
     try {
       if (!(await shareClip(clipId))) {
@@ -317,6 +334,18 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                   </View>
                 ) : null}
                 {handStarted ? <Text style={styles.handTag}>hand</Text> : null}
+                {/* FLAGGED, not re-grouped. A session is a record of an afternoon,
+                    and moving a run out of the one it was recorded in is a bigger
+                    claim than fixing where a point sits on a chart — so the run
+                    stays in today's session and says that it did not happen today. */}
+                {isBackdated(item.performed_at, item.created_at) ? (
+                  <Text style={styles.backdatedTag}>
+                    {new Date(effectiveRunDate(item.performed_at, item.created_at)).toLocaleDateString(
+                      undefined,
+                      { day: 'numeric', month: 'short', year: '2-digit' },
+                    )}
+                  </Text>
+                ) : null}
                 <Text style={styles.runTotal}>{fmt(totalOf(item))}s</Text>
                 {/* Only when there is footage. Absent rather than disabled: a
                     permanently greyed control on most rows is noise. */}
@@ -342,6 +371,16 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                     accessibilityLabel="Share this run's video"
                   >
                     <Text style={styles.clipShareGlyph}>⇪</Text>
+                  </Pressable>
+                ) : null}
+                {item.clip_id ? (
+                  <Pressable
+                    onPress={() => void exportRunVideo(item.clip_id)}
+                    hitSlop={8}
+                    style={styles.rowIcon}
+                    accessibilityLabel="Save this run's video to the camera roll"
+                  >
+                    <Text style={styles.clipShareGlyph}>⤓</Text>
                   </Pressable>
                 ) : null}
                 <Pressable
@@ -723,6 +762,16 @@ const styles = StyleSheet.create({
   shareGlyph: { color: '#60a5fa', fontSize: 16, fontWeight: '800' },
   playGlyph: { color: '#34d399', fontSize: 14, fontWeight: '800' },
   clipShareGlyph: { color: '#34d399', fontSize: 15, fontWeight: '800' },
+  backdatedTag: {
+    color: '#fbbf24',
+    fontSize: 10,
+    fontWeight: '700',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#fbbf24',
+    borderRadius: 4,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+  },
   delText: { color: '#b4541f', fontSize: 16, fontWeight: '800' },
   headerShare: {
     backgroundColor: '#1f2937',

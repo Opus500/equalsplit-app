@@ -31,7 +31,10 @@ import {
 } from '../db/database';
 import { DrillPickerModal } from './DrillPicker';
 import {
+  CAMERA_ROLL_DENIED_MESSAGE,
+  CAMERA_ROLL_DENIED_TITLE,
   deleteClip,
+  exportClipToCameraRoll,
   formatBytes,
   getClip,
   importClip,
@@ -41,6 +44,7 @@ import {
   pickVideo,
 } from '../video/clips';
 import { acceptForReview, seriesTimeSource } from '../video/timing';
+import { effectiveRunDate, isBackdated } from '../runs/rundate';
 import { VideoPlayerModal } from './VideoPlayerModal';
 import {
   HAND_START_ERROR_MS,
@@ -125,7 +129,10 @@ export function AthleteDetailModal({
             drillId: r.drill_id,
             drillName: r.drill_name,
             elapsedMs,
-            createdAt: r.created_at,
+            // THE EFFECTIVE date — what the coach said, else when it was written.
+            // One helper so the chart, this list and History cannot disagree.
+            createdAt: effectiveRunDate(r.performed_at, r.created_at),
+            backdated: isBackdated(r.performed_at, r.created_at),
             // Drill AND source. A gate time and a video time of the same distance
             // are not comparable — the bias between them is systematic — so they
             // are kept in separate series rather than trusted to a naming habit.
@@ -389,6 +396,19 @@ export function AthleteDetailModal({
    * in a list of clips to share a run you were already looking at. Same helper the
    * library calls.
    */
+  /** Save this run's video into the camera roll. Same helper the library calls. */
+  const exportVideo = useCallback(async (runId: string) => {
+    const clipId = rows?.find((r) => r.id === runId)?.clip_id ?? null;
+    try {
+      const r = await exportClipToCameraRoll(clipId);
+      if (r === 'denied') Alert.alert(CAMERA_ROLL_DENIED_TITLE, CAMERA_ROLL_DENIED_MESSAGE);
+      else if (r === 'missing') Alert.alert('Video deleted', 'There is nothing left to save.');
+      else Alert.alert('Saved', 'The video is in your camera roll. It stays in the app too.');
+    } catch (e) {
+      Alert.alert('Could not save', String(e));
+    }
+  }, [rows]);
+
   const shareVideo = useCallback(async (runId: string) => {
     const clipId = rows?.find((r) => r.id === runId)?.clip_id ?? null;
     try {
@@ -475,6 +495,7 @@ export function AthleteDetailModal({
                 onEditNote={editNote}
                 onAttachVideo={(id) => void attachVideo(id)}
                 onShareVideo={(id) => void shareVideo(id)}
+                onExportVideo={(id) => void exportVideo(id)}
                 onReplaceVideo={replaceVideo}
                 onRemoveVideo={removeVideo}
                 attachingRunId={attaching}
@@ -574,6 +595,7 @@ function ChartPager({
   onEditNote,
   onAttachVideo,
   onShareVideo,
+  onExportVideo,
   onReplaceVideo,
   onRemoveVideo,
   attachingRunId,
@@ -591,6 +613,7 @@ function ChartPager({
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
   onShareVideo?: (runId: string) => void;
+  onExportVideo?: (runId: string) => void;
   onReplaceVideo?: (runId: string) => void;
   onRemoveVideo?: (runId: string) => void;
   /** Which run is mid-import, so the button can say so. Copying a clip is a file
@@ -670,6 +693,7 @@ function ChartPager({
       onEditNote={onEditNote}
       onAttachVideo={onAttachVideo}
       onShareVideo={onShareVideo}
+      onExportVideo={onExportVideo}
       onReplaceVideo={onReplaceVideo}
       onRemoveVideo={onRemoveVideo}
       attachingRunId={attachingRunId}
@@ -686,6 +710,7 @@ function ChartPager({
       onEditNote={onEditNote}
       onAttachVideo={onAttachVideo}
       onShareVideo={onShareVideo}
+      onExportVideo={onExportVideo}
       onReplaceVideo={onReplaceVideo}
       onRemoveVideo={onRemoveVideo}
       attachingRunId={attachingRunId}
@@ -819,6 +844,7 @@ function RunList({
   onEditNote,
   onAttachVideo,
   onShareVideo,
+  onExportVideo,
   onReplaceVideo,
   onRemoveVideo,
   attachingRunId,
@@ -836,6 +862,7 @@ function RunList({
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
   onShareVideo?: (runId: string) => void;
+  onExportVideo?: (runId: string) => void;
   onReplaceVideo?: (runId: string) => void;
   onRemoveVideo?: (runId: string) => void;
   /** see ChartPager */
@@ -875,6 +902,10 @@ function RunList({
               {/* Visible without expanding: which runs have footage is the thing
                   you scan the list for once video exists. */}
               {p.clipId ? <Text style={styles.hasVideo}>▶</Text> : null}
+              {/* A backdated run reshapes the series it joins, so the marker sits
+                  in the list next to the time rather than inside the expanded
+                  row: a strange-looking chart has to be explainable at a glance. */}
+              {p.backdated ? <Text style={styles.backdated}>BACKDATED</Text> : null}
               <View style={styles.runMid}>
                 <Text style={styles.runDate}>{listDate(p.createdAt)}</Text>
                 {/* The derived shape (a rep set's splits, a hand start) and the
@@ -924,6 +955,14 @@ function RunList({
                     style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
                   >
                     <Text style={styles.actionText}>Share</Text>
+                  </Pressable>
+                ) : null}
+                {p.clipId && onExportVideo ? (
+                  <Pressable
+                    onPress={() => onExportVideo(p.runId)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={styles.actionText}>Camera roll</Text>
                   </Pressable>
                 ) : null}
                 {p.clipId && onReplaceVideo ? (
@@ -1058,6 +1097,7 @@ const styles = StyleSheet.create({
   actionDanger: { color: '#f87171' },
   actionVideo: { color: '#60a5fa' },
   hasVideo: { color: '#60a5fa', fontSize: 10 },
+  backdated: { color: '#fbbf24', fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
   dots: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, marginTop: 2 },
   dotHit: { paddingHorizontal: 5, paddingVertical: 8 },
   dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#334155' },

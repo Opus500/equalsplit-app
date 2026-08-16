@@ -154,6 +154,10 @@ export type RunInput = {
   /** Stored video belonging to this run. Independent of how it was TIMED — a gate
    *  run can carry review footage without becoming a video-timed run. */
   clipId?: string | null;
+  /** When the run actually happened, if that is not now. Omit for anything timed
+   *  live. See migrations.ts and src/runs/rundate.ts for why this is its own
+   *  column rather than an edit to created_at. */
+  performedAt?: number | null;
 };
 
 const clean = (s?: string | null) => {
@@ -219,8 +223,8 @@ export async function saveRun(r: RunInput): Promise<string> {
 
   await db.runAsync(
     `INSERT INTO runs
-       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, athlete_id, athlete_name, drill_id, drill_type, clip_id, synced)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+       (id, session_id, mode, run_index, started_at, total_ms, split1_ms, split2_ms, status, raw_json, created_at, reaction_offset_ms, athlete_id, athlete_name, drill_id, drill_type, clip_id, performed_at, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     [
       id,
       sessionId,
@@ -239,6 +243,7 @@ export async function saveRun(r: RunInput): Promise<string> {
       drillId,
       drillName,
       clean(r.clipId),
+      Number.isFinite(r.performedAt) && r.performedAt ? r.performedAt : null,
     ],
   );
   // Recency drives the picker's order — this is what makes a one-off drill sink
@@ -351,6 +356,8 @@ export type RunRow = {
   created_at: number;
   /** Stored video for this run, if any. Independent of how it was timed. */
   clip_id: string | null;
+  /** When the run happened, when that differs from when it was recorded. */
+  performed_at: number | null;
   // --- roster (schema v2), joined ---
   athlete_id: string | null;
   athlete_display_name: string | null;
@@ -366,7 +373,7 @@ export async function getRuns(sessionId: string): Promise<RunRow[]> {
   return db.getAllAsync<RunRow>(
     `SELECT r.id, r.mode, r.run_index, r.total_ms, r.split1_ms, r.split2_ms,
             r.reaction_offset_ms, r.status, r.raw_json, r.athlete_name, r.drill_type,
-            r.created_at, r.athlete_id, r.drill_id, r.clip_id,
+            r.created_at, r.athlete_id, r.drill_id, r.clip_id, r.performed_at,
             ROW_NUMBER() OVER (
               ORDER BY r.run_index ASC, r.created_at ASC, r.rowid ASC
             ) AS display_index,
@@ -551,6 +558,8 @@ export type AthleteRunRow = {
   note: string | null;
   /** stored video, if any. Independent of how the run was timed. */
   clip_id: string | null;
+  /** when the run happened, when that differs from when it was recorded */
+  performed_at: number | null;
 };
 
 /**
@@ -564,7 +573,7 @@ export async function getAthleteRuns(athleteId: string): Promise<AthleteRunRow[]
   const db = await getDb();
   return db.getAllAsync<AthleteRunRow>(
     `SELECT r.id, r.mode, r.total_ms, r.created_at, r.status, r.raw_json, r.drill_id,
-            r.note, r.clip_id, d.name AS drill_name
+            r.note, r.clip_id, r.performed_at, d.name AS drill_name
        FROM runs r
        LEFT JOIN drills d ON d.id = r.drill_id
       WHERE r.athlete_id = ?
