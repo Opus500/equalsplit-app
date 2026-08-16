@@ -20,6 +20,12 @@ import { DiscardBar } from '../components/DiscardBar';
 import { useRoster } from '../roster/RosterProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
+import {
+  INK,
+  INTERACTIVE,
+  LIVE,
+  LIVE_BUSY,
+} from '../theme';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run-v2';
 const nowMs = () =>
@@ -343,10 +349,10 @@ const styles = StyleSheet.create({
   setRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 6 },
   sdot: { width: 8, height: 8, borderRadius: 4 },
-  sdotOn: { backgroundColor: '#22c55e' },
-  sdotBusy: { backgroundColor: '#f59e0b' },
+  sdotOn: { backgroundColor: LIVE },
+  sdotBusy: { backgroundColor: LIVE_BUSY },
   sessionText: { color: '#8b98a9', fontSize: 12, flex: 1 },
-  sessionAction: { color: '#60a5fa', fontWeight: '700', fontSize: 12 },
+  sessionAction: { color: INTERACTIVE, fontWeight: '700', fontSize: 12 },
   tagBar: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -359,13 +365,13 @@ const styles = StyleSheet.create({
   },
   tagBarText: { color: '#e2e8f0', fontSize: 14, fontWeight: '600', flex: 1 },
   tagBarPlaceholder: { color: '#64748b', fontWeight: '400' },
-  tagClear: { color: '#fb923c', fontSize: 15, fontWeight: '800' },
-  tagSet: { color: '#60a5fa', fontSize: 13, fontWeight: '700' },
+  tagClear: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
+  tagSet: { color: INTERACTIVE, fontSize: 13, fontWeight: '700' },
   resultTags: { color: '#94a3b8', fontSize: 15, fontWeight: '600', marginTop: 6 },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  phase: { color: '#fbbf24', fontSize: 20, fontWeight: '700', marginBottom: 8 },
+  phase: { color: INK, fontSize: 20, fontWeight: '700', marginBottom: 8 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  timerDone: { color: '#34d399' },
+  timerDone: { color: INK },
   unit: { color: '#64748b', fontSize: 14, marginTop: -6 },
   splits: { marginTop: 20, width: '70%', alignItems: 'center' },
   splitRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4, width: '100%' },

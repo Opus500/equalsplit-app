@@ -33,6 +33,12 @@ import {
 } from 'react-native';
 
 import { slotToIndex } from '../roster/queue';
+import {
+  INTERACTIVE,
+  INTERACTIVE_ON_BG,
+  INTERACTIVE_SOFT,
+  INTERACTIVE_STRONG,
+} from '../theme';
 
 // Android needs this opt-in; iOS animates without it. Guarded so it runs once.
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
@@ -273,9 +279,9 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1d4ed8',
   },
-  bannerText: { color: '#93c5fd', fontSize: 12, flex: 1 },
+  bannerText: { color: INTERACTIVE_SOFT, fontSize: 12, flex: 1 },
   bannerName: { fontWeight: '800', color: '#dbeafe' },
-  bannerCancel: { color: '#60a5fa', fontSize: 13, fontWeight: '800' },
+  bannerCancel: { color: INTERACTIVE, fontSize: 13, fontWeight: '800' },
   gap: { height: 8 },
   // 40pt: a real target between two rows, and tall enough that the label reads.
   slot: {
@@ -286,9 +292,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   slotPressed: { opacity: 0.55 },
-  slotLine: { flex: 1, height: 2, borderRadius: 1, backgroundColor: '#3b82f6' },
+  slotLine: { flex: 1, height: 2, borderRadius: 1, backgroundColor: INTERACTIVE_STRONG },
   slotLineInert: { backgroundColor: '#1c2432' },
-  slotLabel: { color: '#60a5fa', fontSize: 11, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  slotLabel: { color: INTERACTIVE, fontSize: 11, fontWeight: '800', fontVariant: ['tabular-nums'] },
   slotLabelInert: { color: '#334155', fontWeight: '600' },
   row: {
     flexDirection: 'row',
@@ -301,10 +307,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  rowCurrent: { borderColor: '#3b82f6' },
+  rowCurrent: { borderColor: INTERACTIVE_STRONG },
   rowMuted: { opacity: 0.4 },
-  rowPicked: { borderColor: '#60a5fa', backgroundColor: '#16233a', borderWidth: 2 },
-  rowLanded: { borderColor: '#34d399', backgroundColor: '#132a22' },
+  rowPicked: { borderColor: INTERACTIVE, backgroundColor: '#16233a', borderWidth: 2 },
+  rowLanded: { borderColor: INTERACTIVE, backgroundColor: INTERACTIVE_ON_BG },
   pos: {
     color: '#475569',
     fontSize: 12,
@@ -312,12 +318,12 @@ const styles = StyleSheet.create({
     width: 18,
     fontVariant: ['tabular-nums'],
   },
-  posPicked: { color: '#60a5fa' },
+  posPicked: { color: INTERACTIVE },
   textCol: { flex: 1, minWidth: 0 },
   name: { color: '#e2e8f0', fontSize: 15, fontWeight: '700' },
   namePicked: { color: '#fff' },
   sub: { color: '#64748b', fontSize: 11, marginTop: 2 },
-  upNow: { color: '#60a5fa', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  upNow: { color: INTERACTIVE, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
   nudgeGroup: { flexDirection: 'row', gap: 6 },
   nudge: {
     width: 38,
@@ -329,7 +335,7 @@ const styles = StyleSheet.create({
     borderColor: '#1d4ed8',
     backgroundColor: '#0b1220',
   },
-  nudgeText: { color: '#93c5fd', fontSize: 17, fontWeight: '800' },
+  nudgeText: { color: INTERACTIVE_SOFT, fontSize: 17, fontWeight: '800' },
   removeBtn: {
     paddingHorizontal: 9,
     paddingVertical: 6,

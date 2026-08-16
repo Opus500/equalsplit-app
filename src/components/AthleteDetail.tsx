@@ -67,6 +67,14 @@ import {
   type SeriesPoint,
 } from '../roster/progression';
 import { ProgressionChart } from './ProgressionChart';
+import {
+  ACHIEVEMENT,
+  DESTRUCTIVE,
+  EDITED,
+  FAINT,
+  INTERACTIVE,
+  METHOD,
+} from '../theme';
 
 export function AthleteDetailModal({
   visible,
@@ -1079,7 +1087,18 @@ function RunList({
                     <Text style={styles.actionText}>Change date</Text>
                   </Pressable>
                 ) : null}
-                {p.clipId && onPlayVideo ? (
+                {/* SAID, NOT OFFERED. This used to be a Play button that opened a
+                    "video deleted" card — a one-tap explanation, but the control
+                    read "play" at the moment you looked at it, which is a lie for
+                    as long as it takes to tap. A greyed control would be the same
+                    lie held at arm's length: disabled still implies something is
+                    behind it. So the row states the fact and moves on.
+                    History keeps the card, deliberately. Its play glyph keys on
+                    clip_id alone and a filesystem stat per row of a season is not
+                    worth it — and there the card is the honest answer, because
+                    nothing had looked at the disk until you asked. */}
+                {clipGone ? <Text style={styles.clipGone}>Video removed</Text> : null}
+                {p.clipId && !clipGone && onPlayVideo ? (
                   <Pressable
                     onPress={() => onPlayVideo(p, title)}
                     style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
@@ -1208,8 +1227,8 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
     minWidth: 58,
   },
-  runTimeBest: { color: '#34d399' },
-  pb: { color: '#34d399', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  runTimeBest: { color: ACHIEVEMENT },
+  pb: { color: ACHIEVEMENT, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
   runMid: { flex: 1, minWidth: 0 },
   runDate: { color: '#94a3b8', fontSize: 12 },
   runMeta: { color: '#64748b', fontSize: 11, marginTop: 1 },
@@ -1236,15 +1255,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#243042',
   },
   actionText: { color: '#cbd5e1', fontSize: 13, fontWeight: '600' },
-  actionDanger: { color: '#f87171' },
-  actionVideo: { color: '#60a5fa' },
-  hasVideo: { color: '#60a5fa', fontSize: 10 },
-  backdated: { color: '#fbbf24', fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
-  videoTimed: { color: '#a78bfa', fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
+  actionDanger: { color: DESTRUCTIVE },
+  actionVideo: { color: INTERACTIVE },
+  hasVideo: { color: INTERACTIVE, fontSize: 10 },
+  backdated: { color: EDITED, fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
+  videoTimed: { color: METHOD, fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
+  /** Not a button and not a disabled button — a statement, sized like the labels
+   *  beside it so the row does not reflow when a video is removed. */
+  clipGone: {
+    color: FAINT,
+    fontSize: 13,
+    fontWeight: '600',
+    paddingVertical: 7,
+    paddingHorizontal: 2,
+  },
   dots: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, marginTop: 2 },
   dotHit: { paddingHorizontal: 5, paddingVertical: 8 },
   dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#334155' },
-  dotOn: { backgroundColor: '#60a5fa', width: 8, height: 8, borderRadius: 4 },
+  dotOn: { backgroundColor: INTERACTIVE, width: 8, height: 8, borderRadius: 4 },
   pagerLabel: { color: '#475569', fontSize: 11, marginLeft: 8, fontVariant: ['tabular-nums'] },
   header: {
     flexDirection: 'row',
@@ -1268,7 +1296,7 @@ const styles = StyleSheet.create({
   },
   hdrBtnText: { color: '#94a3b8', fontSize: 13, fontWeight: '700' },
   close: { paddingHorizontal: 6, paddingVertical: 8 },
-  closeText: { color: '#60a5fa', fontSize: 15, fontWeight: '800' },
+  closeText: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
   body: { padding: 16, paddingBottom: 40 },
   muted: { color: '#64748b', textAlign: 'center', marginTop: 32 },
   emptyCard: {
@@ -1294,7 +1322,7 @@ const styles = StyleSheet.create({
   },
   unlabeledTitle: { color: '#e2e8f0', fontSize: 16, fontWeight: '800' },
   unlabeledBody: { color: '#94a3b8', fontSize: 13, lineHeight: 19 },
-  unlabeledHint: { color: '#60a5fa', fontSize: 12, fontWeight: '600' },
+  unlabeledHint: { color: INTERACTIVE, fontSize: 12, fontWeight: '600' },
   footnote: { color: '#475569', fontSize: 11, lineHeight: 16, marginTop: 14 },
   dim: { opacity: 0.5 },
 });

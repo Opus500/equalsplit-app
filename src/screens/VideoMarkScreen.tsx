@@ -70,6 +70,11 @@ import {
   type FrameGrid,
   type VideoMark,
 } from '../video/timing';
+import {
+  FAINT,
+  INTERACTIVE,
+  INTERACTIVE_SOFT,
+} from '../theme';
 
 const STRIP_H = 56;
 const TILE_COUNT = 14;
@@ -880,7 +885,7 @@ const styles = StyleSheet.create({
   video: { width: '100%', height: '100%' },
   placeholder: { color: '#475569', fontSize: 14 },
   busy: { position: 'absolute', alignItems: 'center', gap: 6 },
-  busyText: { color: '#93c5fd', fontSize: 12 },
+  busyText: { color: INTERACTIVE_SOFT, fontSize: 12 },
   // Overlaid bottom-left of the video: legible against footage without costing the
   // footage any height.
   readout: {
@@ -899,8 +904,8 @@ const styles = StyleSheet.create({
   /** Fixed width so the state changing never reflows the ± beside it — the whole
    *  point of moving it out of that line. */
   snap: { fontSize: 9, fontWeight: '800', letterSpacing: 0.5, minWidth: 58, textAlign: 'right' },
-  snapOn: { color: '#34d399' },
-  snapOff: { color: '#fbbf24' },
+  snapOn: { color: INTERACTIVE },
+  snapOff: { color: FAINT },
   // Capped so a long clip's controls never grow into the preview; scrolls instead.
   controls: { maxHeight: 310, flexGrow: 0 },
   controlsBody: { padding: 10, paddingBottom: 28, gap: 10 },
@@ -918,12 +923,12 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     width: HANDLE_W,
-    backgroundColor: '#60a5fa',
+    backgroundColor: INTERACTIVE,
     borderRadius: 4,
   },
   handleStart: { borderTopRightRadius: 0, borderBottomRightRadius: 0 },
   handleEnd: { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 },
-  handleOn: { backgroundColor: '#93c5fd' },
+  handleOn: { backgroundColor: INTERACTIVE_SOFT },
   stepRow: { flexDirection: 'row', gap: 10 },
   markBtn: {
     flex: 1,
@@ -934,7 +939,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'transparent',
   },
-  markBtnOn: { borderColor: '#60a5fa', backgroundColor: '#16202c' },
+  markBtnOn: { borderColor: INTERACTIVE, backgroundColor: '#16202c' },
   markLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '600' },
   markAt: { color: '#e2e8f0', fontSize: 15, fontWeight: '700', fontVariant: ['tabular-nums'] },
   stepBtn: {
@@ -964,6 +969,6 @@ const styles = StyleSheet.create({
   primary: { backgroundColor: '#1d4ed8', borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   tertiary: { alignItems: 'center', paddingVertical: 10 },
-  tertiaryText: { color: '#60a5fa', fontSize: 13, fontWeight: '600' },
+  tertiaryText: { color: INTERACTIVE, fontSize: 13, fontWeight: '600' },
   disabled: { opacity: 0.4 },
 });

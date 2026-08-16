@@ -29,6 +29,14 @@ import { createAthlete, setAthleteArchived, updateAthlete, type Athlete } from '
 import { foldName } from '../db/migrations';
 import { disambiguate, runCountLabel } from '../roster/labels';
 import { useRoster } from '../roster/RosterProvider';
+import {
+  CAUTION,
+  DESTRUCTIVE,
+  DESTRUCTIVE_EDGE,
+  INTERACTIVE_ON_BG,
+  INTERACTIVE_SOFT,
+  INTERACTIVE_STRONG,
+} from '../theme';
 
 export default function RosterScreen() {
   // The provider is the single source: the strip and pickers read the same list,
@@ -472,7 +480,7 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     paddingHorizontal: 14,
   },
-  clearBtnText: { color: '#f87171', fontSize: 14, fontWeight: '800' },
+  clearBtnText: { color: DESTRUCTIVE, fontSize: 14, fontWeight: '800' },
   clearBtnHint: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 4 },
   addBtn: {
     backgroundColor: '#1d4ed8',
@@ -495,7 +503,7 @@ const styles = StyleSheet.create({
     opacity: 0.6,
     backgroundColor: '#12151b',
     borderLeftWidth: 3,
-    borderLeftColor: '#b4541f',
+    borderLeftColor: DESTRUCTIVE_EDGE,
   },
   rowText: { flex: 1 },
   name: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
@@ -522,9 +530,9 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
     marginRight: 6,
   },
-  queueBtnOn: { backgroundColor: '#14532d', borderColor: '#16a34a' },
+  queueBtnOn: { backgroundColor: INTERACTIVE_ON_BG, borderColor: INTERACTIVE_STRONG },
   queueBtnText: { color: '#64748b', fontSize: 11, fontWeight: '700' },
-  queueBtnTextOn: { color: '#86efac' },
+  queueBtnTextOn: { color: INTERACTIVE_SOFT },
   chev: { color: '#475569', fontSize: 22 },
   backdrop: {
     flex: 1,
@@ -535,7 +543,7 @@ const styles = StyleSheet.create({
   card: { backgroundColor: '#161b22', borderRadius: 16, padding: 18 },
   cardTitle: { color: '#fff', fontSize: 17, fontWeight: '800', marginBottom: 12 },
   label: { color: '#94a3b8', fontSize: 13, fontWeight: '700', marginBottom: 6 },
-  needed: { color: '#fbbf24', fontWeight: '600' },
+  needed: { color: CAUTION, fontWeight: '600' },
   input: {
     backgroundColor: '#0b0e13',
     color: '#fff',
@@ -544,7 +552,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 12,
   },
-  clashNote: { color: '#fbbf24', fontSize: 11, lineHeight: 16, marginTop: 8 },
+  clashNote: { color: CAUTION, fontSize: 11, lineHeight: 16, marginTop: 8 },
   archiveBtn: {
     marginTop: 16,
     backgroundColor: '#0b0e13',
@@ -554,7 +562,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  archiveText: { color: '#fb923c', fontWeight: '700', fontSize: 14 },
+  archiveText: { color: DESTRUCTIVE, fontWeight: '700', fontSize: 14 },
   archiveHint: { color: '#64748b', fontSize: 11, marginTop: 3 },
   actions: { flexDirection: 'row', gap: 10, marginTop: 18 },
   btn: { flex: 1, backgroundColor: '#243042', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },

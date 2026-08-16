@@ -43,6 +43,12 @@ import {
 } from '../video/clips';
 import { formatVideoSeconds, VIDEO_MODE } from '../video/timing';
 import { effectiveRunDate } from '../runs/rundate';
+import {
+  CAUTION,
+  DESTRUCTIVE,
+  INTERACTIVE,
+  METHOD,
+} from '../theme';
 
 type Entry = {
   clip: Clip;
@@ -303,15 +309,15 @@ const styles = StyleSheet.create({
   cardSub: { color: '#94a3b8', fontSize: 12, marginTop: 2 },
   size: { color: '#cbd5e1', fontSize: 13, fontWeight: '700', fontVariant: ['tabular-nums'] },
   /** An orphan is pure waste, so its size is the thing to notice. */
-  sizeWaste: { color: '#fbbf24' },
+  sizeWaste: { color: CAUTION },
   kind: { fontSize: 10, fontWeight: '700', letterSpacing: 0.4, marginTop: 4 },
-  kind_timed: { color: '#34d399' },
-  kind_attached: { color: '#60a5fa' },
-  kind_orphan: { color: '#fbbf24' },
-  play: { color: '#60a5fa' },
+  kind_timed: { color: METHOD },
+  kind_attached: { color: INTERACTIVE },
+  kind_orphan: { color: CAUTION },
+  play: { color: INTERACTIVE },
   actions: { flexDirection: 'row', borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#243042' },
   action: { flex: 1, alignItems: 'center', paddingVertical: 12 },
   actionText: { color: '#cbd5e1', fontSize: 12, fontWeight: '600' },
-  danger: { color: '#f87171' },
+  danger: { color: DESTRUCTIVE },
   footnote: { color: '#64748b', fontSize: 11, lineHeight: 16, paddingHorizontal: 4, marginTop: 4 },
 });

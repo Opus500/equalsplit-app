@@ -26,6 +26,12 @@ import { createAthlete, listAthletes, type Athlete } from '../db/database';
 import { disambiguate, runCountLabel } from '../roster/labels';
 import { useRoster } from '../roster/RosterProvider';
 import { foldName } from '../db/migrations';
+import {
+  CAUTION,
+  EDITED,
+  INTERACTIVE,
+  INTERACTIVE_STRONG,
+} from '../theme';
 
 export function AthletePickerModal({
   visible,
@@ -145,7 +151,7 @@ export function AthletePickerModal({
 
               {loading ? (
                 <View style={styles.loading}>
-                  <ActivityIndicator size="small" color="#60a5fa" />
+                  <ActivityIndicator size="small" color={INTERACTIVE} />
                 </View>
               ) : null}
 
@@ -282,14 +288,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  rowSelected: { borderColor: '#3b82f6', backgroundColor: '#12203a' },
+  rowSelected: { borderColor: INTERACTIVE_STRONG, backgroundColor: '#12203a' },
   rowPressed: { opacity: 0.7 },
   rowText: { flex: 1 },
   rowLabel: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
   rowLabelMuted: { color: '#94a3b8', fontWeight: '600' },
   rowDetail: { color: '#64748b', fontSize: 12, marginTop: 2 },
-  archTag: { color: '#b4541f', fontSize: 11, fontWeight: '700' },
-  check: { color: '#34d399', fontSize: 18, fontWeight: '800' },
+  archTag: { color: EDITED, fontSize: 11, fontWeight: '700' },
+  check: { color: INTERACTIVE, fontSize: 18, fontWeight: '800' },
   addRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
   addInput: {
     flex: 1,
@@ -302,7 +308,7 @@ const styles = StyleSheet.create({
   },
   addBtn: { backgroundColor: '#2563eb', borderRadius: 10, paddingHorizontal: 16, paddingVertical: 11 },
   addBtnText: { color: '#fff', fontWeight: '700' },
-  dupWarn: { color: '#fbbf24', fontSize: 11, lineHeight: 16, marginTop: 8 },
+  dupWarn: { color: CAUTION, fontSize: 11, lineHeight: 16, marginTop: 8 },
   close: {
     marginTop: 12,
     backgroundColor: '#243042',

@@ -32,6 +32,16 @@ import { resolveKey } from '../ble/catalog';
 import { useRoster } from '../roster/RosterProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
+import {
+  DESTRUCTIVE_EDGE,
+  INK,
+  INTERACTIVE,
+  INTERACTIVE_SOFT,
+  INTERACTIVE_STRONG,
+  LIVE,
+  LIVE_BUSY,
+  LIVE_FILL,
+} from '../theme';
 
 const KEEP_AWAKE_TAG = 'equalsplit-drill';
 const nowMs = () =>
@@ -435,10 +445,10 @@ const styles = StyleSheet.create({
   setRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 6 },
   sdot: { width: 8, height: 8, borderRadius: 4 },
-  sdotOn: { backgroundColor: '#22c55e' },
-  sdotBusy: { backgroundColor: '#f59e0b' },
+  sdotOn: { backgroundColor: LIVE },
+  sdotBusy: { backgroundColor: LIVE_BUSY },
   sessionText: { color: '#8b98a9', fontSize: 12, flex: 1 },
-  sessionAction: { color: '#60a5fa', fontWeight: '700', fontSize: 12 },
+  sessionAction: { color: INTERACTIVE, fontWeight: '700', fontSize: 12 },
   pickRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
   pick: {
     flex: 1,
@@ -449,7 +459,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  pickActive: { backgroundColor: '#1d4ed8', borderColor: '#3b82f6' },
+  pickActive: { backgroundColor: '#1d4ed8', borderColor: INTERACTIVE_STRONG },
   pickText: { color: '#94a3b8', fontWeight: '700', fontSize: 14 },
   pickTextActive: { color: '#fff' },
   setup: { color: '#8b98a9', fontSize: 12, marginTop: 8, textAlign: 'center' },
@@ -488,13 +498,13 @@ const styles = StyleSheet.create({
   },
   tagBarText: { color: '#e2e8f0', fontSize: 14, fontWeight: '600', flex: 1 },
   tagBarPlaceholder: { color: '#64748b', fontWeight: '400' },
-  tagSet: { color: '#60a5fa', fontSize: 13, fontWeight: '700' },
+  tagSet: { color: INTERACTIVE, fontSize: 13, fontWeight: '700' },
   stage: { alignItems: 'center', justifyContent: 'center', paddingVertical: 24, minHeight: 260 },
-  phase: { color: '#fbbf24', fontSize: 18, fontWeight: '700', marginBottom: 8, minHeight: 24, textAlign: 'center' },
+  phase: { color: INK, fontSize: 18, fontWeight: '700', marginBottom: 8, minHeight: 24, textAlign: 'center' },
   timer: { color: '#fff', fontSize: 72, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  timerDone: { color: '#34d399' },
+  timerDone: { color: INK },
   unit: { color: '#64748b', fontSize: 14, marginTop: -6 },
-  progress: { color: '#93c5fd', fontSize: 16, fontWeight: '700', marginTop: 10, fontVariant: ['tabular-nums'] },
+  progress: { color: INTERACTIVE_SOFT, fontSize: 16, fontWeight: '700', marginTop: 10, fontVariant: ['tabular-nums'] },
   resultTags: { color: '#94a3b8', fontSize: 15, fontWeight: '600', marginTop: 8 },
   shareBtn: {
     marginTop: 18,
@@ -510,8 +520,8 @@ const styles = StyleSheet.create({
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
   controls: { paddingTop: 4 },
   btn: { backgroundColor: '#2563eb', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
-  btnGo: { backgroundColor: '#16a34a' },
-  btnWarn: { backgroundColor: '#b4541f' },
+  btnGo: { backgroundColor: LIVE_FILL },
+  btnWarn: { backgroundColor: DESTRUCTIVE_EDGE },
   btnText: { color: '#fff', fontWeight: '700', fontSize: 16 },
   dim: { opacity: 0.4 },
 });

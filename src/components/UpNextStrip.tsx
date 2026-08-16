@@ -13,6 +13,10 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useRoster } from '../roster/RosterProvider';
 import { disambiguate } from '../roster/labels';
 import { AthletePickerModal } from './AthletePicker';
+import {
+  INTERACTIVE,
+  INTERACTIVE_SOFT,
+} from '../theme';
 
 export function UpNextStrip() {
   const roster = useRoster();
@@ -165,7 +169,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     marginTop: 6,
   },
-  wrapText: { color: '#93c5fd', fontSize: 12, fontWeight: '700', textAlign: 'center' },
+  wrapText: { color: INTERACTIVE_SOFT, fontSize: 12, fontWeight: '700', textAlign: 'center' },
   undoNotice: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -180,6 +184,6 @@ const styles = StyleSheet.create({
     borderColor: '#374151',
   },
   undoText: { color: '#cbd5e1', fontSize: 12, fontWeight: '600', flex: 1 },
-  undoAction: { color: '#60a5fa', fontSize: 13, fontWeight: '800' },
+  undoAction: { color: INTERACTIVE, fontSize: 13, fontWeight: '800' },
   dim: { opacity: 0.7 },
 });

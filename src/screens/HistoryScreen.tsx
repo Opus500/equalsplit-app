@@ -45,6 +45,15 @@ import {
 } from '../video/clips';
 import { effectiveRunDate, isBackdated } from '../runs/rundate';
 import { runShareLine, sessionShareText, shareText } from '../share';
+import {
+  ACCURACY,
+  CAUTION,
+  DESTRUCTIVE,
+  EDITED,
+  INTERACTIVE,
+  INTERACTIVE_STRONG,
+  METHOD,
+} from '../theme';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
 // Display label: the custom name if set, else the auto date. The date (s.name)
@@ -663,7 +672,7 @@ function RenameModal({
 }
 
 const styles = StyleSheet.create({
-  handTag: { color: '#fbbf24', fontSize: 9, fontWeight: '800', marginRight: 4 },
+  handTag: { color: METHOD, fontSize: 9, fontWeight: '800', marginRight: 4 },
   repToggle: { paddingVertical: 7, paddingHorizontal: 14, marginTop: -4 },
   repToggleText: { color: '#94a3b8', fontSize: 11, fontWeight: '700' },
   repRow: {
@@ -678,10 +687,10 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   flex: { flex: 1 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
-  back: { color: '#60a5fa', fontSize: 26, fontWeight: '700', marginTop: -4 },
+  back: { color: INTERACTIVE, fontSize: 26, fontWeight: '700', marginTop: -4 },
   titleCol: { flexShrink: 1, flex: 1 },
   detailTitle: { color: '#fff', fontSize: 20, fontWeight: '800' },
-  editHint: { color: '#60a5fa', fontSize: 14 },
+  editHint: { color: INTERACTIVE, fontSize: 14 },
   titleSub: { color: '#64748b', fontSize: 12, marginTop: 1 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
   empty: { color: '#64748b', marginTop: 24, textAlign: 'center' },
@@ -695,7 +704,7 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
     maxWidth: 160,
   },
-  fchipActive: { backgroundColor: '#1d4ed8', borderColor: '#3b82f6' },
+  fchipActive: { backgroundColor: '#1d4ed8', borderColor: INTERACTIVE_STRONG },
   fchipText: { color: '#cbd5e1', fontSize: 12, fontWeight: '600' },
   fchipTextActive: { color: '#fff' },
   summary: {
@@ -748,31 +757,31 @@ const styles = StyleSheet.create({
   },
   athleteName: { color: '#fff', fontSize: 16, fontWeight: '700', flex: 1 },
   athleteNone: { color: '#64748b', fontWeight: '600' },
-  athleteChange: { color: '#60a5fa', fontSize: 13, fontWeight: '700' },
-  legacyNote: { color: '#fbbf24', fontSize: 11, lineHeight: 16, marginTop: 6 },
+  athleteChange: { color: INTERACTIVE, fontSize: 13, fontWeight: '700' },
+  legacyNote: { color: EDITED, fontSize: 11, lineHeight: 16, marginTop: 6 },
   chipWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   customDrill: { color: '#64748b', fontSize: 11, marginTop: 8 },
   runM2: { alignItems: 'flex-end', marginRight: 10 },
   runSplits: { color: '#64748b', fontSize: 13, fontVariant: ['tabular-nums'] },
-  runUnreliable: { color: '#fb923c', fontWeight: '700' },
-  runConf: { color: '#38bdf8', fontSize: 10, fontWeight: '700', marginTop: 1, fontVariant: ['tabular-nums'] },
+  runUnreliable: { color: CAUTION, fontWeight: '700' },
+  runConf: { color: ACCURACY, fontSize: 10, fontWeight: '700', marginTop: 1, fontVariant: ['tabular-nums'] },
   runConfDim: { color: '#475569', fontSize: 10, marginTop: 1 },
   runTotal: { color: '#fff', fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
   rowIcon: { paddingHorizontal: 6, paddingVertical: 2 },
-  shareGlyph: { color: '#60a5fa', fontSize: 16, fontWeight: '800' },
-  playGlyph: { color: '#34d399', fontSize: 14, fontWeight: '800' },
-  clipShareGlyph: { color: '#34d399', fontSize: 15, fontWeight: '800' },
+  shareGlyph: { color: INTERACTIVE, fontSize: 16, fontWeight: '800' },
+  playGlyph: { color: INTERACTIVE, fontSize: 14, fontWeight: '800' },
+  clipShareGlyph: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
   backdatedTag: {
-    color: '#fbbf24',
+    color: EDITED,
     fontSize: 10,
     fontWeight: '700',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: '#fbbf24',
+    borderColor: EDITED,
     borderRadius: 4,
     paddingHorizontal: 4,
     paddingVertical: 1,
   },
-  delText: { color: '#b4541f', fontSize: 16, fontWeight: '800' },
+  delText: { color: DESTRUCTIVE, fontSize: 16, fontWeight: '800' },
   headerShare: {
     backgroundColor: '#1f2937',
     borderRadius: 999,

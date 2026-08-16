@@ -22,6 +22,10 @@ import { DRILL_CATALOG, entryFor, kindFor } from '../ble/catalog';
 import { SetControl } from '../components/SetControl';
 import DrillsScreen from './DrillsScreen';
 import RepeatsScreen from './RepeatsScreen';
+import {
+  INTERACTIVE,
+  INTERACTIVE_STRONG,
+} from '../theme';
 
 export default function DrillsTab() {
   const [key, setKey] = useState<string>(DRILL_CATALOG[0]!.key);
@@ -128,7 +132,7 @@ const styles = StyleSheet.create({
   headerText: { flex: 1, minWidth: 0 },
   kicker: { color: '#64748b', fontSize: 9, fontWeight: '800', letterSpacing: 0.8 },
   title: { color: '#fff', fontSize: 17, fontWeight: '800', marginTop: 1 },
-  chev: { color: '#60a5fa', fontSize: 15, fontWeight: '800' },
+  chev: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
   body: { flex: 1 },
   fill: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
   hidden: { display: 'none' },
@@ -153,11 +157,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  rowOn: { borderColor: '#3b82f6', backgroundColor: '#12203a' },
+  rowOn: { borderColor: INTERACTIVE_STRONG, backgroundColor: '#12203a' },
   rowText: { flex: 1, minWidth: 0 },
   rowTitle: { color: '#e2e8f0', fontSize: 15, fontWeight: '700' },
   rowBlurb: { color: '#64748b', fontSize: 11, marginTop: 2 },
-  check: { color: '#34d399', fontSize: 18, fontWeight: '800' },
+  check: { color: INTERACTIVE, fontSize: 18, fontWeight: '800' },
   close: {
     marginTop: 4,
     backgroundColor: '#243042',

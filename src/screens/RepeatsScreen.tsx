@@ -48,6 +48,13 @@ import { UpNextStrip } from '../components/UpNextStrip';
 import { getSetting, saveRun, setSetting, type Drill } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
+import {
+  CAUTION,
+  DESTRUCTIVE,
+  DESTRUCTIVE_EDGE,
+  INTERACTIVE_SOFT,
+  INTERACTIVE_STRONG,
+} from '../theme';
 
 const KEEP_AWAKE_TAG = 'equalsplit-repeat';
 const fmt = (ms: number, dec = 2) => (Math.max(0, ms) / 1000).toFixed(dec);
@@ -519,7 +526,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  pickOn: { backgroundColor: '#1e3a5f', borderColor: '#3b82f6' },
+  pickOn: { backgroundColor: '#1e3a5f', borderColor: INTERACTIVE_STRONG },
   pickText: { color: '#94a3b8', fontSize: 13, fontWeight: '700' },
   pickTextOn: { color: '#dbeafe' },
   explain: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 8 },
@@ -546,7 +553,7 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
     backgroundColor: '#0b0e13',
   },
-  stepText: { color: '#93c5fd', fontSize: 18, fontWeight: '800' },
+  stepText: { color: INTERACTIVE_SOFT, fontSize: 18, fontWeight: '800' },
   lockValue: {
     color: '#fff',
     fontSize: 15,
@@ -564,10 +571,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1d4ed8',
   },
-  liveKicker: { color: '#93c5fd', fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
+  liveKicker: { color: INTERACTIVE_SOFT, fontSize: 10, fontWeight: '800', letterSpacing: 0.8 },
   liveCount: { color: '#fff', fontSize: 24, fontWeight: '800', marginTop: 4 },
-  liveOver: { color: '#fbbf24', fontSize: 11, marginTop: 4, lineHeight: 15 },
-  liveList: { color: '#93c5fd', fontSize: 13, marginTop: 6, fontVariant: ['tabular-nums'] },
+  liveOver: { color: CAUTION, fontSize: 11, marginTop: 4, lineHeight: 15 },
+  liveList: { color: INTERACTIVE_SOFT, fontSize: 13, marginTop: 6, fontVariant: ['tabular-nums'] },
   actions: { flexDirection: 'row', gap: 10, marginTop: 16 },
   btn: {
     flex: 1,
@@ -579,7 +586,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#161b22',
   },
   btnGo: { backgroundColor: '#1d4ed8', borderColor: '#1d4ed8' },
-  btnEnd: { backgroundColor: '#b45309', borderColor: '#b45309' },
+  btnEnd: { backgroundColor: DESTRUCTIVE_EDGE, borderColor: DESTRUCTIVE_EDGE },
   btnText: { color: '#fff', fontSize: 15, fontWeight: '800' },
   btnTextMuted: { color: '#94a3b8', fontSize: 15, fontWeight: '700' },
   review: {
@@ -596,7 +603,7 @@ const styles = StyleSheet.create({
   reviewSub: { color: '#64748b', fontSize: 11, marginTop: 3, marginBottom: 8 },
   flagCard: {
     backgroundColor: '#2a1f10',
-    borderColor: '#b45309',
+    borderColor: DESTRUCTIVE_EDGE,
     borderWidth: 1,
     borderRadius: 8,
     paddingVertical: 8,
@@ -604,7 +611,7 @@ const styles = StyleSheet.create({
     marginTop: 8,
     marginBottom: 8,
   },
-  flagText: { color: '#fbbf24', fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  flagText: { color: CAUTION, fontSize: 12, lineHeight: 17, fontWeight: '600' },
   ivRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -616,7 +623,7 @@ const styles = StyleSheet.create({
   ivRowSuspect: { backgroundColor: '#2a1f10', borderRadius: 6 },
   ivIndex: { color: '#475569', fontSize: 12, fontWeight: '800', width: 18 },
   ivTime: { color: '#e2e8f0', fontSize: 16, fontWeight: '700', flex: 1, fontVariant: ['tabular-nums'] },
-  ivSuspect: { color: '#fbbf24', fontSize: 10, fontWeight: '800' },
+  ivSuspect: { color: CAUTION, fontSize: 10, fontWeight: '800' },
   ivMerge: {
     paddingHorizontal: 8,
     paddingVertical: 6,
@@ -624,7 +631,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  ivMergeText: { color: '#93c5fd', fontSize: 11, fontWeight: '800' },
+  ivMergeText: { color: INTERACTIVE_SOFT, fontSize: 11, fontWeight: '800' },
   ivDrop: {
     paddingHorizontal: 10,
     paddingVertical: 6,
@@ -632,7 +639,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#7f1d1d',
   },
-  ivDropText: { color: '#f87171', fontSize: 12, fontWeight: '700' },
+  ivDropText: { color: DESTRUCTIVE, fontSize: 12, fontWeight: '700' },
   reviewActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
   dbg: { color: '#64748b', fontSize: 12, marginTop: 12 },
   dim: { opacity: 0.45 },

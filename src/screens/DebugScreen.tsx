@@ -12,6 +12,12 @@ import { EVT_NAME, STATE_NAME } from '../ble/constants';
 import { describeEvent, toHex } from '../ble/decode';
 import V2Lab from '../components/V2Lab';
 import { PruneTestDataModal } from '../components/PruneTestData';
+import {
+  CAUTION,
+  DESTRUCTIVE,
+  DESTRUCTIVE_EDGE,
+  INTERACTIVE,
+} from '../theme';
 
 type LogLine = { id: string; text: string; kind: 'evt' | 'status' };
 let logSeq = 0;
@@ -251,11 +257,11 @@ const styles = StyleSheet.create({
   },
   diagTitle: { color: '#64748b', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
   diagLine: { color: '#94a3b8', fontSize: 12, marginTop: 4, fontVariant: ['tabular-nums'] },
-  diagAlert: { color: '#fbbf24', fontWeight: '800' },
-  diagHint: { color: '#fbbf24', fontSize: 11, marginTop: 6, lineHeight: 15 },
+  diagAlert: { color: CAUTION, fontWeight: '800' },
+  diagHint: { color: CAUTION, fontSize: 11, marginTop: 6, lineHeight: 15 },
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   backRow: { paddingBottom: 6 },
-  backText: { color: '#60a5fa', fontSize: 15, fontWeight: '700' },
+  backText: { color: INTERACTIVE, fontSize: 15, fontWeight: '700' },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   titleCol: { flex: 1, minWidth: 0 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800' },
@@ -269,13 +275,13 @@ const styles = StyleSheet.create({
     borderColor: '#7f1d1d',
     backgroundColor: '#1a1214',
   },
-  pruneBtnText: { color: '#f87171', fontSize: 12, fontWeight: '800' },
+  pruneBtnText: { color: DESTRUCTIVE, fontSize: 12, fontWeight: '800' },
   cards: { flexDirection: 'row', gap: 10, marginBottom: 6 },
   card: { flex: 1, backgroundColor: '#161b22', borderRadius: 12, paddingVertical: 12, alignItems: 'center' },
-  cardWarn: { backgroundColor: '#3b1d1d', borderWidth: 1, borderColor: '#b4541f' },
+  cardWarn: { backgroundColor: '#3b1d1d', borderWidth: 1, borderColor: DESTRUCTIVE_EDGE },
   cardNum: { color: '#fff', fontSize: 28, fontWeight: '800', fontVariant: ['tabular-nums'] },
   cardLabel: { color: '#8b98a9', fontSize: 12, marginTop: 2 },
-  warn: { color: '#fb923c', fontSize: 12, marginBottom: 6 },
+  warn: { color: CAUTION, fontSize: 12, marginBottom: 6 },
   tally: {
     color: '#9fe6a0',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
@@ -284,7 +290,7 @@ const styles = StyleSheet.create({
   },
   row: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   btn: { flex: 1, backgroundColor: '#2563eb', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
-  btnWarn: { backgroundColor: '#b4541f' },
+  btnWarn: { backgroundColor: DESTRUCTIVE_EDGE },
   btnText: { color: '#fff', fontWeight: '600' },
   dim: { opacity: 0.4 },
   logHeader: { color: '#8b98a9', marginTop: 4, marginBottom: 4, fontWeight: '600' },

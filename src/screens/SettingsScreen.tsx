@@ -18,6 +18,11 @@ import { useSettings, type LatencySample } from '../settings/SettingsProvider';
 import { useGate } from '../ble/GateProvider';
 import { DEFAULT_REACTION_OFFSET_MS } from '../db/database';
 import { PROTO_VERSION } from '../ble/constants';
+import {
+  INK,
+  INTERACTIVE,
+  INTERACTIVE_STRONG,
+} from '../theme';
 
 const SAMPLE_RAW_MS = 350; // illustrative raw reaction for the live preview
 
@@ -347,7 +352,7 @@ const styles = StyleSheet.create({
   stepperText: { color: '#cbd5e1', fontWeight: '700', fontVariant: ['tabular-nums'] },
   previewBox: { backgroundColor: '#0b0e13', borderRadius: 10, padding: 12, marginTop: 12 },
   previewLabel: { color: '#64748b', fontSize: 12 },
-  previewVal: { color: '#34d399', fontSize: 16, fontWeight: '700', marginTop: 4, fontVariant: ['tabular-nums'] },
+  previewVal: { color: INK, fontSize: 16, fontWeight: '700', marginTop: 4, fontVariant: ['tabular-nums'] },
   measuredRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -356,7 +361,7 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   measuredText: { color: '#94a3b8', fontSize: 13, flex: 1 },
-  link: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
+  link: { color: INTERACTIVE, fontWeight: '700', fontSize: 13 },
   debugBtn: {
     marginTop: 12,
     backgroundColor: '#0b0e13',
@@ -366,7 +371,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  debugBtnText: { color: '#60a5fa', fontWeight: '700', fontSize: 14 },
+  debugBtnText: { color: INTERACTIVE, fontWeight: '700', fontSize: 14 },
   note: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 8 },
   dim: { opacity: 0.5 },
   toggleRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
@@ -379,7 +384,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  toggleActive: { backgroundColor: '#1d4ed8', borderColor: '#3b82f6' },
+  toggleActive: { backgroundColor: '#1d4ed8', borderColor: INTERACTIVE_STRONG },
   toggleText: { color: '#94a3b8', fontWeight: '700' },
   toggleTextActive: { color: '#fff' },
   statBlock: {

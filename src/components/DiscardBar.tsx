@@ -13,6 +13,9 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { usePendingRun } from '../runs/PendingRunProvider';
 import { describe } from '../runs/pending';
+import {
+  DESTRUCTIVE,
+} from '../theme';
 
 export function DiscardBar() {
   const { state, discard } = usePendingRun();
@@ -64,7 +67,7 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
   },
   barDone: { justifyContent: 'center', borderColor: '#3f2a2a', backgroundColor: '#1a1214' },
-  doneText: { color: '#f87171', fontSize: 13, fontWeight: '700', paddingVertical: 4 },
+  doneText: { color: DESTRUCTIVE, fontSize: 13, fontWeight: '700', paddingVertical: 4 },
   textCol: { flex: 1, minWidth: 0 },
   kicker: { color: '#64748b', fontSize: 9, fontWeight: '800', letterSpacing: 0.8 },
   subject: { color: '#e2e8f0', fontSize: 14, fontWeight: '700', marginTop: 2 },
@@ -79,6 +82,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   btnDiscard: { borderColor: '#7f1d1d', backgroundColor: '#1a1214' },
-  discardText: { color: '#f87171', fontSize: 13, fontWeight: '800' },
+  discardText: { color: DESTRUCTIVE, fontSize: 13, fontWeight: '800' },
   dim: { opacity: 0.6 },
 });

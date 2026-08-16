@@ -33,6 +33,14 @@ import { DiscardBar } from '../components/DiscardBar';
 import { useRoster } from '../roster/RosterProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
+import {
+  ACCURACY,
+  CAUTION,
+  DESTRUCTIVE_EDGE,
+  INK,
+  INTERACTIVE,
+  LIVE_FILL,
+} from '../theme';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run';
 const nowMs = () =>
@@ -851,8 +859,8 @@ const styles = StyleSheet.create({
   },
   tagBarText: { color: '#e2e8f0', fontSize: 14, fontWeight: '600', flex: 1 },
   tagBarPlaceholder: { color: '#64748b', fontWeight: '400' },
-  tagClear: { color: '#fb923c', fontSize: 15, fontWeight: '800' },
-  tagSet: { color: '#60a5fa', fontSize: 13, fontWeight: '700' },
+  tagClear: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
+  tagSet: { color: INTERACTIVE, fontSize: 13, fontWeight: '700' },
   resultTags: { color: '#94a3b8', fontSize: 15, fontWeight: '600', marginTop: 6 },
   shareBtn: {
     marginTop: 18,
@@ -865,29 +873,29 @@ const styles = StyleSheet.create({
   },
   shareBtnText: { color: '#e2e8f0', fontSize: 14, fontWeight: '700' },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  phase: { color: '#fbbf24', fontSize: 22, fontWeight: '700', marginBottom: 8 },
+  phase: { color: INK, fontSize: 22, fontWeight: '700', marginBottom: 8 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  timerDone: { color: '#34d399' },
+  timerDone: { color: INK },
   unit: { color: '#64748b', fontSize: 14, marginTop: -6 },
   splits: { marginTop: 20, width: '70%' },
   splitRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
   splitLabel: { color: '#94a3b8', fontSize: 15 },
   splitValCol: { alignItems: 'flex-end' },
   splitVal: { color: '#e2e8f0', fontSize: 15, fontVariant: ['tabular-nums'] },
-  splitUnreliable: { color: '#fb923c', fontWeight: '700' },
+  splitUnreliable: { color: CAUTION, fontWeight: '700' },
   splitMuted: { color: '#94a3b8' },
   splitRaw: { color: '#475569', fontSize: 11, fontVariant: ['tabular-nums'] },
   splitStrong: { color: '#fff', fontWeight: '800' },
-  accuracyNote: { color: '#38bdf8', fontSize: 13, fontWeight: '700', marginTop: 10, textAlign: 'center' },
+  accuracyNote: { color: ACCURACY, fontSize: 13, fontWeight: '700', marginTop: 10, textAlign: 'center' },
   offsetNote: { color: '#64748b', fontSize: 11, marginTop: 6, textAlign: 'center' },
-  earlyNote: { color: '#fb923c', fontSize: 11, marginTop: 4, textAlign: 'center' },
+  earlyNote: { color: CAUTION, fontSize: 11, marginTop: 4, textAlign: 'center' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 24, textAlign: 'center' },
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
   controls: { paddingBottom: 12 },
   row: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   btn: { flex: 1, backgroundColor: '#2563eb', paddingVertical: 14, borderRadius: 12, alignItems: 'center' },
-  btnGo: { backgroundColor: '#16a34a' },
-  btnWarn: { backgroundColor: '#b4541f' },
+  btnGo: { backgroundColor: LIVE_FILL },
+  btnWarn: { backgroundColor: DESTRUCTIVE_EDGE },
   btnText: { color: '#fff', fontWeight: '700' },
   dim: { opacity: 0.4 },
 });

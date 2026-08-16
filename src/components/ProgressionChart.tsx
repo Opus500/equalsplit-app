@@ -28,6 +28,15 @@ import {
   yTicks,
   type Series,
 } from '../roster/progression';
+import {
+  ACHIEVEMENT,
+  DESTRUCTIVE,
+  GROUND,
+  INTERACTIVE,
+  INTERACTIVE_SOFT,
+  INTERACTIVE_STRONG,
+  METHOD,
+} from '../theme';
 
 const PLOT_H = 152;
 /** Room for "4.25s" without truncating — the labels are the chart's units. */
@@ -376,7 +385,14 @@ export function ProgressionChart({
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: string; tone?: 'best' | 'good' | 'bad' }) {
+/**
+ * One figure in the chart's stat row.
+ *
+ * `tone` has one value, not three. It carried 'good' and 'bad' as well, styled in a
+ * second green and an orange — and nothing ever passed them. Two colours in the
+ * palette that drew nothing, and two more claims on hues that needed to shed them.
+ */
+function Stat({ label, value, tone }: { label: string; value: string; tone?: 'best' }) {
   return (
     <View style={styles.stat}>
       <Text style={styles.statLabel}>{label}</Text>
@@ -384,8 +400,6 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'be
         style={[
           styles.statValue,
           tone === 'best' && styles.statBest,
-          tone === 'good' && styles.statGood,
-          tone === 'bad' && styles.statBad,
         ]}
         numberOfLines={1}
       >
@@ -412,14 +426,12 @@ const styles = StyleSheet.create({
   headRow: { flexDirection: 'row', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 },
   drill: { color: '#fff', fontSize: 16, fontWeight: '800', flex: 1 },
   runCount: { color: '#64748b', fontSize: 12, fontWeight: '600' },
-  mixed: { color: '#a78bfa', fontSize: 10.5, fontWeight: '700', marginTop: 6 },
+  mixed: { color: METHOD, fontSize: 10.5, fontWeight: '700', marginTop: 6 },
   statRow: { flexDirection: 'row', gap: 10, marginTop: 10, marginBottom: 14 },
   stat: { flex: 1 },
   statLabel: { color: '#64748b', fontSize: 10, fontWeight: '800', letterSpacing: 0.6 },
   statValue: { color: '#cbd5e1', fontSize: 15, fontWeight: '700', marginTop: 2 },
-  statBest: { color: '#fbbf24' },
-  statGood: { color: '#4ade80' },
-  statBad: { color: '#fb923c' },
+  statBest: { color: ACHIEVEMENT },
   plotRow: { flexDirection: 'row' },
   axis: { position: 'relative' },
   axisLabel: {
@@ -440,10 +452,10 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: '#243042',
   },
-  guide: { position: 'absolute', top: 0, width: StyleSheet.hairlineWidth, backgroundColor: '#3b82f6' },
-  segment: { position: 'absolute', backgroundColor: '#3b82f6', borderRadius: LINE_W / 2 },
-  dot: { position: 'absolute', backgroundColor: '#60a5fa', borderWidth: 1, borderColor: '#0e1116' },
-  dotBest: { backgroundColor: '#fbbf24' },
+  guide: { position: 'absolute', top: 0, width: StyleSheet.hairlineWidth, backgroundColor: INTERACTIVE_STRONG },
+  segment: { position: 'absolute', backgroundColor: INTERACTIVE_STRONG, borderRadius: LINE_W / 2 },
+  dot: { position: 'absolute', backgroundColor: INTERACTIVE, borderWidth: 1, borderColor: GROUND },
+  dotBest: { backgroundColor: ACHIEVEMENT },
   dotSel: { borderColor: '#fff', borderWidth: 2 },
   xAxis: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6 },
   xLabel: { color: '#475569', fontSize: 10 },
@@ -465,14 +477,14 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
     backgroundColor: '#0b0e13',
   },
-  stepText: { color: '#93c5fd', fontSize: 18, fontWeight: '800', lineHeight: 20 },
+  stepText: { color: INTERACTIVE_SOFT, fontSize: 18, fontWeight: '800', lineHeight: 20 },
   readoutCol: { flex: 1, minWidth: 0 },
   readoutText: { color: '#cbd5e1', fontSize: 13 },
   readoutNote: { color: '#64748b', fontSize: 11, marginTop: 2, fontVariant: ['tabular-nums'] },
   readoutStrong: { color: '#fff', fontWeight: '800' },
   readoutHint: { color: '#475569', fontSize: 12, flex: 1 },
-  pbTag: { color: '#fbbf24', fontWeight: '800' },
-  sourceTag: { color: '#a78bfa', fontWeight: '700' },
+  pbTag: { color: ACHIEVEMENT, fontWeight: '800' },
+  sourceTag: { color: METHOD, fontWeight: '700' },
   delBtn: {
     paddingHorizontal: 12,
     paddingVertical: 8,
@@ -481,6 +493,6 @@ const styles = StyleSheet.create({
     borderColor: '#7f1d1d',
     backgroundColor: '#1a1214',
   },
-  delText: { color: '#f87171', fontSize: 12, fontWeight: '800' },
+  delText: { color: DESTRUCTIVE, fontSize: 12, fontWeight: '800' },
   dimmed: { opacity: 0.5 },
 });

@@ -30,6 +30,12 @@ import { useGate } from '../ble/GateProvider';
 import { useV2 } from '../ble/V2Provider';
 import { scanForGatesWithData, stopScan } from '../ble/bleClient';
 import { parseAdvSet } from '../ble/v2';
+import {
+  INTERACTIVE,
+  INTERACTIVE_STRONG,
+  LIVE,
+  LIVE_BUSY,
+} from '../theme';
 
 type Found = { device: Device; name: string; set: number | null; rssi: number };
 
@@ -280,7 +286,7 @@ function SetPickerModal({
 
           <View style={styles.footer}>
             <View style={styles.scanState}>
-              {scanning ? <ActivityIndicator size="small" color="#60a5fa" /> : null}
+              {scanning ? <ActivityIndicator size="small" color={INTERACTIVE} /> : null}
               <Text style={styles.scanText}>{scanning ? 'Scanning…' : 'Scan complete'}</Text>
             </View>
             <Pressable onPress={startScan} hitSlop={8}>
@@ -303,17 +309,17 @@ const styles = StyleSheet.create({
   badgeText: { color: '#fff', fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
   badgeMuted: { backgroundColor: '#243042' },
   badgeMutedText: { color: '#94a3b8', fontSize: 12, fontWeight: '700' },
-  link: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
+  link: { color: INTERACTIVE, fontWeight: '700', fontSize: 13 },
   // Dot + label + action copied from ConnChip so the bar reads the same.
   // NOT `dot` — the set picker below already owns that name for its colour swatch.
   statusDot: { width: 9, height: 9, borderRadius: 5 },
-  dotOn: { backgroundColor: '#22c55e' },
-  dotBusy: { backgroundColor: '#f59e0b' },
+  dotOn: { backgroundColor: LIVE },
+  dotBusy: { backgroundColor: LIVE_BUSY },
   dotOff: { backgroundColor: '#64748b' },
   status: { color: '#94a3b8', fontSize: 12, flexShrink: 1 },
   detail: { color: '#64748b', fontSize: 11 },
   spacer: { flex: 1 },
-  action: { color: '#60a5fa', fontWeight: '700', fontSize: 13 },
+  action: { color: INTERACTIVE, fontWeight: '700', fontSize: 13 },
   dimText: { opacity: 0.4 },
   backdrop: {
     flex: 1,
@@ -338,11 +344,11 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
   },
   setRowDim: { opacity: 0.4 },
-  setRowPressed: { borderColor: '#3b82f6' },
+  setRowPressed: { borderColor: INTERACTIVE_STRONG },
   dot: { width: 12, height: 12, borderRadius: 6 },
   setLabel: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
   setMeta: { color: '#64748b', fontSize: 12 },
-  current: { color: '#34d399', fontSize: 11, fontWeight: '800', marginRight: 8 },
+  current: { color: INTERACTIVE, fontSize: 11, fontWeight: '800', marginRight: 8 },
   unknownHead: { color: '#64748b', fontSize: 12, fontWeight: '700', marginTop: 14 },
   empty: { color: '#64748b', fontSize: 13, textAlign: 'center', paddingVertical: 20 },
   footer: {

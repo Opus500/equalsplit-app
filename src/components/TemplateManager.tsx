@@ -33,6 +33,10 @@ import {
 } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
 import { LineupEditorModal } from './LineupEditor';
+import {
+  DESTRUCTIVE,
+  INTERACTIVE,
+} from '../theme';
 
 export function TemplateManagerModal({
   visible,
@@ -299,7 +303,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#243042',
   },
   title: { color: '#fff', fontSize: 19, fontWeight: '800' },
-  done: { color: '#60a5fa', fontSize: 15, fontWeight: '800' },
+  done: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
   body: { padding: 16, paddingBottom: 40 },
   sectionLabel: { color: '#64748b', fontSize: 10, fontWeight: '800', letterSpacing: 0.8, marginBottom: 8 },
   saveRow: { flexDirection: 'row', gap: 10 },
@@ -345,6 +349,6 @@ const styles = StyleSheet.create({
     borderColor: '#243042',
   },
   smallBtnText: { color: '#94a3b8', fontSize: 12, fontWeight: '700' },
-  deleteText: { color: '#f87171', fontSize: 12, fontWeight: '700' },
+  deleteText: { color: DESTRUCTIVE, fontSize: 12, fontWeight: '700' },
   dim: { opacity: 0.45 },
 });

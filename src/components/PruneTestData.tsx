@@ -25,6 +25,14 @@ import {
   type Period,
   type PrunableRun,
 } from '../runs/prune';
+import {
+  CAUTION,
+  DESTRUCTIVE,
+  DESTRUCTIVE_EDGE,
+  INK,
+  INTERACTIVE,
+  INTERACTIVE_STRONG,
+} from '../theme';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(2);
 const shortDate = (ms: number) =>
@@ -311,11 +319,11 @@ const styles = StyleSheet.create({
     borderBottomColor: '#243042',
   },
   title: { color: '#fff', fontSize: 19, fontWeight: '800' },
-  done: { color: '#60a5fa', fontSize: 15, fontWeight: '800' },
+  done: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
   body: { padding: 16, paddingBottom: 48 },
   muted: { color: '#64748b', marginTop: 20, textAlign: 'center' },
   intro: { color: '#94a3b8', fontSize: 13, lineHeight: 19 },
-  strong: { color: '#fbbf24', fontWeight: '800' },
+  strong: { color: CAUTION, fontWeight: '800' },
   mono: { color: '#e2e8f0', fontWeight: '700' },
   stat: { color: '#64748b', fontSize: 12, marginTop: 8 },
   segRow: { flexDirection: 'row', gap: 8, marginTop: 16, marginBottom: 18 },
@@ -327,7 +335,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  segOn: { backgroundColor: '#1e3a5f', borderColor: '#3b82f6' },
+  segOn: { backgroundColor: '#1e3a5f', borderColor: INTERACTIVE_STRONG },
   segText: { color: '#94a3b8', fontSize: 13, fontWeight: '700' },
   segTextOn: { color: '#dbeafe' },
   sectionLabel: { color: '#64748b', fontSize: 10, fontWeight: '800', letterSpacing: 0.7, marginBottom: 8 },
@@ -344,10 +352,10 @@ const styles = StyleSheet.create({
   rowLabel: { color: '#cbd5e1', fontSize: 13, width: 118 },
   rowLabelOn: { color: '#fff', fontWeight: '700' },
   barTrack: { flex: 1, height: 8, borderRadius: 4, backgroundColor: '#1c2432', overflow: 'hidden' },
-  barFill: { height: 8, backgroundColor: '#3b82f6' },
-  barFillAll: { backgroundColor: '#b45309' },
+  barFill: { height: 8, backgroundColor: INTERACTIVE_STRONG },
+  barFillAll: { backgroundColor: DESTRUCTIVE_EDGE },
   rowCount: { color: '#64748b', fontSize: 11, width: 52, textAlign: 'right', fontVariant: ['tabular-nums'] },
-  rowCountAll: { color: '#fbbf24', fontWeight: '700' },
+  rowCountAll: { color: CAUTION, fontWeight: '700' },
   hint: { color: '#475569', fontSize: 12, marginTop: 18, textAlign: 'center' },
   preview: {
     marginTop: 20,
@@ -361,8 +369,8 @@ const styles = StyleSheet.create({
   pvRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4, gap: 12 },
   pvLabel: { color: '#94a3b8', fontSize: 13, flex: 1 },
   pvValue: { color: '#cbd5e1', fontSize: 14, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  pvBad: { color: '#f87171' },
-  pvGood: { color: '#4ade80' },
+  pvBad: { color: DESTRUCTIVE },
+  pvGood: { color: INK },
   sampleLabel: {
     color: '#475569',
     fontSize: 10,
@@ -381,6 +389,6 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     alignItems: 'center',
   },
-  dangerText: { color: '#f87171', fontSize: 14, fontWeight: '800' },
+  dangerText: { color: DESTRUCTIVE, fontSize: 14, fontWeight: '800' },
   dim: { opacity: 0.5 },
 });

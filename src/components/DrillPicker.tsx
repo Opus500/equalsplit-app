@@ -32,6 +32,13 @@ import {
   type Drill,
 } from '../db/database';
 import { ENGINE_DRILL_LABELS, foldName } from '../db/migrations';
+import {
+  CAUTION,
+  DESTRUCTIVE,
+  INTERACTIVE,
+  INTERACTIVE_SOFT,
+  INTERACTIVE_STRONG,
+} from '../theme';
 
 const VISIBLE_CAP = 8;
 
@@ -507,7 +514,7 @@ const styles = StyleSheet.create({
   },
   addBtn: { backgroundColor: '#2563eb', borderRadius: 10, paddingHorizontal: 16, paddingVertical: 11 },
   addBtnText: { color: '#fff', fontWeight: '700' },
-  dupNote: { color: '#fbbf24', fontSize: 11, marginTop: 6 },
+  dupNote: { color: CAUTION, fontSize: 11, marginTop: 6 },
   list: { flexGrow: 0, marginTop: 10 },
   row: {
     flexDirection: 'row',
@@ -521,15 +528,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#243042',
   },
-  rowSelected: { borderColor: '#3b82f6', backgroundColor: '#12203a' },
+  rowSelected: { borderColor: INTERACTIVE_STRONG, backgroundColor: '#12203a' },
   rowText: { flex: 1 },
   rowLabel: { color: '#e2e8f0', fontSize: 15, fontWeight: '700' },
   rowLabelMuted: { color: '#94a3b8', fontWeight: '600' },
   badge: { color: '#a855f7', fontSize: 10, fontWeight: '700' },
   rowDetail: { color: '#64748b', fontSize: 11, marginTop: 2 },
-  check: { color: '#34d399', fontSize: 18, fontWeight: '800' },
+  check: { color: INTERACTIVE, fontSize: 18, fontWeight: '800' },
   more: { paddingVertical: 10, alignItems: 'center' },
-  moreText: { color: '#60a5fa', fontSize: 13, fontWeight: '700' },
+  moreText: { color: INTERACTIVE, fontSize: 13, fontWeight: '700' },
   empty: { color: '#64748b', fontSize: 13, textAlign: 'center', paddingVertical: 16 },
   close: {
     marginTop: 12,
@@ -542,7 +549,7 @@ const styles = StyleSheet.create({
   footRow: { flexDirection: 'row', gap: 10 },
   footBtn: { flex: 1 },
   manageOn: { backgroundColor: '#1e3a5f' },
-  manageOnText: { color: '#93c5fd' },
+  manageOnText: { color: INTERACTIVE_SOFT },
   miniBtn: {
     paddingHorizontal: 10,
     paddingVertical: 7,
@@ -552,7 +559,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#161b22',
   },
   miniText: { color: '#94a3b8', fontSize: 12, fontWeight: '700' },
-  miniDanger: { color: '#f87171', fontSize: 12, fontWeight: '700' },
+  miniDanger: { color: DESTRUCTIVE, fontSize: 12, fontWeight: '700' },
   locked: { color: '#475569', fontSize: 10, fontStyle: 'italic', maxWidth: 92, textAlign: 'right' },
   renameHint: { color: '#64748b', fontSize: 12, lineHeight: 17, marginBottom: 10 },
   renameInput: {

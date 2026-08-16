@@ -10,6 +10,9 @@ import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { useRoster } from '../roster/RosterProvider';
 import { disambiguate, runCountLabel } from '../roster/labels';
 import { ReorderList } from './ReorderList';
+import {
+  INTERACTIVE,
+} from '../theme';
 
 export function LineupEditorModal({
   visible,
@@ -104,7 +107,7 @@ const styles = StyleSheet.create({
   headerText: { flex: 1, minWidth: 0 },
   title: { color: '#fff', fontSize: 19, fontWeight: '800' },
   sub: { color: '#64748b', fontSize: 12, marginTop: 3 },
-  done: { color: '#60a5fa', fontSize: 15, fontWeight: '800' },
+  done: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
   body: { padding: 16, paddingBottom: 40 },
   note: { color: '#64748b', fontSize: 12, lineHeight: 18, marginBottom: 14 },
   dim: { opacity: 0.5 },

@@ -23,6 +23,9 @@ import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 
 import { formatBytes, getClip, type Clip } from '../video/clips';
+import {
+  INTERACTIVE,
+} from '../theme';
 
 export function VideoPlayerModal({
   visible,
@@ -144,7 +147,7 @@ const styles = StyleSheet.create({
   headerText: { flex: 1, minWidth: 0 },
   title: { color: '#fff', fontSize: 18, fontWeight: '800' },
   sub: { color: '#94a3b8', fontSize: 13, marginTop: 1 },
-  close: { color: '#60a5fa', fontSize: 16, fontWeight: '700' },
+  close: { color: INTERACTIVE, fontSize: 16, fontWeight: '700' },
   dim: { opacity: 0.5 },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 12 },
   video: { width: '100%', height: '100%' },

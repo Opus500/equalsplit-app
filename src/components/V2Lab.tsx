@@ -7,6 +7,14 @@ import { useEffect } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { useV2, type Comparison } from '../ble/V2Provider';
+import {
+  CAUTION,
+  DESTRUCTIVE,
+  FAINT,
+  INK,
+  INTERACTIVE_SOFT,
+  LIVE_FILL,
+} from '../theme';
 
 const AGREE_MS = 5; // TF-Luna 250 Hz frame quantization band (§14)
 const WARN_MS = 10;
@@ -124,7 +132,7 @@ export default function V2Lab() {
 
 function CmpRow({ c }: { c: Comparison }) {
   const abs = Math.abs(c.deltaMs);
-  const color = !c.synced ? '#8b98a9' : abs <= AGREE_MS ? '#4ade80' : abs <= WARN_MS ? '#fbbf24' : '#f87171';
+  const color = !c.synced ? FAINT : abs <= AGREE_MS ? INK : abs <= WARN_MS ? CAUTION : DESTRUCTIVE;
   return (
     <View style={styles.cmpRow}>
       <Text style={styles.cell}>{c.id}</Text>
@@ -170,18 +178,18 @@ const styles = StyleSheet.create({
   sub: { color: '#8b98a9', marginTop: 2, marginBottom: 8, fontSize: 12 },
   section: { color: '#8b98a9', fontWeight: '700', marginTop: 8, marginBottom: 4, fontSize: 12 },
   muted: { color: '#64748b', fontSize: 12, paddingVertical: 6 },
-  hint: { color: '#fbbf24', fontSize: 11, marginTop: 6 },
+  hint: { color: CAUTION, fontSize: 11, marginTop: 6 },
   gateRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 },
   mono: { color: '#cbd5e1', fontFamily: mono, fontSize: 12 },
-  gateMeta: { color: '#93c5fd', fontSize: 12 },
+  gateMeta: { color: INTERACTIVE_SOFT, fontSize: 12 },
   row: { flexDirection: 'row', gap: 8, marginTop: 8 },
   btn: { flex: 1, backgroundColor: '#2563eb', paddingVertical: 11, borderRadius: 10, alignItems: 'center' },
-  btnGo: { backgroundColor: '#16a34a' },
+  btnGo: { backgroundColor: LIVE_FILL },
   btnText: { color: '#fff', fontWeight: '600', fontSize: 13 },
   dim: { opacity: 0.4 },
   cmpHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 },
   cmpTitle: { color: '#e2e8f0', fontWeight: '700', fontSize: 13 },
-  clear: { color: '#f87171', fontSize: 12 },
+  clear: { color: DESTRUCTIVE, fontSize: 12 },
   cmpRow: { flexDirection: 'row', paddingVertical: 5, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#1f2733' },
   cmpRowHead: { borderBottomColor: '#334155' },
   cell: { flex: 1, color: '#e2e8f0', fontFamily: mono, fontSize: 13, fontVariant: ['tabular-nums'] },
