@@ -12,6 +12,8 @@
 // storage to the clip alone is what makes the size shown at the delete point
 // honest: it is exactly what deleting reclaims, with nothing else to account for.
 
+import { Share } from 'react-native';
+
 import { Directory, File, Paths } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { Asset, MediaSubtype } from 'expo-media-library';
@@ -312,6 +314,25 @@ export function sweepBrokenClips(): number {
 export function deleteClip(id: string): void {
   const dir = clipDir(id);
   if (dir.exists) dir.delete();
+}
+
+/**
+ * Hand a stored clip to the system share sheet.
+ *
+ * Here rather than in the library screen, because sharing a run's video is a
+ * thing to do to a CLIP and the library was only the first place it was reachable
+ * from. Three screens list runs with footage; the action belongs to all of them.
+ *
+ * React Native's own Share takes a file URL on iOS, so this costs no dependency.
+ * Returns false when the clip is gone — sharing nothing would open an empty sheet
+ * and the caller can say something better than that.
+ */
+export async function shareClip(clipId: string | null | undefined): Promise<boolean> {
+  if (!clipId) return false;
+  const clip = getClip(clipId);
+  if (!clip) return false;
+  await Share.share({ url: clip.uri });
+  return true;
 }
 
 /** Total bytes across all stored clips — the honest figure for a storage line. */

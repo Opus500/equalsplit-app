@@ -23,7 +23,6 @@ import {
   Alert,
   Pressable,
   ScrollView,
-  Share,
   StyleSheet,
   Text,
   View,
@@ -35,11 +34,12 @@ import {
 import { Asset, requestPermissionsAsync } from 'expo-media-library';
 
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
-import { clearMissingClips, listVideoRuns, type VideoRunRow } from '../db/database';
+import { countMissingClips, listVideoRuns, type VideoRunRow } from '../db/database';
 import {
   deleteClip,
   formatBytes,
   listClips,
+  shareClip,
   sweepBrokenClips,
   totalBytes,
   type Clip,
@@ -71,11 +71,11 @@ export default function VideoLibraryScreen() {
     setSwept(sweepBrokenClips());
     const clips = listClips();
     const runs = await listVideoRuns();
-    // Clip references that no longer resolve are cleared here rather than left to
-    // rot: a run claiming footage it does not have would show a Play button that
-    // opens nothing. The count is reported, not hidden.
-    const cleared = await clearMissingClips(clips.map((c) => c.id));
-    setOrphanRuns(cleared);
+    // COUNTED, not cleared. Clearing them erased the very state this footnote and
+    // the player's "Video deleted" card exist to report — and a count of what
+    // changed on this visit showed up once and then never again, which is why it
+    // looked like it was not rendering at all.
+    setOrphanRuns(await countMissingClips(clips.map((c) => c.id)));
 
     const byClip = new Map<string, VideoRunRow>();
     for (const r of runs) byClip.set(r.clip_id, r);
@@ -141,10 +141,10 @@ export default function VideoLibraryScreen() {
   }, []);
 
   const share = useCallback(async (entry: Entry) => {
+    // shareClip lives in clips.ts now — History and the athlete run list offer the
+    // same action, and three copies of a share sheet is three places to diverge.
     try {
-      // RN's own Share takes a file URL on iOS, so the share sheet costs no extra
-      // dependency.
-      await Share.share({ url: entry.clip.uri });
+      if (!(await shareClip(entry.clip.id))) Alert.alert('Video deleted', 'There is nothing left to share.');
     } catch (e) {
       Alert.alert('Could not share', String(e));
     }
@@ -236,9 +236,9 @@ export default function VideoLibraryScreen() {
         {body}
         {orphanRuns > 0 ? (
           <Text style={styles.footnote}>
-            {orphanRuns} video run{orphanRuns === 1 ? '' : 's'} no longer{' '}
-            {orphanRuns === 1 ? 'has' : 'have'} a clip. The times are kept — deleting a video never
-            deletes its run.
+            {orphanRuns} run{orphanRuns === 1 ? '' : 's'} still point{orphanRuns === 1 ? 's' : ''} at
+            a video that has been deleted. The times are kept — deleting a video never deletes its
+            run — and playing one of those runs says so.
           </Text>
         ) : null}
         {swept > 0 ? (

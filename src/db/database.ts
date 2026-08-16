@@ -480,19 +480,30 @@ export async function setRunClip(runId: string, clipId: string | null): Promise<
   await db.runAsync('UPDATE runs SET clip_id = ? WHERE id = ?', [clipId, runId]);
 }
 
-/** Runs whose clip_id points at a video that is no longer on disk. Clearing them
- *  keeps "has footage" honest after a delete. */
-export async function clearMissingClips(presentClipIds: string[]): Promise<number> {
+/**
+ * How many runs point at a video that is no longer on disk. READ-ONLY.
+ *
+ * This used to CLEAR those references, and that quietly destroyed the two things
+ * built to report them. With the id erased the run had no video as far as any
+ * screen could tell: the play control disappeared from the run list, so
+ * VideoPlayerModal's "Video deleted — the time is unaffected" card became
+ * unreachable, and the library footnote counted rows cleared on THIS visit rather
+ * than rows in that state, so it appeared once and never again.
+ *
+ * A dangling clip_id is not rot, it is a tombstone. It records that this run had
+ * footage and the footage was deleted, which is exactly what the coach needs told
+ * — and `getClip` already returns null for it, so nothing downstream breaks.
+ *
+ * Deliberate detachment is a different thing and stays different: "Remove video"
+ * sets clip_id to NULL, meaning there is no video and never mind why.
+ */
+export async function countMissingClips(presentClipIds: string[]): Promise<number> {
   const db = await getDb();
-  const rows = await db.getAllAsync<{ id: string; clip_id: string }>(
-    'SELECT id, clip_id FROM runs WHERE clip_id IS NOT NULL',
+  const rows = await db.getAllAsync<{ clip_id: string }>(
+    'SELECT clip_id FROM runs WHERE clip_id IS NOT NULL',
   );
   const present = new Set(presentClipIds);
-  const stale = rows.filter((r) => !present.has(r.clip_id));
-  for (const r of stale) {
-    await db.runAsync('UPDATE runs SET clip_id = NULL WHERE id = ?', [r.id]);
-  }
-  return stale.length;
+  return rows.filter((r) => !present.has(r.clip_id)).length;
 }
 
 /**

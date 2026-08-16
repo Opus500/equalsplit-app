@@ -37,6 +37,7 @@ import { REPEAT_MODE, parseRepSetJson, runStartSource } from '../ble/repeats';
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
 import { VideoPlayerModal } from '../components/VideoPlayerModal';
+import { shareClip } from '../video/clips';
 import { runShareLine, sessionShareText, shareText } from '../share';
 
 const fmt = (ms: number) => (Math.max(0, ms) / 1000).toFixed(3);
@@ -74,6 +75,23 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
   // Which rep set has its intervals showing. One at a time — the list is long.
   const [expanded, setExpanded] = useState<string | null>(null);
   const [playing, setPlaying] = useState<RunRow | null>(null);
+
+  /**
+   * Share a run's VIDEO — the file, not the numbers.
+   *
+   * Distinct from shareText below, which sends the times as a line of text. Both
+   * are "share this run" and they send completely different things, so both exist
+   * and each says which it is.
+   */
+  const shareRunVideo = useCallback(async (clipId: string | null) => {
+    try {
+      if (!(await shareClip(clipId))) {
+        Alert.alert('Video deleted', "This run's video was removed, so there is nothing to share.");
+      }
+    } catch (e) {
+      Alert.alert('Could not share', String(e));
+    }
+  }, []);
   const [picking, setPicking] = useState(false);
   const [pickingDrill, setPickingDrill] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -310,6 +328,20 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                     accessibilityLabel="Play this run's video"
                   >
                     <Text style={styles.playGlyph}>▶</Text>
+                  </Pressable>
+                ) : null}
+                {/* Sharing the FOOTAGE, distinct from the share below it, which
+                    sends the run's numbers as text. Only on rows that have a clip,
+                    for the same reason as the play control: a permanently greyed
+                    button on most rows is noise. */}
+                {item.clip_id ? (
+                  <Pressable
+                    onPress={() => void shareRunVideo(item.clip_id)}
+                    hitSlop={8}
+                    style={styles.rowIcon}
+                    accessibilityLabel="Share this run's video"
+                  >
+                    <Text style={styles.clipShareGlyph}>⇪</Text>
                   </Pressable>
                 ) : null}
                 <Pressable
@@ -690,6 +722,7 @@ const styles = StyleSheet.create({
   rowIcon: { paddingHorizontal: 6, paddingVertical: 2 },
   shareGlyph: { color: '#60a5fa', fontSize: 16, fontWeight: '800' },
   playGlyph: { color: '#34d399', fontSize: 14, fontWeight: '800' },
+  clipShareGlyph: { color: '#34d399', fontSize: 15, fontWeight: '800' },
   delText: { color: '#b4541f', fontSize: 16, fontWeight: '800' },
   headerShare: {
     backgroundColor: '#1f2937',

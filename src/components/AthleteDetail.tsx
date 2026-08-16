@@ -35,6 +35,7 @@ import {
   formatBytes,
   getClip,
   importClip,
+  shareClip,
   PHOTO_ACCESS_MESSAGE,
   PHOTO_ACCESS_TITLE,
   pickVideo,
@@ -381,6 +382,24 @@ export function AthleteDetailModal({
     [rows],
   );
 
+  /**
+   * Hand this run's video to the share sheet.
+   *
+   * Sharing was reachable only from the Videos pane, which meant finding the clip
+   * in a list of clips to share a run you were already looking at. Same helper the
+   * library calls.
+   */
+  const shareVideo = useCallback(async (runId: string) => {
+    const clipId = rows?.find((r) => r.id === runId)?.clip_id ?? null;
+    try {
+      if (!(await shareClip(clipId))) {
+        Alert.alert('Video deleted', "This run's video was removed, so there is nothing to share.");
+      }
+    } catch (e) {
+      Alert.alert('Could not share', String(e));
+    }
+  }, [rows]);
+
   const [playing, setPlaying] = useState<{ clipId: string; title: string; sub: string } | null>(null);
   const [assigning, setAssigning] = useState<string | null>(null);
 
@@ -455,6 +474,7 @@ export function AthleteDetailModal({
                 onDeleteRun={confirmDeleteRun}
                 onEditNote={editNote}
                 onAttachVideo={(id) => void attachVideo(id)}
+                onShareVideo={(id) => void shareVideo(id)}
                 onReplaceVideo={replaceVideo}
                 onRemoveVideo={removeVideo}
                 attachingRunId={attaching}
@@ -553,6 +573,7 @@ function ChartPager({
   onDeleteRun,
   onEditNote,
   onAttachVideo,
+  onShareVideo,
   onReplaceVideo,
   onRemoveVideo,
   attachingRunId,
@@ -569,6 +590,7 @@ function ChartPager({
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
+  onShareVideo?: (runId: string) => void;
   onReplaceVideo?: (runId: string) => void;
   onRemoveVideo?: (runId: string) => void;
   /** Which run is mid-import, so the button can say so. Copying a clip is a file
@@ -605,9 +627,24 @@ function ChartPager({
   }, [pageCount, page]);
 
   const onLayout = (e: LayoutChangeEvent) => setPageW(e.nativeEvent.layout.width);
-  const onEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+
+  /**
+   * Which page is on screen, tracked DURING the scroll.
+   *
+   * The run list is rendered from this, and it used to update only in
+   * onMomentumScrollEnd — which fires when the deceleration has completely
+   * finished, not when the new page arrives. So the chart slid into place and the
+   * list underneath sat on the old series until the scroll physics ran out, then
+   * swapped. That pause is the "old list disappears, new one appears after a beat"
+   * — nothing was slow, the list was simply told late.
+   *
+   * Guarded on a CHANGE of page rather than setting state on every scroll event,
+   * so a swipe costs one re-render rather than sixty.
+   */
+  const onScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     if (!pageW) return;
-    setPage(Math.round(e.nativeEvent.contentOffset.x / pageW));
+    const next = Math.round(e.nativeEvent.contentOffset.x / pageW);
+    setPage((cur) => (next !== cur && next >= 0 ? next : cur));
   };
 
   const goTo = (i: number) => {
@@ -632,6 +669,7 @@ function ChartPager({
       onDeleteRun={onDeleteRun}
       onEditNote={onEditNote}
       onAttachVideo={onAttachVideo}
+      onShareVideo={onShareVideo}
       onReplaceVideo={onReplaceVideo}
       onRemoveVideo={onRemoveVideo}
       attachingRunId={attachingRunId}
@@ -647,6 +685,7 @@ function ChartPager({
       onDeleteRun={onDeleteRun}
       onEditNote={onEditNote}
       onAttachVideo={onAttachVideo}
+      onShareVideo={onShareVideo}
       onReplaceVideo={onReplaceVideo}
       onRemoveVideo={onRemoveVideo}
       attachingRunId={attachingRunId}
@@ -664,7 +703,12 @@ function ChartPager({
             pagingEnabled
             scrollEnabled={pageCount > 1}
             showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={onEnd}
+            onScroll={onScroll}
+            // 16ms ~ once per frame. The handler bails unless the page actually
+            // changed, so this is a cheap comparison sixty times a second, not
+            // sixty re-renders.
+            scrollEventThrottle={16}
+            onMomentumScrollEnd={onScroll}
             decelerationRate="fast"
           >
             {/* seriesUid, not drillId: since the source split one drill can produce
@@ -774,6 +818,7 @@ function RunList({
   onDeleteRun,
   onEditNote,
   onAttachVideo,
+  onShareVideo,
   onReplaceVideo,
   onRemoveVideo,
   attachingRunId,
@@ -790,6 +835,7 @@ function RunList({
   onDeleteRun?: (runId: string) => void;
   onEditNote?: (runId: string) => void;
   onAttachVideo?: (runId: string) => void;
+  onShareVideo?: (runId: string) => void;
   onReplaceVideo?: (runId: string) => void;
   onRemoveVideo?: (runId: string) => void;
   /** see ChartPager */
@@ -872,6 +918,14 @@ function RunList({
                     present — that rule was right and is unchanged — but "no silent
                     replacement" was never meant to mean "no replacement", and a
                     clip you attached to the wrong run had no way off it. */}
+                {p.clipId && onShareVideo ? (
+                  <Pressable
+                    onPress={() => onShareVideo(p.runId)}
+                    style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
+                  >
+                    <Text style={styles.actionText}>Share</Text>
+                  </Pressable>
+                ) : null}
                 {p.clipId && onReplaceVideo ? (
                   <Pressable
                     onPress={() => onReplaceVideo(p.runId)}
@@ -981,6 +1035,13 @@ const styles = StyleSheet.create({
   runNote: { color: '#cbd5e1', fontSize: 12, marginTop: 2, fontStyle: 'italic' },
   runActions: {
     flexDirection: 'row',
+    // WRAPS. A run with a video now offers Play, Replace, Remove, Share, Add note
+    // and Delete — six controls that do not fit a phone's width, and without this
+    // the last two were simply off the edge of the screen with nothing to suggest
+    // they existed. Wrapping rather than scrolling horizontally: a hidden action
+    // is worse than a taller row, and the row only appears on the selected run.
+    flexWrap: 'wrap',
+    rowGap: 8,
     gap: 8,
     paddingHorizontal: 14,
     paddingBottom: 10,
