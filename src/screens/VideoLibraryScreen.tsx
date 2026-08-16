@@ -64,7 +64,7 @@ export default function VideoLibraryScreen() {
   const load = useCallback(async () => {
     // Before listing, not after: a directory left by an import that died partway
     // holds no playable video and no recoverable time, and leaving it would put a
-    // row here offering Play, Camera roll and Share on a file that has none of it.
+    // row here offering Play, Save and Share on a file that has none of it.
     setSwept(sweepBrokenClips());
     const clips = listClips();
     const runs = await listVideoRuns();
@@ -195,7 +195,7 @@ export default function VideoLibraryScreen() {
               disabled={working === e.clip.id}
             >
               <Text style={styles.actionText}>
-                {working === e.clip.id ? 'Saving…' : 'Camera roll'}
+                {working === e.clip.id ? 'Saving…' : 'Save'}
               </Text>
             </Pressable>
             <Pressable style={styles.action} onPress={() => void share(e)}>

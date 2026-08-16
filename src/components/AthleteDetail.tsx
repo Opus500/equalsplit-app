@@ -87,6 +87,16 @@ export function AthleteDetailModal({
   // two can never disagree about which run is selected. Keyed on the run id, not
   // an index, so a delete can't silently retarget it.
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  /**
+   * Bumped whenever a clip FILE appears or disappears under a run whose clip_id is
+   * unchanged.
+   *
+   * Removing a video now deletes the file and keeps the reference, so nothing in
+   * `rows` changes and React has no reason to re-render — but what the row should
+   * offer changed completely. This is the render key for state that lives on disk
+   * rather than in the query result.
+   */
+  const [clipTick, setClipTick] = useState(0);
   // Deleting a run changes the athlete's run_count, which the roster row and every
   // picker render — refresh the provider so they don't go stale behind this sheet.
   const roster = useRoster();
@@ -358,6 +368,15 @@ export function AthleteDetailModal({
    * exactly what the library labels "NO RUN — SAFE TO DELETE", so leaving it would
    * mean the coach had to do this twice to get the outcome they asked for. The
    * confirm says both halves out loud, and the run's time is never touched.
+   *
+   * THE REFERENCE SURVIVES THE FILE. This used to null clip_id as well, which is
+   * the same mistake clearMissingClips made in a different place: "this run had
+   * footage and it was deleted" is a FACT about the run, and clip_id pointing at a
+   * clip that is gone is the only place it is written down. Erasing it made the
+   * player's "Video deleted" card unreachable by the one route a coach would take
+   * to it, and left the library's orphan footnote counting nothing on a device
+   * where videos had in fact been removed. Deleting a video never deletes its run,
+   * and the run should be able to say so.
    */
   const removeVideo = useCallback(
     (runId: string) => {
@@ -367,17 +386,20 @@ export function AthleteDetailModal({
       Alert.alert(
         'Remove this video?',
         `The video file is deleted${size ? ` and ${formatBytes(size)} freed` : ''}. ` +
-          'The run and its time are kept.\n\nThis cannot be undone.',
+          'The run and its time are kept, and the run will say its video was removed.' +
+          '\n\nThis cannot be undone.',
         [
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Remove video',
             style: 'destructive',
-            onPress: async () => {
+            onPress: () => {
               try {
-                await setRunClip(runId, null);
-                setRows((prev) => prev?.map((r) => (r.id === runId ? { ...r, clip_id: null } : r)) ?? null);
                 deleteClip(clipId);
+                // No row edit to make — clip_id is unchanged. Bumping `clipTick`
+                // is what re-runs the file check the action row derives from, so
+                // the row switches to its tombstone state without a reload.
+                setClipTick((t) => t + 1);
               } catch (e) {
                 Alert.alert('Could not remove that video', String(e));
               }
@@ -419,6 +441,20 @@ export function AthleteDetailModal({
       Alert.alert('Could not share', String(e));
     }
   }, [rows]);
+
+  /**
+   * Does this run's clip still exist as a FILE?
+   *
+   * A run can point at a clip that is gone — that is the designed state, not a
+   * fault, and it is what the library's orphan footnote counts. The reference says
+   * "there was footage here"; only the filesystem says whether it is still
+   * playable, and the two answers drive different buttons.
+   *
+   * clipTick is in the dependency list on purpose: the answer changes when the disk
+   * changes, not when any prop does, so the identity of this callback has to move
+   * with it or a memoised child keeps asking the old question.
+   */
+  const clipPresent = useCallback((clipId: string) => !!getClip(clipId), [clipTick]);
 
   const [playing, setPlaying] = useState<{ clipId: string; title: string; sub: string } | null>(null);
   const [assigning, setAssigning] = useState<string | null>(null);
@@ -498,6 +534,7 @@ export function AthleteDetailModal({
                 onExportVideo={(id) => void exportVideo(id)}
                 onReplaceVideo={replaceVideo}
                 onRemoveVideo={removeVideo}
+                clipPresent={clipPresent}
                 attachingRunId={attaching}
                 onPlayVideo={(p, pageTitle) =>
                   setPlaying({
@@ -601,6 +638,7 @@ function ChartPager({
   attachingRunId,
   onPlayVideo,
   onAssignDrill,
+  clipPresent,
   selectedRunId,
   onSelectRun,
 }: {
@@ -621,6 +659,8 @@ function ChartPager({
   attachingRunId?: string | null;
   onPlayVideo?: (point: SeriesPoint, title: string) => void;
   onAssignDrill?: (runId: string) => void;
+  /** Whether a clip id still has a FILE behind it. See AthleteDetailModal. */
+  clipPresent?: (clipId: string) => boolean;
   selectedRunId: string | null;
   onSelectRun: (runId: string | null) => void;
 }) {
@@ -699,6 +739,7 @@ function ChartPager({
       attachingRunId={attachingRunId}
       onPlayVideo={onPlayVideo}
       onAssignDrill={onAssignDrill}
+      clipPresent={clipPresent}
     />
   ) : current ? (
     <RunList
@@ -715,6 +756,7 @@ function ChartPager({
       onRemoveVideo={onRemoveVideo}
       attachingRunId={attachingRunId}
       onPlayVideo={onPlayVideo}
+      clipPresent={clipPresent}
     />
   ) : null;
 
@@ -850,6 +892,7 @@ function RunList({
   attachingRunId,
   onPlayVideo,
   onAssignDrill,
+  clipPresent,
 }: {
   title: string;
   points: SeriesPoint[];
@@ -870,6 +913,9 @@ function RunList({
   onPlayVideo?: (point: SeriesPoint, title: string) => void;
   /** Only offered where it is the obvious next action: a run with no drill. */
   onAssignDrill?: (runId: string) => void;
+  /** see ChartPager. Absent means "assume present", which is what every caller
+   *  without video wants. */
+  clipPresent?: (clipId: string) => boolean;
 }) {
   const points = useMemo(
     () => (newestFirst ? [...given].reverse() : given),
@@ -884,6 +930,12 @@ function RunList({
 
       {points.map((p) => {
         const open = p.runId === selectedRunId;
+        // THE REFERENCE IS NOT THE FILE. A run keeps its clip_id after the video is
+        // removed — that is how "this run had footage" stays recorded — so what to
+        // offer depends on the disk, not on clip_id alone. Checked only for the
+        // OPEN row: this is a filesystem stat, and doing one per row would put a
+        // season's worth of syscalls in a render pass.
+        const clipGone = open && !!p.clipId && !!clipPresent && !clipPresent(p.clipId);
         return (
           <View key={p.runId}>
             <Pressable
@@ -928,7 +980,11 @@ function RunList({
               <View style={styles.runActions}>
                 {/* Play when there is footage, attach when there is not. Never
                     both — the run has one video or none, and offering "attach"
-                    beside a clip invites silently replacing it. */}
+                    beside a clip invites silently replacing it.
+                    A run whose FILE is gone is the third case and reads as the
+                    second: nothing to share, save, replace or remove, and Attach
+                    back on. Play stays, because the player's card is where the
+                    coach is told what happened and it is the only route to it. */}
                 {onAssignDrill ? (
                   <Pressable
                     onPress={() => onAssignDrill(p.runId)}
@@ -949,7 +1005,7 @@ function RunList({
                     present — that rule was right and is unchanged — but "no silent
                     replacement" was never meant to mean "no replacement", and a
                     clip you attached to the wrong run had no way off it. */}
-                {p.clipId && onShareVideo ? (
+                {p.clipId && !clipGone && onShareVideo ? (
                   <Pressable
                     onPress={() => onShareVideo(p.runId)}
                     style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
@@ -957,15 +1013,15 @@ function RunList({
                     <Text style={styles.actionText}>Share</Text>
                   </Pressable>
                 ) : null}
-                {p.clipId && onExportVideo ? (
+                {p.clipId && !clipGone && onExportVideo ? (
                   <Pressable
                     onPress={() => onExportVideo(p.runId)}
                     style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
                   >
-                    <Text style={styles.actionText}>Camera roll</Text>
+                    <Text style={styles.actionText}>Save</Text>
                   </Pressable>
                 ) : null}
-                {p.clipId && onReplaceVideo ? (
+                {p.clipId && !clipGone && onReplaceVideo ? (
                   <Pressable
                     onPress={() => onReplaceVideo(p.runId)}
                     disabled={!!attachingRunId}
@@ -979,7 +1035,7 @@ function RunList({
                     </Text>
                   </Pressable>
                 ) : null}
-                {p.clipId && onRemoveVideo ? (
+                {p.clipId && !clipGone && onRemoveVideo ? (
                   <Pressable
                     onPress={() => onRemoveVideo(p.runId)}
                     style={({ pressed }) => [styles.actionBtn, pressed && styles.dim]}
@@ -987,7 +1043,7 @@ function RunList({
                     <Text style={[styles.actionText, styles.actionDanger]}>Remove video</Text>
                   </Pressable>
                 ) : null}
-                {!p.clipId && onAttachVideo ? (
+                {(!p.clipId || clipGone) && onAttachVideo ? (
                   <Pressable
                     onPress={() => onAttachVideo(p.runId)}
                     disabled={!!attachingRunId}
