@@ -7,11 +7,18 @@
 // the same thing — a list of presentation timestamps — so this layer is written
 // against that and is unaffected by how that fight resolves.
 //
-// THE RULE THAT MATTERS: a video-timed run is not a gate-timed run and the two
-// must never share a series. Not because video is imprecise (it is, but noise
-// averages out over a season) but because it is BIASED: a gate fires on the first
-// thing through the beam — a hand, a knee — while a coach judging a frame reads
-// the torso. At 8 m/s that is a systematic ~37ms, in one direction, forever.
+// THE RULE THAT MATTERS: a video-timed run is not a gate-timed run, and the
+// difference is a BIAS rather than noise. A gate fires on the first thing through
+// the beam — a hand, a knee — while a coach judging a frame reads the torso. At
+// 8 m/s that is a systematic ~37ms, in one direction, forever, so it does not
+// average out over a season the way imprecision does.
+//
+// They now SHARE a series anyway, and the video points are marked on it. That is a
+// judgement about which cost is larger, not a retraction of the bias: splitting a
+// drill in two could leave both halves under MIN_SERIES_RUNS and chart neither,
+// which is a certain loss against a bounded one. The estimate below is what the UI
+// quotes; progression.ts's sourceGroup is where the line between merging and
+// splitting is actually drawn, and it still splits hand starts.
 
 /**
  * Run mode for a video-timed run.
@@ -153,9 +160,14 @@ export function formatVideoTime(t: VideoTiming): string {
  * Systematic error from judging a body part rather than a beam break, in ms.
  * 0.3m of body extent at 8 m/s. Deliberately NOT added to the ± figure: it is not
  * measurable from the file, and folding an estimate into a computed number would
- * make the whole thing look measured. It exists to be quoted in UI copy, and as
- * the reason gate and video runs never share a series — being a bias, it does not
- * shrink with more runs.
+ * make the whole thing look measured. It exists to be quoted in UI copy.
+ *
+ * AN ESTIMATE, not a measurement — derived from body geometry and a speed, never
+ * observed. It is quotable and it is the reason video points are MARKED on a chart
+ * they share with gate points; it is not strong enough to have justified keeping
+ * them on separate charts. Marking a rep on video that was simultaneously
+ * gate-timed measures it directly, and a handful of those would replace this
+ * number with a real one.
  */
 export const BODY_PART_BIAS_MS = 37;
 
@@ -692,8 +704,14 @@ export function acceptForReview(scale: TimeScale): ClipVerdict {
  * Deliberately does NOT carry the clip id. raw_json answers "how was this timed";
  * runs.clip_id answers "is there footage". Keeping the clip here would have meant
  * that attaching review video to a GATE run had to write this JSON over the
- * gate's, flipping timeSource to 'video' and moving the run into a different
- * progression series — a review clip silently reclassifying a gate-timed run.
+ * gate's, flipping timeSource to 'video' — a review clip silently reclassifying a
+ * gate-timed run.
+ *
+ * That used to mean the run MOVED to a different chart. Since gate and video share
+ * a series it no longer does, and the damage is worse for being quieter: the run
+ * would keep its position and acquire startPts, endPts, fps and a quantSdMs
+ * describing frames its time was never read from. A wrong marker is visible; a
+ * fabricated provenance is not.
  */
 export type VideoRunFacts = {
   startPts: number;

@@ -9,9 +9,11 @@
 // be proved now, and the decode fight cannot invalidate it.
 //
 // The claims that actually matter here:
-//   - a video run never shares a series with a gate run
+//   - a video run SHARES a series with a gate run and is marked on it; a
+//     hand-started run does not (block 3 — this reversed, see verify-progression 15)
 //   - the +/- comes from the clip's MEASURED frame durations, not a constant
-//   - frame stepping refuses to leave the probed region rather than guessing 1/fps
+//   - frame stepping refuses to leave the probed region rather than guessing 1/fps,
+//     and never steps from one probed island into another (11g)
 
 import './_ts-resolve.mjs';
 

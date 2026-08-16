@@ -146,6 +146,22 @@ rename keeps a series intact and a case variant can't split one. On real data a 
 would span ~1000ms while the actual signal inside each drill is ~100ms — the trend would be
 the athlete alternating distances, not their progress.
 
+**And by how the time was produced — but only where the two disagree by more than the
+thing being measured.** `sourceGroup()` puts **gate and video in one series** and keeps
+**hand starts in their own**. Video carries a bias against a gate (`BODY_PART_BIAS_MS`, an
+estimated ~37ms: the beam catches a hand, the coach marks the torso) but it is bounded by a
+body, roughly a frame at 30fps — and splitting a drill in two could push *both* halves under
+`MIN_SERIES_RUNS` and chart neither, which is a certain loss weighed against a bounded one.
+So video points are **marked** rather than segregated: square dots on the plot, the source
+named in the readout, a caveat line on any mixed series, and a `VIDEO` tag in the run list
+for when density drops the dots. A hand start is human reaction time (~200ms,
+`HAND_START_ERROR_MS`) with the spread to match — larger than a season's improvement — so
+merging it would not blur the trend, it would *be* the trend.
+
+> This **reversed** an earlier decision to give video its own chart. `seriesUid` keys on the
+> group, never on the sources present, so a video run joining a gate series must not change
+> the page's key and remount its chart.
+
 | Rule | Call |
 |---|---|
 | Threshold | `MIN_SERIES_RUNS = 2` (coach's call; was 3). A two-point chart is one straight segment, which reads as a trend two samples cannot establish — accepted to make a thin season visible at all |
@@ -155,6 +171,7 @@ the athlete alternating distances, not their progress.
 | Density | **Fit to width, never scroll** — the chart sits inside the horizontally-paging drill ScrollView, so a scrollable plot would fight the page swipe. Marks shrink with spacing; under 7pt only the line, PB and latest are drawn |
 | Width math | `plotW = width − CARD_PAD*2 − AXIS_W`. `onLayout` reports the **border** box, so the card's own padding must come off — double-counting it drew the last point ~14pt outside the card |
 | x-axis | Run **order**, not wall-clock — a layoff would otherwise squash a season into the left edge. Dates are on the axis labels |
+| Grouping key | `drill_id` **+ source group** (`seriesUid`). Gate and video share a group; hand starts do not |
 | Unlabeled runs | Counted, never charted. An "untagged" bucket would mix a 10m and a 40yd — the exact prohibition |
 | `suspect` / `invalid` runs | Excluded and counted. A false trigger lands as an impossibly fast time, i.e. a PB that never happened |
 | Touch targets | Full-height **columns**, not dots: a 10px dot is untappable, and a dozen runs sit closer together than a fingertip |
