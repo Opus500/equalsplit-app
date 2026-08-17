@@ -13,6 +13,41 @@
 //
 // (3, the version choice, was settled from the packages: see the commit message.)
 //
+// ---------------------------------------------------------------------------
+// SECOND PASS. Test 4 failed with "Cannot Decode", and it was this harness, not
+// the camera. Two defects in one call, both already found and fixed in the app
+// eighteen hours AFTER this file was written:
+//
+//   n > 1   expo-video's generateThumbnailsAsync fails with AVErrorDecodeFailed
+//           for any array longer than one. Its AVAssetImageGenerator is a local
+//           whose last use is the images(for:) call, so ARC releases it while the
+//           async sequence is still being consumed and the generator cancels
+//           pending work on dealloc. This asked for 120 at once.
+//
+//   maxW    getMaxSize() builds CGSize(maxWidth, maxHeight) with each defaulting
+//           to 0, so passing maxWidth alone yields a zero dimension. Independently
+//           capable of failing, which is why fixing only the batch might not have
+//           cleared it.
+//
+// It also carried the belief that produced the first defect — the older timing
+// spike closes with "Batching matters: one generator, one decode session". It does
+// not. Five calls made CONCURRENTLY all succeed, which is what ruled out resource
+// contention and gave the fan-out below.
+//
+// The three measurements added with the fix are the ones that decide Stage 3, and
+// none of them is a camera question:
+//
+//   1. BYTES     what a 240fps clip costs per minute. The video library exists
+//                because clips are large, and it was sized against 30fps.
+//   2. PROBE     what the marking screen's OWN probe pattern costs on this file.
+//                18 extractions, 1 serial anchor + 17 fanned 8 at a time — the
+//                exact shape probeGridAround uses. ~154ms at 30fps is the bar.
+//   3. HOLD      whether 240 survives a 60-second recording, measured in three
+//                windows of the file rather than asked of the session.
+//
+// Only the file is evidence. That was true of the fps constraint and it is true of
+// all three of these.
+//
 // The proof for 2 is deliberately three-layered, because a camera that silently
 // ignores a constraint is the exact failure mode worth catching:
 //   - what the DEVICE claims       (supportsFPS / supportedFPSRanges)
@@ -31,13 +66,116 @@ import {
   type CameraSessionConfig,
   type Recorder,
 } from 'react-native-vision-camera';
-import { useVideoPlayer } from 'expo-video';
+import { useVideoPlayer, type VideoPlayer } from 'expo-video';
+import { File } from 'expo-file-system';
 
 const TARGETS = [30, 60, 120, 240];
 const RECORD_MS = 3000;
+/** Long enough for thermal throttling to show up, short enough to sit through. */
+const LONG_RECORD_MS = 60_000;
+
+// ---- the app's probe shape, replicated rather than imported --------------
+//
+// This branch predates src/video/frames.ts, and merging the feature branch into a
+// spike to borrow four constants would make the spike something else. They are
+// copied with their sources named, and the numbers are the point: a measurement of
+// a DIFFERENT probe pattern would answer a question nobody asked.
+
+/** src/video/timing.ts FRAME_FAN_OUT — concurrent extractions in flight. */
+const FAN_OUT = 8;
+/** src/video/frames.ts PROBE_SIZE — grid probes discard the image. */
+const PROBE_SIZE = 64;
+/** src/video/frames.ts probeGridAround framesEitherSide. 1 anchor + 17 = 18 calls. */
+const PROBE_HALF = 8;
+/** What that costs on a 30fps H.264 clip today, measured on device. The bar. */
+const REF_30FPS_MS = 154;
+
+// ---------------------------------------------------------------- helpers
+
+/**
+ * ONE frame. The fixed call.
+ *
+ * One time per request, never an array — and BOTH dimensions, or getMaxSize()
+ * hands AVFoundation a zero-height CGSize. Returns null instead of throwing so a
+ * probe that loses its last frame still reports the rest.
+ */
+async function oneFrame(player: VideoPlayer, time: number): Promise<number | null> {
+  try {
+    const [thumb] = await player.generateThumbnailsAsync([time], {
+      maxWidth: PROBE_SIZE,
+      maxHeight: PROBE_SIZE,
+    });
+    return thumb ? thumb.actualTime : null;
+  } catch {
+    return null;
+  }
+}
+
+/** At most FAN_OUT in flight, matching the app. Concurrency is what makes n=1 fast
+ *  enough to be usable; serial calls would measure a pattern the app never runs. */
+async function fanOut(jobs: (() => Promise<number | null>)[]): Promise<(number | null)[]> {
+  const out: (number | null)[] = [];
+  for (let i = 0; i < jobs.length; i += FAN_OUT) {
+    out.push(...(await Promise.all(jobs.slice(i, i + FAN_OUT).map((j) => j()))));
+  }
+  return out;
+}
+
+/**
+ * probeGridAround's exact shape, timed: one SERIAL anchor to learn the grid phase,
+ * then 17 aligned probes fanned out.
+ *
+ * The anchor is serial on purpose and it is a third of the cost — without a real
+ * timestamp to anchor to you cannot aim at frame centres, and the alternative is
+ * oversampling at quarter-frame granularity.
+ */
+async function probeOnce(
+  player: VideoPlayer,
+  centre: number,
+  frameDur: number,
+): Promise<{ ms: number; calls: number; frames: number[] }> {
+  const t0 = Date.now();
+  const anchor = await oneFrame(player, centre);
+  if (anchor === null) return { ms: Date.now() - t0, calls: 1, frames: [] };
+
+  const times: number[] = [];
+  for (let k = -PROBE_HALF; k <= PROBE_HALF; k += 1) {
+    const t = anchor + (k + 0.5) * frameDur;
+    if (t > 0) times.push(t);
+  }
+  const got = await fanOut(times.map((t) => () => oneFrame(player, t)));
+  const frames = [...new Set([anchor, ...got.filter((x): x is number => x !== null)])].sort(
+    (a, b) => a - b,
+  );
+  return { ms: Date.now() - t0, calls: 1 + times.length, frames };
+}
+
+/**
+ * Median gap between neighbouring frames, in seconds. Null below two gaps.
+ *
+ * MEDIAN, not mean: robust to a dropped frame, which is the thing being looked for.
+ * And computed only WITHIN one probeOnce result, never across two — separate probes
+ * are separate islands with unprobed clip between them, and measuring across that
+ * gap is the bug that read 0.67fps on a constant 30fps clip.
+ */
+function medianGap(frames: number[]): number | null {
+  if (frames.length < 3) return null;
+  const d: number[] = [];
+  for (let i = 1; i < frames.length; i += 1) d.push(frames[i]! - frames[i - 1]!);
+  d.sort((a, b) => a - b);
+  const mid = Math.floor(d.length / 2);
+  const m = d.length % 2 ? d[mid]! : (d[mid - 1]! + d[mid]!) / 2;
+  return m > 0 ? m : null;
+}
+
+const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
 
 export default function VisionSpikeScreen() {
-  const [log, setLog] = useState<string[]>(['VisionCamera spike. Grant camera access, then pick an fps.', '']);
+  const [log, setLog] = useState<string[]>([
+    'VisionCamera spike. Grant camera access, pick an fps, record, then Measure.',
+    'Rec 3s answers bytes and probe cost. Rec 60s answers whether the rate holds.',
+    '',
+  ]);
   const [target, setTarget] = useState(240);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -102,7 +240,7 @@ export default function VisionSpikeScreen() {
 
   // ------------------------------------------------------- record
 
-  const record = useCallback(async () => {
+  const record = useCallback(async (ms: number) => {
     if (busy || !videoOutput) return;
     setBusy(true);
     setRecording(true);
@@ -121,12 +259,41 @@ export default function VisionSpikeScreen() {
         ).catch(reject);
       });
 
-      say('=== RECORDING ===', `  ${RECORD_MS}ms at a requested ${target}fps`);
-      await new Promise((r) => setTimeout(r, RECORD_MS));
+      say('=== RECORDING ===', `  ${(ms / 1000).toFixed(0)}s at a requested ${target}fps`);
+      await new Promise((r) => setTimeout(r, ms));
       await rec.stopRecording();
 
-      clipPath.current = await finished;
-      say('', 'Now run VERIFY — the file is the only evidence that counts.', '');
+      const path = await finished;
+      clipPath.current = path;
+
+      // ---- MEASUREMENT 1: what does this cost to keep? -------------------
+      //
+      // Read off the file rather than estimated from a bitrate. The video library
+      // exists because clips are large, and its sizing was done against 30fps
+      // footage — this is the number that says whether that still holds.
+      const uri = path.startsWith('file://') ? path : `file://${path}`;
+      let bytes = 0;
+      try {
+        bytes = new File(uri).size ?? 0;
+      } catch {
+        bytes = 0;
+      }
+      const secs = ms / 1000;
+      say(
+        '',
+        '=== 1. BYTES ===',
+        `  clip length   ${secs.toFixed(0)}s at a requested ${target}fps`,
+        `  file size     ${bytes} bytes  (${mb(bytes)} MB)`,
+        bytes > 0
+          ? `  implied rate  ${mb((bytes / secs) * 60)} MB per minute of footage`
+          : '  !! size unreadable — the path may not be a plain file',
+        bytes > 0
+          ? `                ${mb((bytes / secs) * 60 * 20)} MB for a 20-minute session`
+          : '',
+        '',
+        'Now run MEASURE — the file is the only evidence that counts.',
+        '',
+      );
     } catch (e) {
       say(`!! ${e instanceof Error ? e.message : String(e)}`, '');
     } finally {
@@ -135,9 +302,9 @@ export default function VisionSpikeScreen() {
     }
   }, [busy, videoOutput, target, say]);
 
-  // --------------------------------------------- 4: verify under expo-video
+  // ------------------------------------- 2 + 3: probe cost, and does 240 hold
 
-  const verify = useCallback(async () => {
+  const measure = useCallback(async () => {
     if (busy) return;
     const path = clipPath.current;
     if (!path) {
@@ -151,70 +318,120 @@ export default function VisionSpikeScreen() {
       await new Promise((r) => setTimeout(r, 500));
 
       const track = player.videoTrack ?? player.availableVideoTracks[0] ?? null;
-      const nominal = track?.frameRate ?? target;
+      const nominal = track?.frameRate && track.frameRate > 0 ? track.frameRate : target;
+      const dur = player.duration;
       say(
-        '=== 4. THE RECORDED FILE, UNDER expo-video ===',
-        `duration      ${player.duration.toFixed(4)}s`,
-        `size          ${track?.size ? `${track.size.width}x${track.size.height}` : '?'}`,
-        `codec         ${track?.mimeType ?? '?'}`,
-        `nominal fps   ${nominal}`,
+        '=== THE FILE ===',
+        `  duration      ${dur.toFixed(4)}s`,
+        `  size          ${track?.size ? `${track.size.width}x${track.size.height}` : '?'}`,
+        `  codec         ${track?.mimeType ?? '?'}`,
+        `  nominal fps   ${nominal}`,
+        '',
       );
 
-      // Same probe as the video spike: distinct actualTimes ARE the frame grid.
-      // If actualTime comes back undefined or constant here but works on an
-      // imported clip, that is the finding this test exists for.
-      const step = 1 / nominal;
-      const start = Math.min(0.5, player.duration / 3);
-      const probes: number[] = [];
-      for (let i = 0; i < 120; i += 1) probes.push(start + (i * step) / 4);
+      // A seed only. nominalFrameRate is an average, and the real spacing comes
+      // back from the grid — a clip reporting 239.467 is not telling you its frames
+      // are 4.176ms apart, it is telling you it averaged that.
+      const frameDur = 1 / nominal;
 
-      const t0 = Date.now();
-      const thumbs = await player.generateThumbnailsAsync(probes, { maxWidth: 64 });
-      const elapsed = Date.now() - t0;
+      // ---- MEASUREMENT 3 first: three windows across the whole file ---------
+      //
+      // The session's selectedFPS is what the camera INTENDED. Thermal throttling
+      // shows up in the file or not at all, and it shows up late — so the windows
+      // are start, middle and end, and the end is the one that matters.
+      //
+      // Each window is its own probeOnce, and each median is computed inside that
+      // window only. Three probes are three islands with unprobed clip between
+      // them; a rate computed across the gaps would climb toward the truth as
+      // coverage grew and read far too low until it got there.
+      const spots = [
+        { name: 'start ', at: Math.min(0.25, dur / 8) },
+        { name: 'middle', at: dur / 2 },
+        { name: 'end   ', at: Math.max(0, dur - Math.max(0.25, frameDur * 12)) },
+      ];
 
-      const distinct: number[] = [];
-      for (const t of thumbs) {
-        if (!distinct.length || t.actualTime !== distinct[distinct.length - 1]) distinct.push(t.actualTime);
+      const rows: string[] = [];
+      const rates: number[] = [];
+      const costs: number[] = [];
+      for (const spot of spots) {
+        const r = await probeOnce(player, spot.at, frameDur);
+        const gap = medianGap(r.frames);
+        const fps = gap ? 1 / gap : null;
+        if (fps) rates.push(fps);
+        costs.push(r.ms);
+        rows.push(
+          `  ${spot.name}  t=${spot.at.toFixed(2)}s  ${String(r.calls).padStart(2)} calls  ` +
+            `${String(r.ms).padStart(5)}ms  ${String(r.frames.length).padStart(2)} frames  ` +
+            (fps ? `${fps.toFixed(1)} fps` : 'no rate — too few frames'),
+        );
       }
-      distinct.sort((a, b) => a - b);
 
-      const deltas: number[] = [];
-      for (let i = 1; i < distinct.length; i += 1) deltas.push(distinct[i]! - distinct[i - 1]!);
-      const mean = deltas.reduce((a, b) => a + b, 0) / deltas.length;
-      const spread = Math.max(...deltas) - Math.min(...deltas);
-      const measured = 1 / mean;
-
-      // Frame-accurate seeking, on this file specifically.
-      const f = distinct[3]!;
-      player.currentTime = f + (distinct[4]! - f) * 0.4;
-      await new Promise((r) => setTimeout(r, 300));
-      const readback = player.currentTime;
+      // ---- MEASUREMENT 2: the probe cost, as the app actually pays it -------
+      //
+      // Median of the three, not the mean: one probe landing on a keyframe boundary
+      // should not decide a seven-week question.
+      const sortedCosts = [...costs].sort((a, b) => a - b);
+      const probeMs = sortedCosts[Math.floor(sortedCosts.length / 2)]!;
+      const ratio = probeMs / REF_30FPS_MS;
 
       say(
-        `  ${elapsed}ms for 120 thumbs (${(elapsed / 120).toFixed(1)}ms each)`,
-        `  distinct frames  ${distinct.length}`,
-        `  actualTime works ${distinct.length > 5 ? 'YES — same as an imported clip' : 'NO — only ' + distinct.length + ' distinct values'}`,
-        `  mean delta       ${(mean * 1000).toFixed(3)}ms`,
-        `  spread           ${(spread * 1000).toFixed(3)}ms  (${spread < 0.0005 ? 'CFR' : 'VARIABLE'})`,
-        `  MEASURED FPS     ${measured.toFixed(2)}`,
+        '=== 2. PROBE COST — 18 calls, the shape probeGridAround uses ===',
+        ...rows,
         '',
-        '  --- the three layers ---',
-        `  device claims    supportsFPS(${target}) = ${device?.supportsFPS(target) ?? '?'}`,
-        `  session resolved selectedFPS = ${selectedFps.current ?? 'undefined'}`,
-        `  file contains    ${measured.toFixed(2)} fps`,
-        Math.abs(measured - target) < target * 0.1
-          ? `  VERDICT: the file really is ~${target}fps. Constraint held end to end.`
-          : `  VERDICT: asked ${target}, got ${measured.toFixed(1)}. The constraint did NOT`,
-        Math.abs(measured - target) < target * 0.1 ? '' : '  reach the file — this is the failure mode worth catching.',
-        `  seek readback drift ${((readback - f) * 1000).toFixed(3)}ms from the frame PTS`,
+        `  median probe  ${probeMs}ms   (${(probeMs / 18).toFixed(1)}ms per frame)`,
+        `  30fps bar     ${REF_30FPS_MS}ms`,
+        `  RATIO         ${ratio.toFixed(2)}x`,
+        ratio < 1.5
+          ? '  VERDICT: near 30fps levels. The marking screen survives as built.'
+          : ratio < 3
+            ? '  VERDICT: dearer, but a bigger read-ahead window would absorb it.'
+            : '  VERDICT: too dear as built. Stage 3 needs a frame strategy first.',
+        '',
+        '  NOTE: this is per PROBE, and a probe buys the same number of FRAMES at',
+        '  any rate — so stepping is unaffected. Dragging is what changes: it',
+        '  crosses TIME, and at 240fps a probe window spans an eighth as much of',
+        '  it. Same-device control: set 30 above, record 3s, measure again.',
         '',
       );
+
+      const spread = rates.length > 1 ? Math.max(...rates) - Math.min(...rates) : 0;
+      const held = rates.length > 0 && rates.every((f) => Math.abs(f - target) < target * 0.1);
+      say(
+        `=== 3. DOES ${target} HOLD FOR ${dur.toFixed(0)}s? ===`,
+        ...rates.map((f, i) => `  ${spots[i]!.name}  ${f.toFixed(2)} fps`),
+        `  spread        ${spread.toFixed(2)} fps across the file`,
+        held
+          ? `  VERDICT: held. Every window is within 10% of ${target}.`
+          : `  VERDICT: DID NOT HOLD — the file drifts off ${target}.`,
+        rates.length > 1 && rates[rates.length - 1]! < rates[0]! * 0.9
+          ? '  The END is slower than the START, which is what thermal throttling'
+          : '',
+        rates.length > 1 && rates[rates.length - 1]! < rates[0]! * 0.9
+          ? '  looks like from the file. Run it again on a cold phone to confirm.'
+          : '',
+        '',
+        '  Only the file counts. selectedFPS said what the session intended; this',
+        '  says what it delivered, sixty seconds in.',
+        '',
+      );
+
+      // Frame-accurate seeking still has to work on this file — the whole marking
+      // screen rests on currentTime landing where it is told.
+      if (spots.length && rates.length) {
+        const r = await probeOnce(player, spots[0]!.at, frameDur);
+        if (r.frames.length > 5) {
+          const f = r.frames[3]!;
+          player.currentTime = f + (r.frames[4]! - f) * 0.4;
+          await new Promise((res) => setTimeout(res, 300));
+          say(`  seek readback drift ${((player.currentTime - f) * 1000).toFixed(3)}ms from the frame PTS`, '');
+        }
+      }
     } catch (e) {
       say(`!! ${e instanceof Error ? e.message : String(e)}`, '');
     } finally {
       setBusy(false);
     }
-  }, [busy, player, target, device, say]);
+  }, [busy, player, target, say]);
 
   // ------------------------------------------------------------- render
 
@@ -261,8 +478,10 @@ export default function VisionSpikeScreen() {
       </View>
       <View style={styles.row}>
         <Btn label="Device" onPress={inspect} off={busy} />
-        <Btn label={`Record ${RECORD_MS / 1000}s`} onPress={record} off={busy} />
-        <Btn label="Verify file" onPress={verify} off={busy} />
+        <Btn label={`Rec ${RECORD_MS / 1000}s`} onPress={() => void record(RECORD_MS)} off={busy} />
+        {/* Sixty seconds, because three proves nothing about thermal throttling. */}
+        <Btn label={`Rec ${LONG_RECORD_MS / 1000}s`} onPress={() => void record(LONG_RECORD_MS)} off={busy} />
+        <Btn label="Measure" onPress={() => void measure()} off={busy} />
       </View>
 
       <ScrollView style={styles.logBox} contentContainerStyle={styles.logPad}>
