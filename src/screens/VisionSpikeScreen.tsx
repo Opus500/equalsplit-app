@@ -187,6 +187,9 @@ export default function VisionSpikeScreen() {
 
   const selectedFps = useRef<number | undefined>(undefined);
   const clipPath = useRef<string | null>(null);
+  /** Bytes of the last recording. The RATE needs the measured duration, which only
+   *  the player knows, so the two halves meet in measure(). */
+  const clipBytes = useRef(0);
   const recorder = useRef<Recorder | null>(null);
 
   // A second player, only to interrogate the recorded file. Loading it here
@@ -278,18 +281,19 @@ export default function VisionSpikeScreen() {
       } catch {
         bytes = 0;
       }
-      const secs = ms / 1000;
+      clipBytes.current = bytes;
       say(
         '',
         '=== 1. BYTES ===',
-        `  clip length   ${secs.toFixed(0)}s at a requested ${target}fps`,
+        `  requested     ${(ms / 1000).toFixed(0)}s at ${target}fps`,
         `  file size     ${bytes} bytes  (${mb(bytes)} MB)`,
-        bytes > 0
-          ? `  implied rate  ${mb((bytes / secs) * 60)} MB per minute of footage`
-          : '  !! size unreadable — the path may not be a plain file',
-        bytes > 0
-          ? `                ${mb((bytes / secs) * 60 * 20)} MB for a 20-minute session`
-          : '',
+        bytes > 0 ? '' : '  !! size unreadable — the path may not be a plain file',
+        // The RATE is computed in MEASURE, against player.duration. Dividing by the
+        // requested milliseconds understated it by 5%: a "3s" recording came back
+        // 2.8583s long, and the rate is bytes per second of FOOTAGE, not per second
+        // of intent. Cross-checked — correcting the 3s run at 240 gives 262 MB/min
+        // and the 60s run measured 259.8.
+        '  rate reported in MEASURE, against the real duration of the file',
         '',
         'Now run MEASURE — the file is the only evidence that counts.',
         '',
@@ -334,63 +338,85 @@ export default function VisionSpikeScreen() {
       // are 4.176ms apart, it is telling you it averaged that.
       const frameDur = 1 / nominal;
 
-      // ---- MEASUREMENT 3 first: three windows across the whole file ---------
-      //
-      // The session's selectedFPS is what the camera INTENDED. Thermal throttling
-      // shows up in the file or not at all, and it shows up late — so the windows
-      // are start, middle and end, and the end is the one that matters.
-      //
-      // Each window is its own probeOnce, and each median is computed inside that
-      // window only. Three probes are three islands with unprobed clip between
-      // them; a rate computed across the gaps would climb toward the truth as
-      // coverage grew and read far too low until it got there.
-      const spots = [
-        { name: 'start ', at: Math.min(0.25, dur / 8) },
-        { name: 'middle', at: dur / 2 },
-        { name: 'end   ', at: Math.max(0, dur - Math.max(0.25, frameDur * 12)) },
-      ];
+      // ---- MEASUREMENT 1 completed: rate, against the REAL duration ---------
+      const bytes = clipBytes.current;
+      if (bytes > 0) {
+        const perMin = (bytes / dur) * 60;
+        say(
+          '=== 1. BYTES ===',
+          `  file          ${mb(bytes)} MB over ${dur.toFixed(4)}s of footage`,
+          `  rate          ${mb(perMin)} MB per minute`,
+          `  40 reps x 5s  ${(perMin * (200 / 60) / 1024 / 1024 / 1024).toFixed(2)} GB per session`,
+          `  20 min solid  ${(perMin * 20 / 1024 / 1024 / 1024).toFixed(2)} GB  (the case a length cap prevents)`,
+          '',
+        );
+      }
 
+      // ---- MEASUREMENT 2: cost ACROSS the clip, not a median of three -------
+      //
+      // The median was the wrong tool here and it hid the finding. Median-of-three
+      // is right for the RATE, where position is noise; for COST it is not, because
+      // position is a variable. On a 2.86s clip at 120fps the cost climbed 387 ->
+      // 517 -> 685ms start to end, and the FINISH mark — the one that decides the
+      // time — lives at the expensive end.
+      //
+      // The open question a median cannot answer: does cost grow linearly with
+      // distance from a single keyframe at the head of the file, or reset
+      // periodically at later keyframes? Linear means a 15s clip ends near 2.2s per
+      // probe and the length cap has to be short. Sawtooth means it is bounded and
+      // the cap is a storage decision only. Eight samples can tell those apart;
+      // three cannot.
+      const SAMPLES = 8;
       const rows: string[] = [];
       const rates: number[] = [];
       const costs: number[] = [];
-      for (const spot of spots) {
-        const r = await probeOnce(player, spot.at, frameDur);
+      for (let i = 0; i < SAMPLES; i += 1) {
+        const at = dur * ((i + 0.5) / SAMPLES);
+        const r = await probeOnce(player, at, frameDur);
         const gap = medianGap(r.frames);
         const fps = gap ? 1 / gap : null;
         if (fps) rates.push(fps);
         costs.push(r.ms);
         rows.push(
-          `  ${spot.name}  t=${spot.at.toFixed(2)}s  ${String(r.calls).padStart(2)} calls  ` +
-            `${String(r.ms).padStart(5)}ms  ${String(r.frames.length).padStart(2)} frames  ` +
-            (fps ? `${fps.toFixed(1)} fps` : 'no rate — too few frames'),
+          `  ${at.toFixed(2)}s  frame ${String(Math.round(at * nominal)).padStart(5)}  ` +
+            `${String(r.ms).padStart(5)}ms  ${String(r.frames.length).padStart(2)} fr  ` +
+            (fps ? `${fps.toFixed(1)} fps` : '—'),
         );
       }
 
-      // ---- MEASUREMENT 2: the probe cost, as the app actually pays it -------
-      //
-      // Median of the three, not the mean: one probe landing on a keyframe boundary
-      // should not decide a seven-week question.
-      const sortedCosts = [...costs].sort((a, b) => a - b);
-      const probeMs = sortedCosts[Math.floor(sortedCosts.length / 2)]!;
-      const ratio = probeMs / REF_30FPS_MS;
+      // A RESET is a sample materially cheaper than the one before it. With one
+      // keyframe at the head there are none and the line only climbs.
+      let resets = 0;
+      for (let i = 1; i < costs.length; i += 1) if (costs[i]! < costs[i - 1]! * 0.75) resets += 1;
+      const first = costs[0]!;
+      const last = costs[costs.length - 1]!;
+      const peak = Math.max(...costs);
 
       say(
-        '=== 2. PROBE COST — 18 calls, the shape probeGridAround uses ===',
+        '=== 2. PROBE COST ACROSS THE CLIP — 18 calls each ===',
         ...rows,
         '',
-        `  median probe  ${probeMs}ms   (${(probeMs / 18).toFixed(1)}ms per frame)`,
-        `  30fps bar     ${REF_30FPS_MS}ms`,
-        `  RATIO         ${ratio.toFixed(2)}x`,
-        ratio < 1.5
-          ? '  VERDICT: near 30fps levels. The marking screen survives as built.'
-          : ratio < 3
-            ? '  VERDICT: dearer, but a bigger read-ahead window would absorb it.'
-            : '  VERDICT: too dear as built. Stage 3 needs a frame strategy first.',
+        `  first sample  ${first}ms`,
+        `  last sample   ${last}ms`,
+        `  peak          ${peak}ms`,
+        `  climb         ${(last / first).toFixed(2)}x end over start`,
+        `  resets        ${resets}  ${resets === 0 ? '(none — one keyframe, cost grows with the clip)' : '(keyframes bound it)'}`,
         '',
-        '  NOTE: this is per PROBE, and a probe buys the same number of FRAMES at',
-        '  any rate — so stepping is unaffected. Dragging is what changes: it',
-        '  crosses TIME, and at 240fps a probe window spans an eighth as much of',
-        '  it. Same-device control: set 30 above, record 3s, measure again.',
+        '  THE NUMBER THAT MATTERS is the PEAK, not the median. A finish mark sits',
+        '  near the end of the clip by definition, so that is what the coach pays',
+        '  on every settle.',
+        '',
+        resets === 0
+          ? '  NO RESETS: cost is unbounded in clip length. The length cap is a'
+          : '  RESETS FOUND: cost is bounded. The length cap is a storage decision',
+        resets === 0
+          ? '  PERFORMANCE decision as well as a storage one — measure 15s before'
+          : '  only, and can be set on storage grounds alone.',
+        resets === 0 ? '  setting it.' : '',
+        '',
+        `  same-device 30fps control: 359ms. Peak here is ${(peak / 359).toFixed(2)}x that.`,
+        '  (The 154ms figure is an IMPORTED H.264 clip and is the wrong baseline for',
+        '  a recorded HEVC one — about half that gap is the file, not the frame rate.)',
         '',
       );
 
@@ -398,7 +424,7 @@ export default function VisionSpikeScreen() {
       const held = rates.length > 0 && rates.every((f) => Math.abs(f - target) < target * 0.1);
       say(
         `=== 3. DOES ${target} HOLD FOR ${dur.toFixed(0)}s? ===`,
-        ...rates.map((f, i) => `  ${spots[i]!.name}  ${f.toFixed(2)} fps`),
+        ...rates.map((f, i) => `  sample ${i + 1}  ${f.toFixed(2)} fps`),
         `  spread        ${spread.toFixed(2)} fps across the file`,
         held
           ? `  VERDICT: held. Every window is within 10% of ${target}.`
@@ -417,8 +443,8 @@ export default function VisionSpikeScreen() {
 
       // Frame-accurate seeking still has to work on this file — the whole marking
       // screen rests on currentTime landing where it is told.
-      if (spots.length && rates.length) {
-        const r = await probeOnce(player, spots[0]!.at, frameDur);
+      if (rates.length) {
+        const r = await probeOnce(player, dur * 0.1, frameDur);
         if (r.frames.length > 5) {
           const f = r.frames[3]!;
           player.currentTime = f + (r.frames[4]! - f) * 0.4;
