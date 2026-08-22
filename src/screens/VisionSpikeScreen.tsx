@@ -355,80 +355,121 @@ export default function VisionSpikeScreen() {
         say(
           '=== 1. BYTES ===',
           `  file          ${mb(bytes)} MB over ${dur.toFixed(4)}s of footage`,
-          `  rate          ${mb(perMin)} MB per minute`,
+          `  rate          ${mb(perMin)} MB per minute  (${((bytes * 8) / dur / 1e6).toFixed(1)} Mbps)`,
+          // HEVC IS CONTENT-ADAPTIVE, so this measures THIS CLIP's content, not a
+          // rate for the format. Measured on one device at 120fps: a 3s clip came
+          // back 24.8 Mbps and a 15s clip 8.7 Mbps — 2.8x apart at identical
+          // resolution and frame rate. Length was not the variable (240fps gave
+          // 262 MB/min at 3s and 260 at 60s); what is in front of the lens is.
+          // To compare two settings, point the phone at the SAME scene for both.
+          '  ^ this clip, this scene. HEVC bitrate follows content, so one recording',
+          '    is a sample and not a rate — 8.7 to 24.8 Mbps measured at 120fps.',
           `  40 reps x 5s  ${(perMin * (200 / 60) / 1024 / 1024 / 1024).toFixed(2)} GB per session`,
           `  20 min solid  ${(perMin * 20 / 1024 / 1024 / 1024).toFixed(2)} GB  (the case a length cap prevents)`,
           '',
         );
       }
 
-      // ---- MEASUREMENT 2: cost ACROSS the clip, not a median of three -------
+      // ---- MEASUREMENT 2: is cost a function of POSITION, or of ORDER? ------
       //
-      // The median was the wrong tool here and it hid the finding. Median-of-three
-      // is right for the RATE, where position is noise; for COST it is not, because
-      // position is a variable. On a 2.86s clip at 120fps the cost climbed 387 ->
-      // 517 -> 685ms start to end, and the FINISH mark — the one that decides the
-      // time — lives at the expensive end.
+      // The previous version could not tell, and I did not notice until the data
+      // contradicted the conclusion I drew from it. Eight samples were taken
+      // FORWARD through the clip, so "eighth position in the file" and "eighth
+      // probe run" were the same axis. A 15s clip at 120 came back
       //
-      // The open question a median cannot answer: does cost grow linearly with
-      // distance from a single keyframe at the head of the file, or reset
-      // periodically at later keyframes? Linear means a 15s clip ends near 2.2s per
-      // probe and the length cap has to be short. Sawtooth means it is bounded and
-      // the cap is a storage decision only. Eight samples can tell those apart;
-      // three cannot.
+      //   0.94s 721ms  2.81s 866ms  4.69s 811ms ... 14.07s 582ms
+      //
+      // which reads as "cost falls toward the end of the file" and reads equally
+      // well as "cost falls as the decoder warms up". Those are different facts
+      // with different consequences and the harness gave no way to separate them.
+      //
+      // It also killed the model the old reset detector was built on. That counted
+      // sharp DROPS as evidence of keyframes bounding a cost that otherwise grows
+      // with distance from the head of the file. Cost does not grow with position
+      // at all here — the last sample is the cheapest — so "no resets found" was
+      // true and the conclusion drawn from it, that cost is unbounded in clip
+      // length, did not follow. The detector is gone rather than retuned: it
+      // answered a question whose premise the data had already refuted.
+      //
+      // TWO PASSES, same positions, opposite order. If cost follows POSITION the
+      // columns agree row by row. If it follows ORDER they mirror, because each
+      // pass is expensive at whichever end it started from.
       const SAMPLES = 8;
-      const rows: string[] = [];
-      const rates: number[] = [];
-      const costs: number[] = [];
-      for (let i = 0; i < SAMPLES; i += 1) {
-        const at = dur * ((i + 0.5) / SAMPLES);
-        const r = await probeOnce(player, at, frameDur);
-        const gap = medianGap(r.frames);
-        const fps = gap ? 1 / gap : null;
-        if (fps) rates.push(fps);
-        costs.push(r.ms);
-        rows.push(
-          `  ${at.toFixed(2)}s  frame ${String(Math.round(at * nominal)).padStart(5)}  ` +
-            `${String(r.ms).padStart(5)}ms  ${String(r.frames.length).padStart(2)} fr  ` +
-            (fps ? `${fps.toFixed(1)} fps` : '—'),
-        );
-      }
+      const spots: number[] = [];
+      for (let i = 0; i < SAMPLES; i += 1) spots.push(dur * ((i + 0.5) / SAMPLES));
 
-      // A RESET is a sample materially cheaper than the one before it. With one
-      // keyframe at the head there are none and the line only climbs.
-      let resets = 0;
-      for (let i = 1; i < costs.length; i += 1) if (costs[i]! < costs[i - 1]! * 0.75) resets += 1;
-      const first = costs[0]!;
-      const last = costs[costs.length - 1]!;
-      const peak = Math.max(...costs);
+      const runPass = async (order: number[]) => {
+        const ms = new Array<number>(SAMPLES).fill(0);
+        const fps = new Array<number | null>(SAMPLES).fill(null);
+        for (const i of order) {
+          const r = await probeOnce(player, spots[i]!, frameDur);
+          ms[i] = r.ms;
+          const gap = medianGap(r.frames);
+          fps[i] = gap ? 1 / gap : null;
+        }
+        return { ms, fps };
+      };
+
+      const fwdOrder = spots.map((_, i) => i);
+      const revOrder = [...fwdOrder].reverse();
+      const fwd = await runPass(fwdOrder);
+      const rev = await runPass(revOrder);
+
+      const rows = spots.map(
+        (at, i) =>
+          `  ${at.toFixed(2).padStart(6)}s  fwd ${String(fwd.ms[i]).padStart(5)}ms   ` +
+          `rev ${String(rev.ms[i]).padStart(5)}ms   ` +
+          `${fwd.fps[i] ? fwd.fps[i]!.toFixed(1) : '—'} fps`,
+      );
+
+      // Pearson r between the two columns, indexed by POSITION. Strongly positive
+      // means both passes were expensive in the same PLACE. Negative means each was
+      // expensive at its own beginning, which is an order effect wearing a position
+      // effect's clothes.
+      const corr = (a: number[], b: number[]) => {
+        const n = a.length;
+        const ma = a.reduce((x, y) => x + y, 0) / n;
+        const mb = b.reduce((x, y) => x + y, 0) / n;
+        let num = 0;
+        let da = 0;
+        let db = 0;
+        for (let i = 0; i < n; i += 1) {
+          num += (a[i]! - ma) * (b[i]! - mb);
+          da += (a[i]! - ma) ** 2;
+          db += (b[i]! - mb) ** 2;
+        }
+        return da > 0 && db > 0 ? num / Math.sqrt(da * db) : 0;
+      };
+      const r = corr(fwd.ms, rev.ms);
+      const allMs = [...fwd.ms, ...rev.ms];
+      const lo = Math.min(...allMs);
+      const hi = Math.max(...allMs);
 
       say(
-        '=== 2. PROBE COST ACROSS THE CLIP — 18 calls each ===',
+        '=== 2. PROBE COST — POSITION or ORDER? ===',
         ...rows,
         '',
-        `  first sample  ${first}ms`,
-        `  last sample   ${last}ms`,
-        `  peak          ${peak}ms`,
-        `  climb         ${(last / first).toFixed(2)}x end over start`,
-        `  resets        ${resets}  ${resets === 0 ? '(none — one keyframe, cost grows with the clip)' : '(keyframes bound it)'}`,
+        `  range         ${lo}ms to ${hi}ms across both passes  (${(hi / lo).toFixed(2)}x)`,
+        `  correlation   r = ${r.toFixed(2)} between the two columns`,
         '',
-        '  THE NUMBER THAT MATTERS is the PEAK, not the median. A finish mark sits',
-        '  near the end of the clip by definition, so that is what the coach pays',
-        '  on every settle.',
+        r > 0.6
+          ? '  POSITION. Both passes are expensive in the same place, so cost really'
+          : r < -0.3
+            ? '  ORDER. Each pass is expensive where it STARTED, so this is warm-up or'
+            : '  NEITHER, clearly. The two passes disagree without mirroring, which',
+        r > 0.6
+          ? '  is a property of the file. The finish mark pays whatever the tail costs.'
+          : r < -0.3
+            ? '  clock ramp, not the file. The FIRST settle after opening a clip is the'
+            : '  usually means the spread is noise and cost is roughly flat.',
+        r < -0.3 ? '  slow one; the rest are cheaper. Clip length is not the variable.' : '',
         '',
-        resets === 0
-          ? '  NO RESETS: cost is unbounded in clip length. The length cap is a'
-          : '  RESETS FOUND: cost is bounded. The length cap is a storage decision',
-        resets === 0
-          ? '  PERFORMANCE decision as well as a storage one — measure 15s before'
-          : '  only, and can be set on storage grounds alone.',
-        resets === 0 ? '  setting it.' : '',
-        '',
-        `  same-device 30fps control: 359ms. Peak here is ${(peak / 359).toFixed(2)}x that.`,
-        '  (The 154ms figure is an IMPORTED H.264 clip and is the wrong baseline for',
-        '  a recorded HEVC one — about half that gap is the file, not the frame rate.)',
+        `  same-device 30fps control was 359ms on a 3s clip — itself one sample of`,
+        '  one scene, and not a bar to lean on hard.',
         '',
       );
+
+      const rates = fwd.fps.filter((f): f is number => f !== null);
 
       const spread = rates.length > 1 ? Math.max(...rates) - Math.min(...rates) : 0;
       const held = rates.length > 0 && rates.every((f) => Math.abs(f - target) < target * 0.1);
