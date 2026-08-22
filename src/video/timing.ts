@@ -622,8 +622,16 @@ export function isVariableRate(grid: FrameGrid, toleranceSec = 0.0005): boolean 
  * 'unknown' is a real answer, not a failure: a clip from Files has no photo-library
  * asset behind it to ask, and neither refusing every such clip nor pretending it
  * is normal would be honest.
+ *
+ * 'recorded' is the opposite of 'unknown' and that is the whole reason it exists.
+ * A clip this app recorded has no photo-library asset either — but it needs no
+ * asking, because we set the capture rate and wrote the file. There is no rendered
+ * version to be handed instead of the original, because there is no edit and no
+ * Photos round trip. Folding it into 'unknown' would attach "this cannot be checked
+ * for slow motion" to the one kind of clip whose rate is not in doubt, on the happy
+ * path, every time.
  */
-export type TimeScale = 'normal' | 'slow-motion' | 'time-lapse' | 'unknown';
+export type TimeScale = 'normal' | 'slow-motion' | 'time-lapse' | 'unknown' | 'recorded';
 
 export type ClipVerdict =
   /** Mark it. `warn` is shown but does not block. */
@@ -674,6 +682,9 @@ export function acceptForTiming(scale: TimeScale): ClipVerdict {
         'If it was recorded in slo-mo, the time will be wrong.',
     };
   }
+  // 'recorded' and 'normal' both fall through to silence. Deliberately no warning
+  // for a clip we recorded: we chose the rate, and a caveat on the path the coach
+  // takes forty times a session is a caveat they stop reading.
   return { accept: true, warn: null };
 }
 

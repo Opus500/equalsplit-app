@@ -768,6 +768,49 @@ console.log('\n11h. PROBING STOPS AT THE END OF THE CLIP — and still finds the
   check('six presses, six frames, no early refusal', steps, 6);
 }
 
+console.log('\n11i. A CLIP WE RECORDED IS NOT A CLIP WE CANNOT CHECK');
+{
+  // The trap this exists to close. acceptForTiming has an 'unknown' branch that
+  // accepts with "this clip is not from your photo library, so it cannot be checked
+  // for slow motion" — correct for a file picked out of Files, and false for a clip
+  // the app recorded itself. We set the capture rate and wrote the file; there is no
+  // Photos round trip and therefore no rendered version to be handed instead of the
+  // original, which is the entire mechanism the refusal exists for.
+  //
+  // Without its own value, in-app recording lands in 'unknown' and every recorded
+  // run carries a caveat about a risk it does not have — on the happy path, forty
+  // times a session, until the coach stops reading caveats.
+  const rec = acceptForTiming('recorded');
+  check('a recorded clip is accepted', rec.accept, true);
+  check('and says NOTHING', rec.warn ?? null, null);
+
+  // The contrast that makes it worth a value of its own.
+  const unk = acceptForTiming('unknown');
+  check('an unchecked clip is still accepted', unk.accept, true);
+  truthy('but warned about', !!unk.warn);
+  truthy('naming the photo library as the reason', /photo library/i.test(unk.warn));
+
+  // THE REFUSALS ARE UNTOUCHED. Adding a way to say "we know this one" must not
+  // become a way to skip the check on clips that still need it.
+  check('slow motion is still refused', acceptForTiming('slow-motion').accept, false);
+  check('time-lapse too', acceptForTiming('time-lapse').accept, false);
+  truthy('and the slow-motion reason still explains the rendered version', /slowed version/i.test(acceptForTiming('slow-motion').reason));
+
+  // Review is more permissive by design and stays that way: nothing computes a time
+  // from attached footage, and watching a sprint in slow motion is why you film it
+  // that way.
+  check('review accepts a recorded clip', acceptForReview('recorded').accept, true);
+  check('silently', acceptForReview('recorded').warn ?? null, null);
+  check('and still accepts slow motion', acceptForReview('slow-motion').accept, true);
+  truthy('with the caveat that it cannot be timed', /cannot be used to mark a time/i.test(acceptForReview('slow-motion').warn));
+
+  // 'normal' is a photo-library clip CHECKED and found ordinary; 'recorded' is one
+  // that never needed checking. Same outcome, different claim — and both silent, so
+  // the difference must be visible in the type rather than in the message.
+  check('normal is silent too', acceptForTiming('normal').warn ?? null, null);
+  truthy('but they are different values', 'normal' !== 'recorded');
+}
+
 console.log('\n12. FAN-OUT batching');
 {
   check('fan-out is the measured width', FRAME_FAN_OUT, 8);
