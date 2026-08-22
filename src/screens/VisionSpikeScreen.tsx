@@ -394,6 +394,25 @@ export default function VisionSpikeScreen() {
       // TWO PASSES, same positions, opposite order. If cost follows POSITION the
       // columns agree row by row. If it follows ORDER they mirror, because each
       // pass is expensive at whichever end it started from.
+      //
+      // MEASURED: r = 1.00, so position, decisively. And the shape is not what
+      // either of my guesses predicted. On a 15s clip at 120fps, both passes:
+      //
+      //   0.94s 709   2.81s 890   4.69s 831   6.57s 769
+      //   8.44s 712  10.32s 671  12.19s 626  14.07s 582   (mean of fwd and rev)
+      //
+      // One anomalously cheap sample, a peak a couple of seconds in, then a clean
+      // decline of ~50ms per 1.9s to the end. The TAIL IS CHEAPEST, which is the
+      // opposite of what the earlier verdict text asserted.
+      //
+      // Three mechanisms have now been proposed and killed by the next measurement:
+      // keyframe distance (would be sawtooth, and 32ms per extraction cannot walk
+      // 1680 frames), warm-up (the reverse pass rules it out), and bitrate (a clip
+      // at 3.8x the bitrate produced the same profile to within 14ms). The
+      // mechanism is NOT identified, and this comment deliberately does not offer a
+      // fourth story. What is established is the shape, that it reproduces across
+      // files, and that it does not grow with clip length — which is all Stage 3
+      // needed from it.
       const SAMPLES = 8;
       const spots: number[] = [];
       for (let i = 0; i < SAMPLES; i += 1) spots.push(dur * ((i + 0.5) / SAMPLES));
@@ -453,16 +472,22 @@ export default function VisionSpikeScreen() {
         `  correlation   r = ${r.toFixed(2)} between the two columns`,
         '',
         r > 0.6
-          ? '  POSITION. Both passes are expensive in the same place, so cost really'
+          ? '  POSITION. Both passes are expensive in the same place, so cost is a'
           : r < -0.3
             ? '  ORDER. Each pass is expensive where it STARTED, so this is warm-up or'
             : '  NEITHER, clearly. The two passes disagree without mirroring, which',
         r > 0.6
-          ? '  is a property of the file. The finish mark pays whatever the tail costs.'
+          ? `  property of the file. Read the SHAPE above — measured so far it peaks`
           : r < -0.3
             ? '  clock ramp, not the file. The FIRST settle after opening a clip is the'
             : '  usually means the spread is noise and cost is roughly flat.',
-        r < -0.3 ? '  slow one; the rest are cheaper. Clip length is not the variable.' : '',
+        r > 0.6
+          ? '  a couple of seconds in and then declines, so the expensive region is'
+          : r < -0.3
+            ? '  slow one; the rest are cheaper. Clip length is not the variable.'
+            : '',
+        r > 0.6 ? '  near the START and a finish mark at the tail is the CHEAPEST place' : '',
+        r > 0.6 ? '  to sit. Do not assume either end without reading the table.' : '',
         '',
         `  same-device 30fps control was 359ms on a 3s clip — itself one sample of`,
         '  one scene, and not a bar to lean on hard.',
