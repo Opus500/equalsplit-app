@@ -70,9 +70,17 @@ import { useVideoPlayer, type VideoPlayer } from 'expo-video';
 import { File } from 'expo-file-system';
 
 const TARGETS = [30, 60, 120, 240];
-const RECORD_MS = 3000;
-/** Long enough for thermal throttling to show up, short enough to sit through. */
-const LONG_RECORD_MS = 60_000;
+/**
+ * Recording lengths, as a picked value rather than a button each.
+ *
+ * Three answers bytes and probe cost. Sixty answers whether the rate holds, because
+ * three proves nothing about thermal throttling. FIFTEEN is the one that decides
+ * the storage cap, and it needs its own run: cost climbed 1.77x across a 2.86s clip
+ * with no keyframe reset in sight, and whether that keeps climbing or bounds itself
+ * is the difference between a cap set on storage grounds and a cap set on
+ * performance grounds.
+ */
+const DURATIONS = [3, 15, 60];
 
 // ---- the app's probe shape, replicated rather than imported --------------
 //
@@ -173,10 +181,12 @@ const mb = (bytes: number) => (bytes / 1024 / 1024).toFixed(1);
 export default function VisionSpikeScreen() {
   const [log, setLog] = useState<string[]>([
     'VisionCamera spike. Grant camera access, pick an fps, record, then Measure.',
-    'Rec 3s answers bytes and probe cost. Rec 60s answers whether the rate holds.',
+    'Row 1 is fps, row 2 is length. 3s answers bytes and probe cost, 60s answers',
+    'whether the rate holds, 15s decides the storage cap.',
     '',
   ]);
   const [target, setTarget] = useState(240);
+  const [seconds, setSeconds] = useState(3);
   const [busy, setBusy] = useState(false);
   const [recording, setRecording] = useState(false);
 
@@ -502,11 +512,24 @@ export default function VisionSpikeScreen() {
           </Pressable>
         ))}
       </View>
+      {/* Duration, picked the same way fps is. A button per length crowded the
+          action row and still had no 15 in it — the length that decides the cap. */}
+      <View style={styles.row}>
+        {DURATIONS.map((d) => (
+          <Pressable
+            key={d}
+            style={[styles.btn, seconds === d && styles.btnOn]}
+            onPress={() => setSeconds(d)}
+            disabled={busy}
+          >
+            <Text style={styles.btnText}>{d}s</Text>
+          </Pressable>
+        ))}
+      </View>
+
       <View style={styles.row}>
         <Btn label="Device" onPress={inspect} off={busy} />
-        <Btn label={`Rec ${RECORD_MS / 1000}s`} onPress={() => void record(RECORD_MS)} off={busy} />
-        {/* Sixty seconds, because three proves nothing about thermal throttling. */}
-        <Btn label={`Rec ${LONG_RECORD_MS / 1000}s`} onPress={() => void record(LONG_RECORD_MS)} off={busy} />
+        <Btn label={`Rec ${seconds}s`} onPress={() => void record(seconds * 1000)} off={busy} />
         <Btn label="Measure" onPress={() => void measure()} off={busy} />
       </View>
 
