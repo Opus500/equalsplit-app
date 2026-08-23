@@ -165,7 +165,7 @@ console.log('\n6. NOTHING PROJECTS A RATE — the structural guard');
   const BANNED = /MB\s*\/\s*min|MB per minute|per\s*minute|perMin|megabytes per/i;
   const offences = [];
   for (const p of walk(SRC)) {
-    const lines = strip(readFileSync(p, 'utf8')).split('\n');
+    const lines = strip(readFileSync(p, 'utf8').replace(/\r\n/g, '\n')).split('\n');
     lines.forEach((l, i) => {
       if (BANNED.test(l)) offences.push(`${relative(SRC, p).replace(/\\/g, '/')}:${i + 1} ${l.trim()}`);
     });
@@ -207,7 +207,12 @@ console.log('\n9. BOTH BOUNDS REACH THE RECORDER, and no clock is invented');
   // Read as text for the same reason as block 6: this checks the call site exists,
   // not what the arithmetic returns.
   const HERE2 = fileURLToPath(new URL('.', import.meta.url));
-  const rec = readFileSync(join(HERE2, '..', 'src', 'screens', 'VideoRecordModal.tsx'), 'utf8');
+  // Normalised for the same reason as verify-capture's reader: a CRLF checkout
+  // must not turn a guard into a pattern that quietly never matches.
+  const rec = readFileSync(join(HERE2, '..', 'src', 'screens', 'VideoRecordModal.tsx'), 'utf8').replace(
+    /\r\n/g,
+    '\n',
+  );
 
   // NAMED SITES, not a count. This was 'appears at least twice', which the removal
   // of the on-press re-read survived: the sheet-open check and the initial state

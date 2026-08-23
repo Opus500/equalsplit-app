@@ -24,6 +24,16 @@ import {
 
 const SRC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'src');
 
+/**
+ * Read a source file with its line endings NORMALISED.
+ *
+ * git checks these files out with CRLF on Windows, so any pattern spanning a line
+ * break silently stops matching — and a text guard that stops matching does not
+ * fail loudly, it passes vacuously. Which is the failure mode these blocks exist to
+ * prevent, arriving by the back door.
+ */
+const read = (abs) => readFileSync(abs, 'utf8').replace(/\r\n/g, '\n');
+
 let failures = 0;
 const check = (label, got, want) => {
   const g = JSON.stringify(got);
@@ -134,7 +144,7 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   //
   // Each layer is asserted at the only place it can bite, and the places differ on
   // purpose: 1 and 2 before the rep is run, 3 after the frames exist.
-  const at = (rel) => readFileSync(join(SRC, rel), 'utf8');
+  const at = (rel) => read(join(SRC, rel));
 
   const rec = at('screens/VideoRecordModal.tsx');
   truthy('the camera screen asks acceptSession', /acceptSession\(target, device\.supportsFPS\(target\), settledFps\)/.test(rec));
@@ -162,6 +172,55 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   truthy('and the reason stays on screen beside it', /\{refused\}/.test(mark));
   // The footage survives either way; only the time was refused.
   truthy('with a way out that asks before deleting', /Keep the video\?/.test(mark));
+}
+
+console.log('\n8. AND IT IS REACHABLE — a rule nobody can press is not shipped');
+{
+  // THIS BLOCK EXISTS BECAUSE ITS ABSENCE WAS NOTICED FROM A DEVICE. Block 7 proves
+  // the rules are called at the right moments; every assertion in it passed while
+  // the question "can a coach actually get to this?" went unasked. A guard that
+  // cannot tell a wired feature from a landed module is not guarding the thing that
+  // matters, because the failure it misses is total: the code is perfect and nobody
+  // can run it.
+  //
+  // So the chain is asserted end to end, at the one place it can break silently.
+  const mark = read(join(SRC, 'screens', 'VideoMarkScreen.tsx'));
+
+  truthy('the marking screen imports the camera sheet', /import \{ VideoRecordModal.*\} from '\.\/VideoRecordModal'/.test(mark));
+  truthy('and mounts it', /<VideoRecordModal[\s\S]{0,200}visible=\{recordOpen\}/.test(mark));
+  truthy('with a way to close it again', /onCancel=\{\(\) => setRecordOpen\(false\)\}/.test(mark));
+  truthy('and a handler for what it produces', /onRecorded=\{\(r\) => void onRecorded\(r\)\}/.test(mark));
+
+  // MOUNTED OUTSIDE THE CLIP CONDITIONAL. Opened from the empty state, a sheet
+  // inside that branch unmounts the instant a recording lands and setClip flips it.
+  //
+  // Compared by POSITION against the close of the loaded branch rather than matched
+  // against a literal spanning two lines — which is what this assertion did first,
+  // and it failed on a CRLF checkout for reasons that had nothing to do with the
+  // claim. See `read` above.
+  truthy(
+    'outside the branch it is opened from',
+    mark.lastIndexOf('</ScrollView>') < mark.indexOf('<VideoRecordModal'),
+  );
+
+  // THE BUTTON ITSELF, in the state a coach with no clip is looking at. Sliced
+  // rather than searched whole-file, because a record opener somewhere else in the
+  // screen would satisfy a naive match while the empty pane still showed one
+  // control — which is exactly what was reported.
+  const emptyStart = mark.indexOf('{!clip ? (');
+  const emptyEnd = mark.indexOf('      ) : (', emptyStart);
+  truthy('the screen has an empty state', emptyStart !== -1 && emptyEnd > emptyStart);
+  const empty = mark.slice(emptyStart, emptyEnd);
+  truthy('which offers recording', /onPress=\{\(\) => setRecordOpen\(true\)\}/.test(empty));
+  truthy('labelled as a rep, not as a camera', /Record a rep/.test(empty));
+  truthy('and still offers importing', /onPress=\{pick\}/.test(empty));
+  truthy('with recording as the PRIMARY of the two', empty.indexOf('styles.primary') < empty.indexOf('styles.secondary'));
+
+  // And once a clip is loaded, both ways in are still offered — otherwise the only
+  // route to the camera is finishing or discarding whatever is on screen.
+  const loaded = mark.slice(emptyEnd);
+  truthy('a loaded clip can still be swapped for a new recording', /Record another rep/.test(loaded));
+  truthy('or for a different import', /Import a different clip/.test(loaded));
 }
 
 console.log('\n=============================');
