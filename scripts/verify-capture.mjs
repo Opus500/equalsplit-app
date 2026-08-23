@@ -174,54 +174,10 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   truthy('with a way out that asks before deleting', /Keep the video\?/.test(mark));
 }
 
-console.log('\n8. AND IT IS REACHABLE — a rule nobody can press is not shipped');
-{
-  // THIS BLOCK EXISTS BECAUSE ITS ABSENCE WAS NOTICED FROM A DEVICE. Block 7 proves
-  // the rules are called at the right moments; every assertion in it passed while
-  // the question "can a coach actually get to this?" went unasked. A guard that
-  // cannot tell a wired feature from a landed module is not guarding the thing that
-  // matters, because the failure it misses is total: the code is perfect and nobody
-  // can run it.
-  //
-  // So the chain is asserted end to end, at the one place it can break silently.
-  const mark = read(join(SRC, 'screens', 'VideoMarkScreen.tsx'));
-
-  truthy('the marking screen imports the camera sheet', /import \{ VideoRecordModal.*\} from '\.\/VideoRecordModal'/.test(mark));
-  truthy('and mounts it', /<VideoRecordModal[\s\S]{0,200}visible=\{recordOpen\}/.test(mark));
-  truthy('with a way to close it again', /onCancel=\{\(\) => setRecordOpen\(false\)\}/.test(mark));
-  truthy('and a handler for what it produces', /onRecorded=\{\(r\) => void onRecorded\(r\)\}/.test(mark));
-
-  // MOUNTED OUTSIDE THE CLIP CONDITIONAL. Opened from the empty state, a sheet
-  // inside that branch unmounts the instant a recording lands and setClip flips it.
-  //
-  // Compared by POSITION against the close of the loaded branch rather than matched
-  // against a literal spanning two lines — which is what this assertion did first,
-  // and it failed on a CRLF checkout for reasons that had nothing to do with the
-  // claim. See `read` above.
-  truthy(
-    'outside the branch it is opened from',
-    mark.lastIndexOf('</ScrollView>') < mark.indexOf('<VideoRecordModal'),
-  );
-
-  // THE BUTTON ITSELF, in the state a coach with no clip is looking at. Sliced
-  // rather than searched whole-file, because a record opener somewhere else in the
-  // screen would satisfy a naive match while the empty pane still showed one
-  // control — which is exactly what was reported.
-  const emptyStart = mark.indexOf('{!clip ? (');
-  const emptyEnd = mark.indexOf('      ) : (', emptyStart);
-  truthy('the screen has an empty state', emptyStart !== -1 && emptyEnd > emptyStart);
-  const empty = mark.slice(emptyStart, emptyEnd);
-  truthy('which offers recording', /onPress=\{\(\) => setRecordOpen\(true\)\}/.test(empty));
-  truthy('labelled as a rep, not as a camera', /Record a rep/.test(empty));
-  truthy('and still offers importing', /onPress=\{pick\}/.test(empty));
-  truthy('with recording as the PRIMARY of the two', empty.indexOf('styles.primary') < empty.indexOf('styles.secondary'));
-
-  // And once a clip is loaded, both ways in are still offered — otherwise the only
-  // route to the camera is finishing or discarding whatever is on screen.
-  const loaded = mark.slice(emptyEnd);
-  truthy('a loaded clip can still be swapped for a new recording', /Record another rep/.test(loaded));
-  truthy('or for a different import', /Import a different clip/.test(loaded));
-}
+// Block 8 lived here and has moved to scripts/verify-reachable.mjs, which is now the
+// one place that answers "can a coach get to it". It was written here because that is
+// where the gap was noticed; keeping it here would have left two homes for the same
+// question, and two homes is how one of them stops being read.
 
 console.log('\n=============================');
 console.log(failures === 0 ? 'RESULT: OK — a wrong frame rate cannot become a time.' : `RESULT: ${failures} FAILURE(S)`);
