@@ -28,7 +28,7 @@ import {
   filmstripTimes,
   gapProbes,
   ingestFrames,
-  isCovered,
+  spanCovered,
   type FrameGrid,
 } from './timing';
 
@@ -114,8 +114,20 @@ export async function probeGridAround(
   // exit fire while the coach was standing on the unusable edge: the probe was
   // skipped as unnecessary, the step then found no frame, and forward stepping
   // stalled one frame short of the window with nothing willing to extend it.
+  //
+  // AND THE SPAN IS ASKED ABOUT AS A SPAN. This read
+  //
+  //     isCovered(centre - margin) && isCovered(centre + margin)
+  //
+  // which samples the two ENDS and infers the middle. That inference is false
+  // exactly when the mark lands in a gap narrower than 2*margin: both edges are in
+  // the windows either side, the centre is in the hole, the probe is skipped, and
+  // markAt can never resolve the point — permanently, because every later release
+  // runs the same test and skips the same probe. It was the "stuck on SNAPPING"
+  // lock, and it needed a long clip only because window spacing is what decides
+  // whether such a gap can exist. See spanCovered.
   const margin = (requiredEitherSide + 1) * frameDurSec;
-  if (isCovered(grid, centre - margin) && isCovered(grid, centre + margin)) {
+  if (spanCovered(grid, centre - margin, centre + margin)) {
     return { grid, ms: 0, calls: 0 };
   }
 
@@ -185,4 +197,45 @@ export function nominalFrameDur(player: VideoPlayer): number {
   const track = player.videoTrack ?? player.availableVideoTracks[0] ?? null;
   const fps = track?.frameRate && track.frameRate > 0 ? track.frameRate : 30;
   return 1 / fps;
+}
+
+/** Whether the clip's own frame rate is readable YET. See waitForClip. */
+export function hasFrameRate(player: VideoPlayer): boolean {
+  const track = player.videoTrack ?? player.availableVideoTracks[0] ?? null;
+  return !!(track?.frameRate && track.frameRate > 0);
+}
+
+/**
+ * Wait until the clip can answer BOTH questions: how long is it, and how fast.
+ *
+ * WAITING FOR DURATION ALONE WAS THE BUG, and it is the second time this exact
+ * shape has bitten this file. `frameDur` was once a useMemo that ran before the
+ * tracks existed, so nominalFrameDur fell back to 30 and a 24fps clip was probed on
+ * a 30fps grid for its whole life. That was fixed by moving the read after an await
+ * — but the await was for `duration`, which arrives FIRST. The track can still be
+ * missing, the fallback still fires, and the fix was incomplete.
+ *
+ * Why it is worse than it looks: the probe aims at frame centres using this seed, so
+ * a 1/30 seed on a 60fps clip hits every SECOND frame, and measuredFps then reports
+ * 30. The measurement is not independent of the seed — it can only find frames it
+ * aimed at — so layer 3 refuses a perfectly good 60fps recording and blames the
+ * camera. A false-refusal generator on exactly the clips layer 3 exists to check.
+ *
+ * `tracked: false` means the rate never became readable. The caller must NOT treat
+ * whatever the grid then measures as evidence: it is a measurement of the guess.
+ */
+export async function waitForClip(
+  player: VideoPlayer,
+  timeoutMs: number,
+): Promise<{ durationSec: number; frameDurSec: number; tracked: boolean }> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const d = player.duration || 0;
+    const tracked = hasFrameRate(player);
+    if (d > 0 && tracked) return { durationSec: d, frameDurSec: nominalFrameDur(player), tracked: true };
+    if (Date.now() >= deadline) {
+      return { durationSec: d, frameDurSec: nominalFrameDur(player), tracked };
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }

@@ -163,13 +163,21 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   truthy("a recording reports itself as recorded", /timeScale: 'recorded'/.test(rec));
 
   const mark = at('screens/VideoMarkScreen.tsx');
-  truthy('the marking screen runs layer 3', /acceptRecording\(capture\.requestedFps, capture\.selectedFps, measuredFps\(g\)\)/.test(mark));
+  truthy('the marking screen runs layer 3', /acceptRecording\(capture\.requestedFps, capture\.selectedFps, measured\)/.test(mark));
   truthy('against the MEASURED rate, not a nominal one', !/acceptRecording\([^)]*nominal/i.test(mark));
+  // AND ONLY WHEN THE RATE WAS READABLE. A probe seeded at the 30fps fallback can
+  // only ever find every Nth frame, so measuredFps would be measuring the guess and
+  // layer 3 would refuse a good recording and blame the camera. Passing null makes
+  // acceptRecording say the true thing: the file could not be read back.
+  truthy('and never against a measurement taken on a guessed grid', /const measured = tracked \? measuredFps\(g\) : null;/.test(mark));
   truthy('and a refusal is remembered rather than only alerted', /setRefused\(v\.reason\)/.test(mark));
   // THE REFUSAL HAS TO BITE. An alert the coach dismisses, with Keep still live
   // underneath it, is not a refusal — it is a message.
-  truthy('Keep is disabled while a time is refused', /disabled=\{!timing \|\| !!refused\}/.test(mark));
-  truthy('and the reason stays on screen beside it', /\{refused\}/.test(mark));
+  truthy('Keep is disabled while a time is refused', /disabled=\{!timing \|\| !!keepBlocked\}/.test(mark));
+  // keepBlocked, not refused: a refusal is only ONE of the reasons Keep can be off,
+  // and the others used to show nothing at all. See whyNotTimeable.
+  truthy('and a refusal is one of the reasons it reports', /refused \?\?/.test(mark));
+  truthy('and the reason stays on screen beside it', /\{keepBlocked\}/.test(mark));
   // The footage survives either way; only the time was refused.
   truthy('with a way out that asks before deleting', /Keep the video\?/.test(mark));
 }

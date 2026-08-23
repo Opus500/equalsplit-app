@@ -438,6 +438,40 @@ export function isCovered(grid: FrameGrid, t: number): boolean {
 }
 
 /**
+ * Is the WHOLE span probed, as one continuous window?
+ *
+ * THE BUG THIS EXISTS FOR, and it locked the marking screen permanently.
+ *
+ * probeGridAround decided whether to re-probe by asking isCovered about the two
+ * EDGES of the region it needed — centre-margin and centre+margin — and took two
+ * yeses as meaning everything between them was covered. Windows are merged and
+ * non-overlapping, so that holds right up until the mark lands in a GAP narrower
+ * than 2*margin. Then both edges sit in the windows either side, the middle sits in
+ * the hole, and the early exit fires on a point the grid cannot resolve.
+ *
+ * Reproduced offline on a 15s clip: windows [0, 14.5667] and [14.6667, 15.2333],
+ * a 0.1000s gap against a 0.2000s span. Both edges covered, the centre not. markAt
+ * returns null because frameIndexAt refuses an uncovered point, the readout sits on
+ * SNAPPING, and every later release repeats the same test and skips the same probe.
+ * Not slow — permanently stuck, until the clip is reloaded.
+ *
+ * CLIP LENGTH IS WHY IT WAS INTERMITTENT, and it is geometry rather than cost. A
+ * probe window is a fixed number of FRAMES, so its width in seconds is fixed too.
+ * Releases on a long clip are spread over more seconds, so consecutive windows need
+ * not overlap and a residual gap can survive between them and the window made at
+ * load near the end. On a short clip every release overlaps its neighbours, the
+ * windows merge into one, and there is no gap to land in.
+ *
+ * Sampling two points can never answer a question about an interval. Asking which
+ * window contains the span can, because merging guarantees at most one does.
+ */
+export function spanCovered(grid: FrameGrid, from: number, to: number): boolean {
+  const lo = Math.min(from, to);
+  const hi = Math.max(from, to);
+  return grid.windows.some((w) => lo >= w.from - 1e-9 && hi <= w.to + 1e-9);
+}
+
+/**
  * THE GRID IS ISLANDS, NOT A SEQUENCE.
  *
  * `frames` is one sorted array, but it is built from separate probed windows with
@@ -524,6 +558,37 @@ export function frameIndexAt(grid: FrameGrid, t: number): number | null {
     if (frames[i]! <= t + 1e-9) return frameDurAt(grid, i) === null ? null : i;
   }
   return null;
+}
+
+/**
+ * Why a clip cannot be timed yet, in the coach's words, or null when it can.
+ *
+ * A DISABLED CONTROL THAT SAYS NOTHING IS A BROKEN ONE. Keep was gated on `timing`,
+ * which is null whenever either mark fails to resolve — and the screen said nothing
+ * at all, so a permanently stuck grid and a mark parked one frame past the end
+ * looked identical: a button that did not respond. It cost a device session and two
+ * wrong diagnoses to find out which.
+ *
+ * The distinctions are the ones that name different causes. Nothing read at all is a
+ * decode or permission problem; one mark unresolved is a position problem and the
+ * coach can fix it by moving that handle.
+ */
+export function whyNotTimeable(o: {
+  frameCount: number;
+  startResolved: boolean;
+  finishResolved: boolean;
+}): string | null {
+  if (o.startResolved && o.finishResolved) return null;
+  if (o.frameCount === 0) {
+    return 'No frames could be read from this clip, so there is nothing to time. Try loading it again.';
+  }
+  if (!o.startResolved && !o.finishResolved) {
+    return 'Neither mark is on a readable frame yet. Move a handle to probe that part of the clip.';
+  }
+  if (!o.startResolved) {
+    return 'The start mark is not on a readable frame. Move it slightly and let go.';
+  }
+  return 'The finish mark is not on a readable frame. Move it slightly and let go.';
 }
 
 /** The mark for the frame displayed at `t`, ready for `timeFromMarks`. */

@@ -199,6 +199,13 @@ console.log('\n2. EVERY WAY IN IS WHERE A COACH WOULD LOOK');
     // route back to the camera is finishing or discarding whatever is on screen —
     // reachable in the graph sense, unreachable in the sense that matters.
     {
+      what: 'Share log, in Diagnostics',
+      file: 'screens/DebugScreen.tsx',
+      where: ['<View style={styles.titleRow}>', '<PruneTestDataModal'],
+      control: /onPress=\{\(\) => void shareEventLog\(\)\}/,
+      label: /Share log/,
+    },
+    {
       what: 'Record another rep, with a clip loaded',
       file: 'screens/VideoMarkScreen.tsx',
       where: ['<View style={styles.swapRow}>', '</View>'],

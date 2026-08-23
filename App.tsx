@@ -12,6 +12,7 @@ import { SettingsProvider, useSettings } from './src/settings/SettingsProvider';
 import { RosterProvider } from './src/roster/RosterProvider';
 import { PendingRunProvider } from './src/runs/PendingRunProvider';
 import { initDb } from './src/db/database';
+import { installCrashLog, logEvent } from './src/diag/crashlog';
 import TimerScreen from './src/screens/TimerScreen';
 import TimerV2Screen from './src/screens/TimerV2Screen';
 import DrillsTab from './src/screens/DrillsTab';
@@ -24,8 +25,13 @@ import VideoTab from './src/screens/VideoTab';
 type Tab = 'timer' | 'drills' | 'roster' | 'history' | 'settings' | 'debug' | 'video';
 
 export default function App() {
+  // BEFORE anything else can fail. Installed in the module body rather than an
+  // effect: an error thrown while the tree is first mounting happens before any
+  // effect runs, and that is exactly the error nobody can otherwise see.
+  installCrashLog();
+
   useEffect(() => {
-    initDb().catch(() => {});
+    initDb().catch((e) => logEvent('DB', `initDb failed: ${String(e)}`));
   }, []);
 
   return (

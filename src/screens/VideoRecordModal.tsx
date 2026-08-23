@@ -58,6 +58,7 @@ import {
   type RecordingEnd,
 } from '../video/storage';
 import { nominalSdMs, type TimeScale } from '../video/timing';
+import { logEvent } from '../diag/crashlog';
 import {
   CAUTION,
   DESTRUCTIVE,
@@ -238,6 +239,7 @@ export function VideoRecordModal({
       // recording still finalizes the file. Omitted rather than guessed when the
       // phone would not say how much space is free — see storage.ts on why that is a
       // warning here and a refusal in capture.ts.
+      logEvent('CAMERA', `createRecorder at ${target}fps, session reported ${settledFps ?? 'nothing'}`);
       const rec = await videoOutput.createRecorder({
         filePath: path,
         maxDuration: MAX_CLIP_MS / 1000,
@@ -322,9 +324,18 @@ export function VideoRecordModal({
               // the phone warm and shortens how long 240fps can be held later.
               isActive={visible}
               constraints={[{ fps: target }]}
-              onSessionConfigSelected={(c: CameraSessionConfig) =>
-                setSession({ forFps: target, fps: c.selectedFPS ?? null })
-              }
+              onSessionConfigSelected={(c: CameraSessionConfig) => {
+                logEvent('CAMERA', `session selected ${c.selectedFPS ?? 'undefined'}fps for a requested ${target}`);
+                setSession({ forFps: target, fps: c.selectedFPS ?? null });
+              }}
+              // ITS DEFAULT IS console.error, which on a phone nobody has attached
+              // to Xcode is silence. A session error is often the last thing the app
+              // manages to say before a native crash takes the process — so it is
+              // the one line most worth having, and it was going nowhere.
+              onError={(e: Error) => logEvent('CAMERA', `session error: ${e.message}`)}
+              onConfigured={() => logEvent('CAMERA', 'session configured')}
+              onStarted={() => logEvent('CAMERA', 'session started')}
+              onStopped={() => logEvent('CAMERA', 'session stopped')}
             />
           )}
 

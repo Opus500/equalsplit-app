@@ -53,7 +53,7 @@ import {
 } from '../video/clips';
 import { acceptRecording } from '../video/capture';
 import { describeClip } from '../video/storage';
-import { filmstrip, nominalFrameDur, probeGridAround, type Tile } from '../video/frames';
+import { filmstrip, probeGridAround, waitForClip, type Tile } from '../video/frames';
 import {
   acceptForTiming,
   BODY_PART_BIAS_MS,
@@ -69,6 +69,7 @@ import {
   stepFrames,
   timeFromMarks,
   videoRunRawJson,
+  whyNotTimeable,
   VIDEO_MODE,
   type FrameGrid,
   type TimeScale,
@@ -102,21 +103,33 @@ const DURATION_TIMEOUT_MS = 8000;
 type Which = 'start' | 'finish';
 
 /**
- * Poll until the player reports a duration, or give up.
+ * Longest a single probe may take before the screen stops waiting for it, in ms.
  *
- * expo-video's duration is a property of a mutable native object, not a React
- * value — nothing re-renders when tracks finish loading — so the load has to be
- * awaited here, once, before anything derives a mark from it. Returns 0 if the
- * clip never reports one, which the caller treats as a failed import rather than
- * a zero-length video.
+ * Generous — a settle on a cold decoder measured ~900ms at its worst — and it is a
+ * DEADLOCK bound, not a performance one. Nothing here should ever reach it.
  */
-async function waitForDuration(player: { duration: number }): Promise<number> {
-  const deadline = Date.now() + DURATION_TIMEOUT_MS;
-  for (;;) {
-    const d = player.duration || 0;
-    if (d > 0) return d;
-    if (Date.now() >= deadline) return 0;
-    await new Promise((r) => setTimeout(r, 50));
+const PROBE_TIMEOUT_MS = 6000;
+
+/**
+ * Race a probe against a deadline, and IGNORE a late answer rather than applying it.
+ *
+ * The late result is the part that matters. A probe that comes back after the screen
+ * has given up carries a grid built from a position the coach has since left, and
+ * writing it would move the mark under them. Dropping it is the only safe answer.
+ *
+ * This did not cause the SNAPPING lock — that probe returned in zero milliseconds,
+ * having decided it had nothing to do. This is for the other failure: a decoder that
+ * genuinely never answers, which nothing in this screen previously bounded.
+ */
+async function withDeadline<T>(p: Promise<T>, ms: number): Promise<{ ok: true; value: T } | { ok: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ ok: false }>((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false }), ms);
+  });
+  try {
+    return await Promise.race([p.then((value) => ({ ok: true as const, value })), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -285,8 +298,10 @@ export default function VideoMarkScreen({
       // duration afterwards, because it is a property of a mutable player object
       // that React has no reason to re-render for, so the screen stays dead until
       // the clip is loaded again.
-      const d = await waitForDuration(player);
-      const dur = nominalFrameDur(player);
+      // BOTH facts, not just the length. See waitForClip: duration arrives first,
+      // and reading the frame rate before the track exists silently seeds every
+      // probe on this clip at 30fps.
+      const { durationSec: d, frameDurSec: dur, tracked } = await waitForClip(player, DURATION_TIMEOUT_MS);
       setFrameDur(dur);
       setActive('start');
       if (!d) {
@@ -332,7 +347,14 @@ export default function VideoMarkScreen({
         }
         if (scale.warn) Alert.alert('Check this clip', scale.warn);
 
-        const v = acceptRecording(capture.requestedFps, capture.selectedFps, measuredFps(g));
+        // A MEASUREMENT ON A GUESSED GRID IS NOT EVIDENCE. If the frame rate never
+        // became readable, the probe aimed at 30fps centres and can only report a
+        // submultiple — so measuredFps would be measuring the guess, and layer 3
+        // would refuse a good recording and blame the camera. Passing null instead
+        // makes acceptRecording say what is actually true: the file could not be
+        // read back, so no time can be taken from it, and the video is kept.
+        const measured = tracked ? measuredFps(g) : null;
+        const v = acceptRecording(capture.requestedFps, capture.selectedFps, measured);
         if (!v.ok) {
           setRefused(v.reason);
           Alert.alert('This recording cannot be timed', v.reason);
@@ -484,24 +506,65 @@ export default function VideoMarkScreen({
   }, [clip, duration, player]);
 
   /** Probe the frame grid around a position, then seek to the frame it resolves to. */
+  /**
+   * Set when a settle failed rather than merely found nothing.
+   *
+   * Distinct from whyNotTimeable, which describes the STATE of the marks. This
+   * describes the last ATTEMPT, and the two want different words: "the finish mark
+   * is not on a readable frame" tells the coach to move it, "the clip stopped
+   * responding" tells them it is not their fault.
+   */
+  const [settleNote, setSettleNote] = useState<string | null>(null);
+
   const settleAt = useCallback(
     async (seconds: number) => {
       if (!clip) return;
-      // From the ref, not the closure: a drag can release while a previous settle
-      // is still resolving, and the closure's grid would be the pre-drag one.
-      const r = await probeGridAround(player, live.current.grid, seconds, live.current.frameDur);
-      setGrid(r.grid);
-      live.current.grid = r.grid;
-      const m = markAt(r.grid, seconds);
-      const t0 = Date.now();
-      // Seek to the frame's MIDDLE — a request on a boundary is decided by float
-      // representation and can show the frame before.
-      player.currentTime = m ? seekTimeFor(m) : seconds;
-      const d = dragSeeks.current;
-      setPerf(
-        `probe ${r.ms}ms/${r.calls} · seek ${Date.now() - t0}ms` +
-          (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
-      );
+      try {
+        // From the ref, not the closure: a drag can release while a previous settle
+        // is still resolving, and the closure's grid would be the pre-drag one.
+        //
+        // BOUNDED. Nothing here used to be, so a probe that never came back left the
+        // readout on SNAPPING with no way out but reloading the clip — and no way to
+        // tell that from a mark that simply had not resolved.
+        const out = await withDeadline(
+          probeGridAround(player, live.current.grid, seconds, live.current.frameDur),
+          PROBE_TIMEOUT_MS,
+        );
+        if (!out.ok) {
+          setSettleNote(
+            'Reading that part of the clip took too long and was given up on. Move the handle ' +
+              'again to retry.',
+          );
+          setPerf(`settle timed out after ${PROBE_TIMEOUT_MS}ms`);
+          return;
+        }
+        const r = out.value;
+        setGrid(r.grid);
+        live.current.grid = r.grid;
+        const m = markAt(r.grid, seconds);
+        const t0 = Date.now();
+        // Seek to the frame's MIDDLE — a request on a boundary is decided by float
+        // representation and can show the frame before.
+        player.currentTime = m ? seekTimeFor(m) : seconds;
+        const d = dragSeeks.current;
+        setSettleNote(null);
+        // "ISSUED", not "seek". Assigning currentTime hands a request to
+        // AVFoundation and returns; the frame arrives later. Timing the assignment
+        // measures the setter, not the seek, and this line called it "seek Xms" for
+        // months — a number that looked like decode cost and was not. Measuring the
+        // real thing means polling for the readback, which costs more than the
+        // figure is worth, so it is labelled honestly instead of measured badly.
+        setPerf(
+          `probe ${r.ms}ms/${r.calls} · seek issued ${Date.now() - t0}ms` +
+            (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
+        );
+      } catch (e) {
+        // SAID, NOT SWALLOWED. This had no catch at all, so a throwing probe became
+        // an unhandled rejection: the grid stayed as it was, the readout stayed on
+        // SNAPPING, and nothing on screen or in the log recorded that anything had
+        // gone wrong.
+        setSettleNote(`Could not read that part of the clip: ${e instanceof Error ? e.message : String(e)}`);
+      }
     },
     [clip, player],
   );
@@ -518,6 +581,27 @@ export default function VideoMarkScreen({
   // every move, which is what "see it change as they scrub" needs; the moment the
   // finger lifts it is replaced by the frame-accurate one.
   const liveMs = timing ? timing.elapsedMs : (finishAt - startAt) * 1000;
+
+  /**
+   * Why Keep is unavailable, or null when it is not.
+   *
+   * ORDERED BY WHOSE PROBLEM IT IS. A refused time is the app's verdict and outranks
+   * everything; a failed settle is the clip misbehaving; an unresolved mark is a
+   * position the coach can fix by moving a handle. Keep used to be gated on `timing`
+   * alone and said none of this — it simply did not respond, which is what sent two
+   * diagnoses down the wrong path before the real one was reproduced offline.
+   */
+  const keepBlocked = useMemo(
+    () =>
+      refused ??
+      settleNote ??
+      whyNotTimeable({
+        frameCount: grid.frames.length,
+        startResolved: !!startMark,
+        finishResolved: !!finishMark,
+      }),
+    [refused, settleNote, grid.frames.length, startMark, finishMark],
+  );
 
   // ------------------------------------------------------------ drag
 
@@ -641,7 +725,15 @@ export default function VideoMarkScreen({
 
         const { active: which, startAt: s, finishAt: f, grid: g, frameDur: fd } = live.current;
         const at = which === 'start' ? s : f;
-        const r = await probeGridAround(player, g, at, fd);
+        // Bounded for the same reason as settleAt, and it matters more here: this
+        // loop holds `stepping.current`, so a probe that never returns would leave
+        // the arrows dead for the life of the screen as well as the readout stuck.
+        const out = await withDeadline(probeGridAround(player, g, at, fd), PROBE_TIMEOUT_MS);
+        if (!out.ok) {
+          setPerf(`step ${delta > 0 ? '+' : ''}${delta} · timed out after ${PROBE_TIMEOUT_MS}ms`);
+          continue;
+        }
+        const r = out.value;
         if (r.calls) setGrid(r.grid);
 
         const m = stepFrames(r.grid, at, delta);
@@ -671,7 +763,8 @@ export default function VideoMarkScreen({
 
         const t0 = Date.now();
         player.currentTime = seekTimeFor(m);
-        setPerf(`step ${delta > 0 ? '+' : ''}${delta} · probe ${r.ms}ms/${r.calls} · seek ${Date.now() - t0}ms`);
+        // See settleAt: this times the assignment returning, not the seek landing.
+        setPerf(`step ${delta > 0 ? '+' : ''}${delta} · probe ${r.ms}ms/${r.calls} · seek issued ${Date.now() - t0}ms`);
       }
     } finally {
       stepping.current = false;
@@ -983,24 +1076,24 @@ export default function VideoMarkScreen({
             </Text>
           </Pressable>
 
-          {/* LAYER 3 BITING. The clip is on screen, the handles work, the
-              filmstrip is built — and the time is refused, because the file does not
-              contain the frame rate it was recorded at. Saying it here, next to the
-              disabled button, is the only way it reads as a decision rather than as
-              a broken screen. */}
-          {refused ? (
+          {/* WHY KEEP IS OFF, always, whatever the reason. Layer 3 refusing the
+              time is one case and it gets the Clear action, because that clip is
+              finished with. The others are recoverable and must not offer it. */}
+          {keepBlocked ? (
             <View style={styles.refusalBox}>
-              <Text style={styles.refusalText}>{refused}</Text>
-              <Pressable style={styles.secondary} onPress={clearClip}>
-                <Text style={styles.secondaryText}>Clear this clip</Text>
-              </Pressable>
+              <Text style={styles.refusalText}>{keepBlocked}</Text>
+              {refused ? (
+                <Pressable style={styles.secondary} onPress={clearClip}>
+                  <Text style={styles.secondaryText}>Clear this clip</Text>
+                </Pressable>
+              ) : null}
             </View>
           ) : null}
 
           <Pressable
-            style={[styles.primary, (!timing || !!refused) && styles.disabled]}
+            style={[styles.primary, (!timing || !!keepBlocked) && styles.disabled]}
             onPress={() => void save()}
-            disabled={!timing || !!refused}
+            disabled={!timing || !!keepBlocked}
           >
             <Text style={styles.primaryText}>Keep</Text>
           </Pressable>

@@ -48,6 +48,8 @@ const {
   adjacentDeltas,
   acceptForTiming,
   acceptForReview,
+  spanCovered,
+  whyNotTimeable,
 } = await import('../src/video/timing.ts');
 const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble/repeats.ts');
 // The REAL probe path. frames.ts imports expo-video for types only, so it loads
@@ -843,6 +845,71 @@ console.log('\n13. FILMSTRIP tiles');
   check('and not by returning nothing', filmstripTimes(-3, -1, 4).length, 4);
   // The reachable case is unaffected: from = 0 is the only value the app passes.
   truthy('a real clip is untouched by the clamp', filmstripTimes(0, 10, 5).every((t) => t > 0 && t < 10));
+}
+
+console.log('\n14. THE SNAPPING LOCK — a span is not two points');
+{
+  // FOUND ON DEVICE, REPRODUCED OFFLINE. The marking screen would stick on
+  // SNAPPING permanently: not slow, stuck, until the clip was reloaded. Two wrong
+  // diagnoses preceded this one, and neither survived contact with a simulation.
+  //
+  // probeGridAround decided whether to re-probe by asking isCovered about the two
+  // EDGES of the span it needed and inferring the middle. Windows are merged and
+  // non-overlapping, so that holds until a mark lands in a gap NARROWER than
+  // 2*margin: both edges sit in the windows either side, the centre sits in the
+  // hole, the probe is skipped, and markAt can never resolve the point — for good,
+  // because every later release runs the same test and skips the same probe.
+  //
+  // The exact geometry from the reproduction, so a regression names itself.
+  const gappy = {
+    frames: [14.5, 14.5333, 14.5667, 14.6667, 14.7, 14.7333],
+    windows: [
+      { from: 0, to: 14.5667 },
+      { from: 14.6667, to: 15.2333 },
+    ],
+  };
+  const centre = 14.6341;
+  const margin = 0.1;
+
+  truthy('both EDGES of the span are covered', isCovered(gappy, centre - margin) && isCovered(gappy, centre + margin));
+  check('while the centre itself is not', isCovered(gappy, centre), false);
+  // Which is the whole point: edge-sampling says yes, the span says no.
+  check('so asking about the SPAN refuses', spanCovered(gappy, centre - margin, centre + margin), false);
+
+  // And it still says yes when the span really is inside one window, or the early
+  // exit would never fire and every release would pay a full probe.
+  truthy('a span inside one window is covered', spanCovered(gappy, 14.51, 14.56));
+  check('a span crossing a window edge is not', spanCovered(gappy, 14.55, 14.60), false);
+  check('nor is one spanning both windows', spanCovered(gappy, 14.5, 14.75), false);
+  check('an empty grid covers nothing', spanCovered(emptyGrid(), 0, 1), false);
+  // Order must not matter: the caller passes centre-margin first, but a negative
+  // margin or a reversed pair must not silently answer yes.
+  check('the ends may be given in either order', spanCovered(gappy, 14.56, 14.51), true);
+}
+
+console.log('\n15. A DISABLED CONTROL SAYS WHY');
+{
+  // Keep was gated on `timing` and said nothing, so a permanently stuck grid and a
+  // mark parked past the last frame looked identical: a button that did not
+  // respond. That cost a device session and two wrong diagnoses.
+  check('both marks resolved needs no explanation', whyNotTimeable({ frameCount: 40, startResolved: true, finishResolved: true }), null);
+
+  const none = whyNotTimeable({ frameCount: 0, startResolved: false, finishResolved: false });
+  truthy('nothing read at all says so', /No frames could be read/i.test(none));
+  truthy('and suggests loading it again', /again/i.test(none));
+
+  const neither = whyNotTimeable({ frameCount: 40, startResolved: false, finishResolved: false });
+  truthy('frames but no marks is a different sentence', /Neither mark/i.test(neither));
+  check('and is NOT the no-frames one', /No frames could be read/i.test(neither), false);
+
+  const start = whyNotTimeable({ frameCount: 40, startResolved: false, finishResolved: true });
+  const finish = whyNotTimeable({ frameCount: 40, startResolved: true, finishResolved: false });
+  truthy('an unresolved START names the start', /start mark/i.test(start));
+  truthy('an unresolved FINISH names the finish', /finish mark/i.test(finish));
+  check('and the two are not the same message', start === finish, false);
+  // The distinction the coach acts on: one mark unresolved is a position they can
+  // fix by moving that handle, and the message has to say which handle.
+  truthy('both tell them to move it', /move it/i.test(start) && /move it/i.test(finish));
 }
 
 console.log(
