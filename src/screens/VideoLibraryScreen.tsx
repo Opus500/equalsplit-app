@@ -3,9 +3,15 @@
 //
 // This exists because Stage 1 dropped "keep time only". Every marked run now
 // keeps its clip, clips live in the DOCUMENT directory so iOS will not evict
-// them, and at roughly 1MB per second of 1080p a few sessions is a few hundred
-// megabytes with no way to reclaim any of it. Delete is not a convenience here,
-// it is the other half of storing anything at all.
+// them, and a few sessions is a few hundred megabytes with no way to reclaim any
+// of it. Delete is not a convenience here, it is the other half of storing
+// anything at all.
+//
+// This line used to say "roughly 1MB per second of 1080p", which was a guess and
+// was wrong in both directions: measured on device, 1080p HEVC ran from 16 to 250
+// MB per minute depending on frame rate and on what was in front of the lens.
+// There is no rate to quote — see src/video/storage.ts — which makes the argument
+// for this screen stronger, not weaker. The sizes it lists are read off the files.
 //
 // "No storage dashboard, but blind deletion is useless." So each clip is shown
 // against the RUN it belongs to — athlete, drill, time, date — and its size. A

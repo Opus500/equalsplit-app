@@ -1,10 +1,18 @@
-// Where imported clips live, and what they cost.
+// Where clips live, and what they cost.
 //
 // "Videos live in the app, not the camera roll." The picker hands back a temp URI
 // that does not survive the session, so an imported clip is copied into the app's
 // DOCUMENT directory — not the cache directory, which iOS evicts under storage
 // pressure. A run that references a clip iOS silently deleted would be worse than
 // one that never had a video.
+//
+// TWO WAYS IN, ONE PLACE. A clip is imported from the library or recorded in the
+// app, and after the first second of its life nothing downstream can tell which —
+// same directory, same id, same getClip, same delete. That is deliberate and it is
+// what made the recording path small: the library, the player, the share sheet, the
+// camera-roll export and the sweep all gained recording support by not being
+// touched. The one thing that does NOT survive the merge is provenance for TIMING,
+// which is why raw_json carries a TimeScale rather than this module carrying a flag.
 //
 // There is deliberately NO tile cache here. A visible filmstrip window is 12-20
 // tiles at ~24ms each with a fan of 8 — a couple of hundred milliseconds to
@@ -18,7 +26,13 @@ import { Directory, File, Paths } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { Asset, MediaSubtype, requestPermissionsAsync } from 'expo-media-library';
 
+import { formatBytes } from './storage';
 import type { TimeScale } from './timing';
+
+// Re-exported so the five screens that show a size keep importing it from the
+// module that owns clips. It lives in storage.ts because the recording refusals
+// need it and this file cannot be imported without the filesystem and the picker.
+export { formatBytes };
 
 /** Everything lives under one directory so a clip is deleted by removing a folder. */
 const ROOT = 'videos';
@@ -117,6 +131,77 @@ export async function importClip(pickedUri: string): Promise<Clip> {
       // The original failure is the one worth reporting.
     }
     throw e;
+  }
+}
+
+/**
+ * Free space right now, in bytes, or NaN when the platform will not say.
+ *
+ * A function rather than a value because it is only true for an instant. The
+ * recording guard reads it immediately before starting and never caches it —
+ * everything a coach does between two reps changes the answer.
+ */
+export function freeDiskBytes(): number {
+  try {
+    return Paths.availableDiskSpace;
+  } catch {
+    return Number.NaN;
+  }
+}
+
+/**
+ * Reserve an id and the path a recorder should write to.
+ *
+ * THE RECORDER WRITES STRAIGHT INTO THE CLIP DIRECTORY. VisionCamera would happily
+ * record to its own temp file and hand back a path, but then a 125MB clip has to be
+ * copied into place afterwards — a second full-size write, on a phone whose free
+ * space we just decided was tight enough to need a budget, with a window in which
+ * both copies exist. Writing to the destination costs neither.
+ *
+ * A FILESYSTEM PATH, not a file:// URL: RecorderSettings.filePath is explicit about
+ * this, and passing a URL yields a directory literally named "file:". The parent
+ * directories are created by the recorder, so nothing is left behind if the coach
+ * changes their mind before pressing record.
+ *
+ * .mov because that is VideoOutputOptions' iOS default. It is passed through
+ * clipFile unchanged for the same reason imports keep their extension: the container
+ * should say what it is.
+ */
+export function newRecordingTarget(): { id: string; path: string } {
+  const id = newClipId();
+  const uri = clipFile(id, '.mov').uri;
+  return { id, path: decodeURI(uri.replace(/^file:\/\//, '')) };
+}
+
+/**
+ * Turn a finished recording into a clip, or clean up after one that produced
+ * nothing.
+ *
+ * getClip is the whole validation and that is the point: a recorded file has to
+ * clear exactly the bar an imported one clears — it exists, and it is not zero
+ * bytes. A recording interrupted by a crash leaves the same residue an interrupted
+ * import does, so it is removed the same way rather than left for sweepBrokenClips
+ * to find later.
+ *
+ * Returns null rather than throwing. "The camera wrote nothing" is a state the
+ * recording screen has to explain in its own words either way.
+ */
+export function claimRecording(id: string): Clip | null {
+  const clip = getClip(id);
+  if (clip) return { ...clip, importedAt: Date.now() };
+  discardRecording(id);
+  return null;
+}
+
+/** Throw away a recording and its directory. For a cancel, and for the failure
+ *  path above — never for a clip that has bytes in it. */
+export function discardRecording(id: string): void {
+  try {
+    const dir = clipDir(id);
+    if (dir.exists) dir.delete();
+  } catch {
+    // sweepBrokenClips will find it. A cleanup failure must not become the error
+    // the coach reads.
   }
 }
 
@@ -395,13 +480,3 @@ export function totalBytes(): number {
   return listClips().reduce((sum, c) => sum + c.bytes, 0);
 }
 
-/** "7.3 MB". Sizes are shown so blind deletion is avoidable, so they round
- *  coarsely on purpose — nobody chooses by the third significant figure. */
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${Math.round(kb)} KB`;
-  const mb = kb / 1024;
-  if (mb < 100) return `${mb.toFixed(1)} MB`;
-  return `${Math.round(mb)} MB`;
-}
