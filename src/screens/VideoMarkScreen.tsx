@@ -37,12 +37,13 @@ import { Image } from 'expo-image';
 
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
+import { VideoRecordModal, type Recorded } from './VideoRecordModal';
 import { saveRun, type Drill } from '../db/database';
 import { effectiveRunDate, isBackdated, sameLocalDay } from '../runs/rundate';
 import { RunDateModal, confirmRunDate } from '../runs/RunDateEditor';
 import { useRoster } from '../roster/RosterProvider';
 import {
-  formatBytes,
+  deleteClip,
   importClip,
   NotEnoughSpaceError,
   PHOTO_ACCESS_MESSAGE,
@@ -50,6 +51,8 @@ import {
   pickVideo,
   type Clip,
 } from '../video/clips';
+import { acceptRecording } from '../video/capture';
+import { describeClip } from '../video/storage';
 import { filmstrip, nominalFrameDur, probeGridAround, type Tile } from '../video/frames';
 import {
   acceptForTiming,
@@ -68,9 +71,11 @@ import {
   videoRunRawJson,
   VIDEO_MODE,
   type FrameGrid,
+  type TimeScale,
   type VideoMark,
 } from '../video/timing';
 import {
+  CAUTION,
   FAINT,
   INTERACTIVE,
   INTERACTIVE_SOFT,
@@ -210,55 +215,66 @@ export default function VideoMarkScreen({
     if (!isVisible) player.pause();
   }, [isVisible, player]);
 
-  // ------------------------------------------------------------- import
+  // ------------------------------------------------ getting a clip in
 
   /**
-   * True while an import is in flight.
+   * True while a clip is being loaded, from either source.
    *
    * A ref rather than reading `busy`, because a handler reads state from the
-   * closure it was made in. Two imports racing is not a cosmetic problem: the
+   * closure it was made in. Two clips racing is not a cosmetic problem: the
    * second replaces the player's source while the first is still probing, and the
    * probe writes ITS frames into `live.current.grid`, which the second clip's
    * marks are then resolved against. The recorded time would be computed from
    * another video's frame timestamps.
+   *
+   * It covers recording as well as importing now, and it has to: the two buttons
+   * sit beside each other, and a recording arriving while an import is still
+   * probing is the same collision by a different route.
    */
-  const importing = useRef(false);
+  const loadingClip = useRef(false);
 
-  const pick = useCallback(async () => {
-    if (importing.current) return;
-    importing.current = true;
-    setBusy('Importing…');
-    try {
-      // The picker's options live in clips.ts, not here. Two of them are what stop
-      // PHPhotosError 3164 and a silent re-encode, and they were previously a
-      // verbatim copy in the attach path with the reasoning only in this one.
-      const picked = await pickVideo();
-      if (picked.status === 'denied') {
-        Alert.alert(PHOTO_ACCESS_TITLE, PHOTO_ACCESS_MESSAGE);
-        return;
-      }
-      if (picked.status !== 'picked') return;
+  /**
+   * Why this clip's TIME is refused, or null.
+   *
+   * LAYER 3, and this screen is the only place it can live. capture.ts checks what
+   * the device claims and what the session resolved to, both before recording and
+   * neither able to see a frame — and the frames are the only evidence. They exist
+   * here, after the grid is probed, which is a minute after the camera screen has
+   * gone. That is why a recording carries its two claimed rates along with it: so
+   * they can be settled against the file, here, by the thing that overrules them.
+   *
+   * The clip is KEPT when this is set. What is refused is the time, not the footage.
+   */
+  const [refused, setRefused] = useState<string | null>(null);
 
-      // REFUSED BEFORE THE COPY, not after. A clip that can never be timed should
-      // not first cost tens of megabytes and a filmstrip build, and it should not
-      // land in the library for the coach to wonder about later.
-      const verdict = acceptForTiming(picked.timeScale);
-      if (!verdict.accept) {
-        Alert.alert('This clip cannot be timed', verdict.reason);
-        return;
-      }
+  /** Back to an empty screen. Shared by the save path and by clearing a clip whose
+   *  time was refused, so the two cannot drift into forgetting different things. */
+  const reset = useCallback(() => {
+    setClip(null);
+    setTiles([]);
+    setGrid(emptyGrid());
+    setPerformedAt(null);
+    setRefused(null);
+  }, []);
 
-      // Derived, not typed. A date read off the footage is right by construction;
-      // the editor below exists for the cases where it is absent or wrong.
-      setPerformedAt(picked.capturedAt);
-      const imported = await importClip(picked.uri);
-      // A warning, not a gate. Shown after the import so it does not sit between
-      // the coach and a clip that is probably fine.
-      if (verdict.warn) Alert.alert('Check this clip', verdict.warn);
-      setClip(imported);
+  /**
+   * Put a clip on the screen: source, duration, frame grid, two marks.
+   *
+   * Shared by both ways in, and the reason recording cost so little to add — the
+   * filmstrip, the handles, the stepping and the save path never learn where a clip
+   * came from. `capture` is present only for a recording, and only so layer 3 can
+   * run: an imported clip has no requested rate to hold the file against.
+   */
+  const loadClip = useCallback(
+    async (
+      c: Clip,
+      capture?: { requestedFps: number; selectedFps: number | null; timeScale: TimeScale },
+    ) => {
+      setClip(c);
       setGrid(emptyGrid());
       setTiles([]);
-      await player.replaceAsync(imported.uri);
+      setRefused(null);
+      await player.replaceAsync(c.uri);
       setBusy('Reading the clip…');
       // WAIT for the tracks, do not assume a duration.
       //
@@ -268,7 +284,7 @@ export default function VideoMarkScreen({
       // `duration` and never fires, and Keep stays disabled. Nothing re-reads
       // duration afterwards, because it is a property of a mutable player object
       // that React has no reason to re-render for, so the screen stays dead until
-      // the clip is imported again.
+      // the clip is loaded again.
       const d = await waitForDuration(player);
       const dur = nominalFrameDur(player);
       setFrameDur(dur);
@@ -278,7 +294,7 @@ export default function VideoMarkScreen({
         // would go on to compute marks from a duration that does not exist.
         Alert.alert(
           'Could not read that clip',
-          'The video imported but its length could not be read, so it cannot be marked. Try importing it again.',
+          'The video is stored but its length could not be read, so it cannot be marked. It is in Videos if you want to try again.',
         );
         return;
       }
@@ -297,6 +313,70 @@ export default function VideoMarkScreen({
       setStartAt(markAt(g, 0)?.pts ?? 0);
       setFinishAt(markAt(g, endAt)?.pts ?? endAt);
       player.currentTime = dur / 2;
+
+      // LAYER 3, against the frames that were just probed rather than against
+      // anything the camera said about itself. A session can report 240 and hold it,
+      // and it can report 240 and write 30; only this tells them apart, and a time
+      // taken from the second would be eight times too fast, charted as a personal
+      // best, and indistinguishable afterwards from a real one.
+      if (capture) {
+        // THE SAME TIMESCALE GATE THE IMPORT PATH RUNS, on the value a recording
+        // carries. It accepts silently, which is the whole point: 'recorded' is not
+        // 'unknown', and routing the recording through the gate is what keeps that
+        // true rather than merely true today.
+        const scale = acceptForTiming(capture.timeScale);
+        if (!scale.accept) {
+          setRefused(scale.reason);
+          Alert.alert('This clip cannot be timed', scale.reason);
+          return;
+        }
+        if (scale.warn) Alert.alert('Check this clip', scale.warn);
+
+        const v = acceptRecording(capture.requestedFps, capture.selectedFps, measuredFps(g));
+        if (!v.ok) {
+          setRefused(v.reason);
+          Alert.alert('This recording cannot be timed', v.reason);
+        }
+      }
+    },
+    [player],
+  );
+
+  const pick = useCallback(async () => {
+    if (loadingClip.current) return;
+    loadingClip.current = true;
+    setBusy('Importing…');
+    try {
+      // The picker's options live in clips.ts, not here. Two of them are what stop
+      // PHPhotosError 3164 and a silent re-encode, and they were previously a
+      // verbatim copy in the attach path with the reasoning only in this one.
+      const picked = await pickVideo();
+      if (picked.status === 'denied') {
+        Alert.alert(PHOTO_ACCESS_TITLE, PHOTO_ACCESS_MESSAGE);
+        return;
+      }
+      if (picked.status !== 'picked') return;
+
+      // REFUSED BEFORE THE COPY, not after. A clip that can never be timed should
+      // not first cost tens of megabytes and a filmstrip build, and it should not
+      // land in the library for the coach to wonder about later.
+      //
+      // The import path's equivalent of the session check a recording gets before
+      // the rep is run: in both cases this is the last moment refusing is free.
+      const verdict = acceptForTiming(picked.timeScale);
+      if (!verdict.accept) {
+        Alert.alert('This clip cannot be timed', verdict.reason);
+        return;
+      }
+
+      // Derived, not typed. A date read off the footage is right by construction;
+      // the editor below exists for the cases where it is absent or wrong.
+      setPerformedAt(picked.capturedAt);
+      const imported = await importClip(picked.uri);
+      // A warning, not a gate. Shown after the import so it does not sit between
+      // the coach and a clip that is probably fine.
+      if (verdict.warn) Alert.alert('Check this clip', verdict.warn);
+      await loadClip(imported);
     } catch (e) {
       // NotEnoughSpaceError already reads as a sentence; anything else does not,
       // so it keeps its own title rather than being flattened into one message.
@@ -305,10 +385,84 @@ export default function VideoMarkScreen({
         e instanceof NotEnoughSpaceError ? e.message : String(e),
       );
     } finally {
-      importing.current = false;
+      loadingClip.current = false;
       setBusy(null);
     }
-  }, [player]);
+  }, [loadClip]);
+
+  /** Whether the camera sheet is UP. Not whether it is recording — the sheet owns
+   *  that, and conflating the two is how a Stop button ends up wired to a Cancel. */
+  const [recordOpen, setRecordOpen] = useState(false);
+
+  /**
+   * A rep filmed in the app, arriving exactly where an imported one does.
+   *
+   * The clip is already written and already in Videos by the time this runs — the
+   * recorder wrote straight into the clip directory — so there is nothing to copy
+   * and nothing to lose if this screen happens to be busy. Which is what lets the
+   * collision case below say something true instead of dropping a rep.
+   */
+  const onRecorded = useCallback(
+    async (r: Recorded) => {
+      setRecordOpen(false);
+      if (loadingClip.current) {
+        Alert.alert(
+          'One clip at a time',
+          'Another clip is still loading, so this recording was not opened. It is saved in ' +
+            'Videos and can be attached to a run from there.',
+        );
+        return;
+      }
+      loadingClip.current = true;
+      setBusy('Reading the recording…');
+      try {
+        // Filmed now. Nothing to derive from a photo library and nothing to
+        // backdate — see isBackdated, which compares local days for this reason.
+        setPerformedAt(null);
+        if (r.note) Alert.alert('Recording finished', r.note);
+        await loadClip(r.clip, {
+          requestedFps: r.requestedFps,
+          selectedFps: r.selectedFps,
+          timeScale: r.timeScale,
+        });
+      } catch (e) {
+        Alert.alert('Could not read that recording', String(e));
+      } finally {
+        loadingClip.current = false;
+        setBusy(null);
+      }
+    },
+    [loadClip],
+  );
+
+  /**
+   * Let go of a clip whose time was refused.
+   *
+   * It needs an exit, and the exit is a QUESTION rather than a delete. Layer 3
+   * refuses the time; it says nothing about the footage, which is often still worth
+   * watching — a rep filmed at the wrong rate is still a rep. So the choice is the
+   * coach's, and both answers clear the screen.
+   */
+  const clearClip = useCallback(() => {
+    const c = clip;
+    if (!c) return;
+    Alert.alert(
+      'Keep the video?',
+      'Its time was refused, but the footage itself is fine to watch and is already in Videos.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Keep it', onPress: reset },
+        {
+          text: 'Delete it',
+          style: 'destructive',
+          onPress: () => {
+            deleteClip(c.id);
+            reset();
+          },
+        },
+      ],
+    );
+  }, [clip, reset]);
 
   // ------------------------------------------------------- strip + grid
 
@@ -587,10 +741,7 @@ export default function VideoMarkScreen({
           `${formatVideoTime(timing)}${drill ? ` · ${drill.name}` : ''}\n\n` +
             (drill ? 'Video kept with the run.' : 'No drill yet — assign one in History to chart it.'),
         );
-        setClip(null);
-        setTiles([]);
-        setGrid(emptyGrid());
-        setPerformedAt(null);
+        reset();
       } catch (e) {
         Alert.alert('Could not save', String(e));
       } finally {
@@ -600,7 +751,7 @@ export default function VideoMarkScreen({
     // athleteId, not just roster: it is derived from athleteOverride too, and
     // leaving it out would let a stale closure attribute the run to whoever was
     // selected before the coach changed it.
-    [timing, clip, startMark, finishMark, grid, frameDur, drill, athleteId, performedAt, roster, onSaved],
+    [timing, clip, startMark, finishMark, grid, frameDur, drill, athleteId, performedAt, roster, onSaved, reset],
   );
 
   /**
@@ -681,9 +832,22 @@ export default function VideoMarkScreen({
 
       {!clip ? (
         <View style={styles.controls}>
-          <Pressable style={styles.primary} onPress={pick}>
-            <Text style={styles.primaryText}>Import a clip</Text>
+          {/* RECORD IS THE PRIMARY ONE, and that is an argument rather than a
+              layout. A rep filmed here is filmed at a rate the app asked for and
+              can check three ways; an imported clip arrives with whatever rate the
+              Camera app chose, possibly slowed by iOS without saying so, and the
+              most the app can do is refuse it afterwards. Import stays because a
+              clip filmed last September is a real thing to want to mark. */}
+          <Pressable style={styles.primary} onPress={() => setRecordOpen(true)}>
+            <Text style={styles.primaryText}>Record a rep</Text>
           </Pressable>
+          <Pressable style={styles.secondary} onPress={pick}>
+            <Text style={styles.secondaryText}>Import a clip</Text>
+          </Pressable>
+          <Text style={styles.emptyNote}>
+            Filming here records at a chosen frame rate and checks the file afterwards. Importing
+            works from any clip you already have, at whatever rate it was filmed.
+          </Text>
         </View>
       ) : (
         <ScrollView
@@ -759,7 +923,11 @@ export default function VideoMarkScreen({
             {[
               measuredFps(grid) ? `${measuredFps(grid)!.toFixed(1)}fps measured` : null,
               isVariableRate(grid) ? 'variable frame rate' : null,
-              formatBytes(clip.bytes),
+              // MEASURED, both halves: bytes off the file, seconds off the player.
+              // There is no per-minute figure here and there is not going to be one
+              // — see storage.ts, and the structural guard in verify-storage that
+              // fails if one ever appears in src/.
+              describeClip(clip.bytes, duration),
               perf,
             ]
               .filter(Boolean)
@@ -815,10 +983,24 @@ export default function VideoMarkScreen({
             </Text>
           </Pressable>
 
+          {/* LAYER 3 BITING. The clip is on screen, the handles work, the
+              filmstrip is built — and the time is refused, because the file does not
+              contain the frame rate it was recorded at. Saying it here, next to the
+              disabled button, is the only way it reads as a decision rather than as
+              a broken screen. */}
+          {refused ? (
+            <View style={styles.refusalBox}>
+              <Text style={styles.refusalText}>{refused}</Text>
+              <Pressable style={styles.secondary} onPress={clearClip}>
+                <Text style={styles.secondaryText}>Clear this clip</Text>
+              </Pressable>
+            </View>
+          ) : null}
+
           <Pressable
-            style={[styles.primary, !timing && styles.disabled]}
+            style={[styles.primary, (!timing || !!refused) && styles.disabled]}
             onPress={() => void save()}
-            disabled={!timing}
+            disabled={!timing || !!refused}
           >
             <Text style={styles.primaryText}>Keep</Text>
           </Pressable>
@@ -859,11 +1041,26 @@ export default function VideoMarkScreen({
             }}
           />
 
-          <Pressable style={styles.tertiary} onPress={pick}>
-            <Text style={styles.tertiaryText}>Import a different clip</Text>
-          </Pressable>
+          <View style={styles.swapRow}>
+            <Pressable style={styles.tertiary} onPress={() => setRecordOpen(true)}>
+              <Text style={styles.tertiaryText}>Record another rep</Text>
+            </Pressable>
+            <Pressable style={styles.tertiary} onPress={pick}>
+              <Text style={styles.tertiaryText}>Import a different clip</Text>
+            </Pressable>
+          </View>
         </ScrollView>
       )}
+
+      {/* OUTSIDE the clip conditional, deliberately. Opened from the empty state,
+          it would unmount the instant a recording lands and setClip flips the
+          branch — taking the sheet down mid-dismissal. Here it closes because it
+          was told to. */}
+      <VideoRecordModal
+        visible={recordOpen}
+        onCancel={() => setRecordOpen(false)}
+        onRecorded={(r) => void onRecorded(r)}
+      />
     </View>
   );
 }
@@ -968,6 +1165,28 @@ const styles = StyleSheet.create({
   caveat: { color: '#64748b', fontSize: 11, lineHeight: 16 },
   primary: { backgroundColor: '#1d4ed8', borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  secondary: {
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#243042',
+    backgroundColor: '#0b0e13',
+  },
+  secondaryText: { color: '#cbd5e1', fontSize: 15, fontWeight: '700' },
+  emptyNote: { color: '#64748b', fontSize: 11.5, lineHeight: 16, textAlign: 'center' },
+  // CAUTION, not DESTRUCTIVE: nothing has been destroyed. A refused time is a
+  // measurement you should not rely on, which is exactly the one job that colour has.
+  refusalBox: {
+    gap: 10,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#3a2a17',
+    backgroundColor: '#1a1409',
+  },
+  refusalText: { color: CAUTION, fontSize: 12.5, lineHeight: 18 },
+  swapRow: { flexDirection: 'row', justifyContent: 'space-between' },
   tertiary: { alignItems: 'center', paddingVertical: 10 },
   tertiaryText: { color: INTERACTIVE, fontSize: 13, fontWeight: '600' },
   disabled: { opacity: 0.4 },

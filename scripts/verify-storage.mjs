@@ -201,6 +201,39 @@ console.log('\n8. formatBytes still rounds the way the delete points expect');
   check('and lose it above', formatBytes(250 * MB), '250 MB');
 }
 
+console.log('\n9. BOTH BOUNDS REACH THE RECORDER, and no clock is invented');
+{
+  // storage.ts can only bound a recording if the numbers are actually handed over.
+  // Read as text for the same reason as block 6: this checks the call site exists,
+  // not what the arithmetic returns.
+  const HERE2 = fileURLToPath(new URL('.', import.meta.url));
+  const rec = readFileSync(join(HERE2, '..', 'src', 'screens', 'VideoRecordModal.tsx'), 'utf8');
+
+  // NAMED SITES, not a count. This was 'appears at least twice', which the removal
+  // of the on-press re-read survived: the sheet-open check and the initial state
+  // still made two. A count answers 'how many' when the question is 'which'.
+  truthy('space is checked when the sheet opens', /if \(visible\) setSpace\(budgetForRecording\(freeDiskBytes\(\)\)\);/.test(rec));
+  truthy('and re-read on the press, because it is only true for an instant', /const now = budgetForRecording\(freeDiskBytes\(\)\);/.test(rec));
+  truthy('with the press using that fresh answer', /if \(!now\.ok\)/.test(rec));
+  truthy('the duration cap is the recorder\'s, in seconds', /maxDuration: MAX_CLIP_MS \/ 1000/.test(rec));
+  truthy('the byte ceiling is the recorder\'s too', /maxFileSize: now\.budgetBytes/.test(rec));
+  // Omitted rather than guessed when the phone will not say how much is free. A
+  // zero here would be a ceiling of nothing, which stops the recording instantly.
+  truthy('and is omitted when free space is unreadable', /now\.budgetBytes !== null \?/.test(rec));
+
+  // NO CLOCK OF OUR OWN. Every number shown during a recording is read from the
+  // recorder, because a JS timer and the encoder disagree the moment the phone is
+  // busy — and it is the encoder that decides when the cap fires. A screen counting
+  // its own seconds would show a coach 29.4s while the file was already closed.
+  truthy('elapsed is read from the recorder', /rec\.recordedDuration/.test(rec));
+  truthy('and so is the size', /rec\.recordedFileSize/.test(rec));
+  check('nothing on this screen counts time itself', /Date\.now\(\)/.test(rec), false);
+
+  // The final size comes off the FILE, never off the recorder, which reports 0 once
+  // it has stopped.
+  truthy('the finished clip is claimed from disk', /claimRecording\(id\)/.test(rec));
+}
+
 console.log('\n=============================');
 console.log(
   failures === 0

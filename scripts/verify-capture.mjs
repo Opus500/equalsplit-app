@@ -9,6 +9,10 @@
 // best, and indistinguishable afterwards from a real one. Every assertion here
 // exists to make that impossible to ship rather than merely unlikely.
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import {
   CAPTURE_RATES,
   DEFAULT_FPS,
@@ -17,6 +21,8 @@ import {
   acceptRecording,
   acceptSession,
 } from '../src/video/capture.ts';
+
+const SRC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'src');
 
 let failures = 0;
 const check = (label, got, want) => {
@@ -118,6 +124,44 @@ console.log('\n6. THE TOLERANCE holds at both edges');
   check('just beyond is refused', acceptSession(240, true, 264.1).ok, false);
   check('30 +10% exactly', acceptSession(30, true, 33).ok, true);
   check('30 just beyond is refused', acceptSession(30, true, 33.1).ok, false);
+}
+
+console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
+{
+  // A pure rule with no caller is a rule that ships nothing. These read the two
+  // screens as text, because what is being checked is that the call EXISTS at the
+  // right moment — not what it returns, which blocks 2 to 6 already settle.
+  //
+  // Each layer is asserted at the only place it can bite, and the places differ on
+  // purpose: 1 and 2 before the rep is run, 3 after the frames exist.
+  const at = (rel) => readFileSync(join(SRC, rel), 'utf8');
+
+  const rec = at('screens/VideoRecordModal.tsx');
+  truthy('the camera screen asks acceptSession', /acceptSession\(target, device\.supportsFPS\(target\), settledFps\)/.test(rec));
+  truthy('and refuses rather than warning', /if \(!verdict\.ok\)[\s\S]{0,120}return;/.test(rec));
+  truthy('before any recorder is created', rec.indexOf('acceptSession(') < rec.indexOf('createRecorder('));
+
+  // THE STALE-SESSION TRAP. Changing the rate renegotiates the session, and until it
+  // reports again the previous answer describes a different configuration. Pairing
+  // the report with the target it was made for is what turns a stale agreement into
+  // no agreement, which acceptSession already refuses.
+  truthy('a session report is stored with the rate it was made for', /forFps: target/.test(rec));
+  truthy('and a report for another rate reads as no report', /session\.forFps === target \? session\.fps : null/.test(rec));
+
+  // A recorded clip is 'recorded', never 'unknown'. The two mean opposite things:
+  // one is "there was nothing to ask", the other is "we could not ask".
+  truthy("a recording reports itself as recorded", /timeScale: 'recorded'/.test(rec));
+
+  const mark = at('screens/VideoMarkScreen.tsx');
+  truthy('the marking screen runs layer 3', /acceptRecording\(capture\.requestedFps, capture\.selectedFps, measuredFps\(g\)\)/.test(mark));
+  truthy('against the MEASURED rate, not a nominal one', !/acceptRecording\([^)]*nominal/i.test(mark));
+  truthy('and a refusal is remembered rather than only alerted', /setRefused\(v\.reason\)/.test(mark));
+  // THE REFUSAL HAS TO BITE. An alert the coach dismisses, with Keep still live
+  // underneath it, is not a refusal — it is a message.
+  truthy('Keep is disabled while a time is refused', /disabled=\{!timing \|\| !!refused\}/.test(mark));
+  truthy('and the reason stays on screen beside it', /\{refused\}/.test(mark));
+  // The footage survives either way; only the time was refused.
+  truthy('with a way out that asks before deleting', /Keep the video\?/.test(mark));
 }
 
 console.log('\n=============================');
