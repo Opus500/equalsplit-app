@@ -178,6 +178,17 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // and the others used to show nothing at all. See whyNotTimeable.
   truthy('and a refusal is one of the reasons it reports', /refused \?\?/.test(mark));
   truthy('and the reason stays on screen beside it', /\{keepBlocked\}/.test(mark));
+
+  // "NOT YET" IS NOT "CANNOT". whyNotTimeable describes a STATE, and the marks are
+  // recomputed on every drag frame against a grid not yet probed there — so before
+  // this suppression the honest message fired continuously during every ordinary
+  // drag, telling the coach to fix something about to fix itself.
+  truthy('the state message waits for resolution to be tried', /dragging \|\| settling/.test(mark));
+  // But a verdict and a failed attempt are not states, and must survive a drag.
+  truthy('while a layer 3 refusal is never suppressed', /refused \?\?[\s\S]{0,40}settleNote \?\?/.test(mark));
+  // WIDEN, NOT SNAP: the settle measures the missing successor rather than moving
+  // the coach's mark to a frame that already has one.
+  truthy('and the settle widens rather than merely probing', /probeToResolve\(player, live\.current\.grid/.test(mark));
   // The footage survives either way; only the time was refused.
   truthy('with a way out that asks before deleting', /Keep the video\?/.test(mark));
 }

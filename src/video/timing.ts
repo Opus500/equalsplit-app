@@ -585,10 +585,16 @@ export function whyNotTimeable(o: {
   if (!o.startResolved && !o.finishResolved) {
     return 'Neither mark is on a readable frame yet. Move a handle to probe that part of the clip.';
   }
+  // WORDED FOR AFTER THE RETRY. The screen only reaches these once probeToResolve
+  // has probed around the mark AND once past it, so "not readable yet" is no longer
+  // one of the possibilities — extraction is failing in that region. Saying "move it
+  // slightly" as the first response was wrong twice over: it fired during every
+  // ordinary drag, when the answer was simply "not yet", and it asked the coach to
+  // do by hand what the app should have done by probing.
   if (!o.startResolved) {
-    return 'The start mark is not on a readable frame. Move it slightly and let go.';
+    return 'The start mark is on a frame this clip will not read back, even after looking again. Move it a little, or pick a different moment.';
   }
-  return 'The finish mark is not on a readable frame. Move it slightly and let go.';
+  return 'The finish mark is on a frame this clip will not read back, even after looking again. Move it a little, or pick a different moment.';
 }
 
 /** The mark for the frame displayed at `t`, ready for `timeFromMarks`. */

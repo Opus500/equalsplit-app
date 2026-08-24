@@ -28,9 +28,19 @@ import {
   filmstripTimes,
   gapProbes,
   ingestFrames,
+  markAt,
   spanCovered,
   type FrameGrid,
 } from './timing';
+
+/**
+ * Frames probed either side of an anchor.
+ *
+ * Named because probeToResolve has to step PAST a window to extend it, and the
+ * distance that guarantees an overlap is a function of this number. Two places
+ * deriving the same geometry from a literal 8 is how they drift apart.
+ */
+export const FRAMES_EITHER_SIDE = 8;
 
 /** Grid probes discard the image and keep only actualTime, so they ask for the
  *  smallest useful decode. Tiles are displayed, so they get a real size. */
@@ -91,7 +101,7 @@ export async function probeGridAround(
   grid: FrameGrid,
   centre: number,
   frameDurSec: number,
-  framesEitherSide = 8,
+  framesEitherSide = FRAMES_EITHER_SIDE,
   /**
    * How much coverage is REQUIRED before this is a no-op, as opposed to how much
    * is fetched when it is not.
@@ -103,6 +113,16 @@ export async function probeGridAround(
    * of margin turns one probe into roughly seven free steps.
    */
   requiredEitherSide = 2,
+  /**
+   * Probe even when the region reads as covered.
+   *
+   * For probeToResolve ONLY, and it exists because a window can claim more than its
+   * frames reach: ingestFrames records the range that was ASKED about, and failed
+   * extractions leave holes under it. A mark on the last surviving frame before such
+   * a hole is covered, unresolvable, and — without this — unprobeable, because the
+   * early exit keeps saying the region is already known.
+   */
+  force = false,
 ): Promise<{ grid: FrameGrid; ms: number; calls: number }> {
   const t0 = Date.now();
   // ONE FRAME MORE THAN ASKED FOR, on each side.
@@ -127,7 +147,7 @@ export async function probeGridAround(
   // lock, and it needed a long clip only because window spacing is what decides
   // whether such a gap can exist. See spanCovered.
   const margin = (requiredEitherSide + 1) * frameDurSec;
-  if (spanCovered(grid, centre - margin, centre + margin)) {
+  if (!force && spanCovered(grid, centre - margin, centre + margin)) {
     return { grid, ms: 0, calls: 0 };
   }
 
@@ -163,6 +183,84 @@ export async function probeGridAround(
   }
 
   return { grid: next, ms: Date.now() - t0, calls };
+}
+
+/**
+ * Probe around `t`, and if the mark still will not resolve, probe once PAST it.
+ *
+ * WHY THIS IS WIDENING AND NOT SNAPPING, which was the design decision:
+ *
+ * A mark fails to resolve when its frame is the LAST one in its probed window. The
+ * successor is across an unprobed gap, so the frame's DURATION is unknown, and
+ * markAt refuses rather than compute an error bar from a length nobody measured.
+ * That refusal is correct and stays.
+ *
+ * But the cure for a missing measurement is to take the measurement. Probing past
+ * the edge gives that frame a real successor, and the duration that comes back is
+ * measured like every other. Snapping the mark to the nearest resolvable frame
+ * would instead move it silently — the coach put the handle on a frame, and
+ * relocating it changes the time being recorded without saying so, at 8ms a frame
+ * at 120fps. It would also HIDE the gap rather than fill it, so the next mark in
+ * that region hits the same edge.
+ *
+ * ONCE, and bounded. A second failure is not an edge any more: it means extraction
+ * genuinely fails in that region, and probing further would be an unbounded search
+ * for frames that are not coming. `resolved: false` is the caller's cue to say so.
+ *
+ * The one case widening can never fix is the clip's FINAL frame — nothing follows
+ * it to measure. That is handled before it arises, by lastMarkableTime keeping the
+ * handle short of it: an unresolvable position is better made unreachable than
+ * repaired afterwards.
+ */
+/** The last known frame at or before `t`, or null when there is none. */
+function lastFrameAtOrBefore(grid: FrameGrid, t: number): number | null {
+  let best: number | null = null;
+  for (const f of grid.frames) {
+    if (f <= t + 1e-9) best = f;
+    else break;
+  }
+  return best;
+}
+
+export async function probeToResolve(
+  player: VideoPlayer,
+  grid: FrameGrid,
+  t: number,
+  frameDurSec: number,
+): Promise<{ grid: FrameGrid; ms: number; calls: number; resolved: boolean }> {
+  const first = await probeGridAround(player, grid, t, frameDurSec);
+  if (markAt(first.grid, t)) return { ...first, resolved: true };
+
+  // FROM THE EDGE FRAME, not from t, and FORCED.
+  //
+  // Both halves were wrong in the first version and the test caught them. Aiming a
+  // fixed distance past `t` lands wherever the over-claiming window still says
+  // "covered", so the second probe early-exited too and did nothing — zero calls,
+  // still unresolved. And aiming past the window's END would fill from there,
+  // leaving the gap between the edge frame and the new frames unprobed while the
+  // merged window claimed it: markAt would then resolve with a "frame duration"
+  // spanning the hole. That is the fabrication this whole design refuses.
+  //
+  // Anchoring FRAMES_EITHER_SIDE past the last known frame puts the new window's
+  // lower half directly on top of it, so the frames come back CONTIGUOUS with the
+  // edge frame and the successor it gains is a real neighbour one frame away.
+  const edge = lastFrameAtOrBefore(first.grid, t);
+  const from = edge ?? t;
+  const second = await probeGridAround(
+    player,
+    first.grid,
+    from + FRAMES_EITHER_SIDE * frameDurSec,
+    frameDurSec,
+    FRAMES_EITHER_SIDE,
+    2,
+    true,
+  );
+  return {
+    grid: second.grid,
+    ms: first.ms + second.ms,
+    calls: first.calls + second.calls,
+    resolved: markAt(second.grid, t) !== null,
+  };
 }
 
 /**

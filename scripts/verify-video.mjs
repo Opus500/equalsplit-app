@@ -55,7 +55,7 @@ const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble
 // The REAL probe path. frames.ts imports expo-video for types only, so it loads
 // standalone — which is what lets block 11h drive it against a fake decoder rather
 // than reasoning about what it would do.
-const { probeGridAround } = await import('../src/video/frames.ts');
+const { probeGridAround, probeToResolve } = await import('../src/video/frames.ts');
 // The real grouping path — the ONLY thing that groups anything, now that
 // timing.ts's callerless seriesKey() copy of the rule is gone.
 const { buildProgression, seriesUid, sourceGroup } = await import('../src/roster/progression.ts');
@@ -909,7 +909,82 @@ console.log('\n15. A DISABLED CONTROL SAYS WHY');
   check('and the two are not the same message', start === finish, false);
   // The distinction the coach acts on: one mark unresolved is a position they can
   // fix by moving that handle, and the message has to say which handle.
-  truthy('both tell them to move it', /move it/i.test(start) && /move it/i.test(finish));
+  // WORDED FOR AFTER THE RETRY. The screen only reaches these once probeToResolve
+  // has probed around the mark and once past it, so the message must not imply the
+  // coach is being asked to do the app's job — it is reporting a region that will
+  // not decode.
+  truthy('both say the retry already happened', /looking again/i.test(start) && /looking again/i.test(finish));
+  truthy('and still offer an action', /Move it a little/i.test(start) && /pick a different moment/i.test(finish));
+}
+
+console.log('\n16. WIDEN, DO NOT SNAP — an edge mark is resolved by measuring');
+{
+  // A mark fails to resolve when its frame is the LAST in its probed window: the
+  // successor is across an unprobed gap, so the frame's DURATION is unknown and
+  // markAt refuses rather than invent an error bar. Correct, and kept.
+  //
+  // The cure is to take the missing measurement, not to move the mark. Snapping to
+  // the nearest resolvable frame would relocate the coach's mark silently — 8ms a
+  // frame at 120fps — and would HIDE the gap rather than fill it, so the next mark
+  // in that region hits the same edge.
+
+  /** A decoder that clamps past-the-end requests, as AVFoundation does. */
+  const player = (fps, durationSec) => {
+    const d = 1 / fps;
+    const lastIndex = Math.floor(durationSec / d) - 1;
+    return {
+      duration: durationSec,
+      async generateThumbnailsAsync(times) {
+        return times
+          .map((t) => {
+            if (!(t >= 0)) return null;
+            const i = Math.min(lastIndex, Math.floor(t / d + 1e-9));
+            return i < 0 ? null : { actualTime: i * d };
+          })
+          .filter(Boolean);
+      },
+    };
+  };
+
+  const d = 1 / 30;
+  // A window that CLAIMS more than its frames reach: covered to 1.0, frames stop at
+  // 0.5. That is the shape a settle leaves behind at a window edge.
+  const frames = [];
+  for (let i = 0; i * d <= 0.5 + 1e-9; i += 1) frames.push(Number((i * d).toFixed(6)));
+  const edgeGrid = { frames, windows: [{ from: 0, to: 1.0 }] };
+  const at = frames[frames.length - 1];
+
+  check('the mark is UNRESOLVABLE — its frame has no measured successor', markAt(edgeGrid, at), null);
+  truthy('while the span around it reads as covered', spanCovered(edgeGrid, at - 3 * d, at + 3 * d));
+  // Which together are why a plain probe cannot help: it early-exits on the span.
+  const plain = await probeGridAround(player(30, 3), edgeGrid, at, d);
+  check('so a plain probe does nothing at all', plain.calls, 0);
+  check('and the mark is still unresolvable afterwards', markAt(plain.grid, at), null);
+
+  // The widening probe steps PAST the edge, which is what gives that frame a
+  // successor to measure.
+  const fixed = await probeToResolve(player(30, 3), edgeGrid, at, d);
+  check('probeToResolve resolves it', fixed.resolved, true);
+  truthy('by actually probing', fixed.calls > 0);
+  truthy('and the mark now resolves', !!markAt(fixed.grid, at));
+
+  // THE MARK DID NOT MOVE. This is the difference from snapping, stated as an
+  // assertion so a future "just snap it" cannot pass quietly.
+  check('at the same timestamp the coach chose', markAt(fixed.grid, at).pts, at);
+  truthy('with a MEASURED duration, not an assumed one', Math.abs(markAt(fixed.grid, at).frameDurSec - d) < 1e-6);
+
+  // Already-resolvable marks must not pay for the retry.
+  const mid = frames[3];
+  const cheap = await probeToResolve(player(30, 3), edgeGrid, mid, d);
+  check('a resolvable mark resolves without widening', cheap.resolved, true);
+  check('and costs nothing', cheap.calls, 0);
+
+  // BOUNDED. A decoder that returns nothing cannot be searched into submission —
+  // the caller is told, and says so, rather than probing forever.
+  const dead = { duration: 3, async generateThumbnailsAsync() { return []; } };
+  const hopeless = await probeToResolve(dead, emptyGrid(), 1.0, d);
+  check('a decoder returning nothing gives up', hopeless.resolved, false);
+  truthy('after a bounded number of calls', hopeless.calls > 0 && hopeless.calls <= 4);
 }
 
 console.log(

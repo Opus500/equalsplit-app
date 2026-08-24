@@ -53,7 +53,7 @@ import {
 } from '../video/clips';
 import { acceptRecording } from '../video/capture';
 import { describeClip } from '../video/storage';
-import { filmstrip, probeGridAround, waitForClip, type Tile } from '../video/frames';
+import { filmstrip, probeGridAround, probeToResolve, waitForClip, type Tile } from '../video/frames';
 import {
   acceptForTiming,
   BODY_PART_BIAS_MS,
@@ -515,10 +515,21 @@ export default function VideoMarkScreen({
    * responding" tells them it is not their fault.
    */
   const [settleNote, setSettleNote] = useState<string | null>(null);
+  /**
+   * True while a settle is in flight.
+   *
+   * The screen has to be able to say "not resolved YET" apart from "cannot be
+   * resolved", and without this it could not: whyNotTimeable reads the marks, the
+   * marks are recomputed on every drag frame, and the grid is not probed until the
+   * finger lifts. So the honest message fired continuously during every ordinary
+   * drag and told the coach to fix something that was about to fix itself.
+   */
+  const [settling, setSettling] = useState(false);
 
   const settleAt = useCallback(
     async (seconds: number) => {
       if (!clip) return;
+      setSettling(true);
       try {
         // From the ref, not the closure: a drag can release while a previous settle
         // is still resolving, and the closure's grid would be the pre-drag one.
@@ -526,8 +537,12 @@ export default function VideoMarkScreen({
         // BOUNDED. Nothing here used to be, so a probe that never came back left the
         // readout on SNAPPING with no way out but reloading the clip — and no way to
         // tell that from a mark that simply had not resolved.
+        // probeToResolve, not probeGridAround: if the mark lands on the last frame
+        // of its window it has no measured successor, and the answer is to go and
+        // measure one rather than to ask the coach to nudge the handle. See the note
+        // there on why this widens instead of snapping.
         const out = await withDeadline(
-          probeGridAround(player, live.current.grid, seconds, live.current.frameDur),
+          probeToResolve(player, live.current.grid, seconds, live.current.frameDur),
           PROBE_TIMEOUT_MS,
         );
         if (!out.ok) {
@@ -555,7 +570,7 @@ export default function VideoMarkScreen({
         // real thing means polling for the readback, which costs more than the
         // figure is worth, so it is labelled honestly instead of measured badly.
         setPerf(
-          `probe ${r.ms}ms/${r.calls} · seek issued ${Date.now() - t0}ms` +
+          `probe ${r.ms}ms/${r.calls}${r.resolved ? '' : ' · UNRESOLVED'} · seek issued ${Date.now() - t0}ms` +
             (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
         );
       } catch (e) {
@@ -564,6 +579,8 @@ export default function VideoMarkScreen({
         // SNAPPING, and nothing on screen or in the log recorded that anything had
         // gone wrong.
         setSettleNote(`Could not read that part of the clip: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setSettling(false);
       }
     },
     [clip, player],
@@ -595,12 +612,23 @@ export default function VideoMarkScreen({
     () =>
       refused ??
       settleNote ??
-      whyNotTimeable({
-        frameCount: grid.frames.length,
-        startResolved: !!startMark,
-        finishResolved: !!finishMark,
-      }),
-    [refused, settleNote, grid.frames.length, startMark, finishMark],
+      // "NOT YET" IS NOT "CANNOT". A mark under a moving finger, or one whose settle
+      // has not landed, is mid-resolution — and whyNotTimeable describes a state, so
+      // it cannot tell those from a dead end. Suppressing it here is what makes the
+      // message mean something when it does appear: by then the probe has run,
+      // widened once past the window edge, and still failed.
+      //
+      // refused and settleNote are NOT suppressed. A layer 3 refusal is a verdict
+      // that survives any amount of dragging, and a timed-out settle is a fact about
+      // the last attempt rather than about the marks.
+      (dragging || settling
+        ? null
+        : whyNotTimeable({
+            frameCount: grid.frames.length,
+            startResolved: !!startMark,
+            finishResolved: !!finishMark,
+          })),
+    [refused, settleNote, dragging, settling, grid.frames.length, startMark, finishMark],
   );
 
   // ------------------------------------------------------------ drag
