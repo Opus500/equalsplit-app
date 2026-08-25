@@ -423,6 +423,50 @@ function mergeWindows(windows: FrameWindow[]): FrameWindow[] {
   return out;
 }
 
+/**
+ * The window a probe may honestly claim, given what came back.
+ *
+ * THE ROOT OF THE SNAPPING LOCK, arrived at from the third direction. ingestFrames
+ * recorded the range that was ASKED about, not the range actually covered by
+ * frames. Every failed extraction therefore left a HOLE under a claimed span, and a
+ * claimed span with no frames in it is the exact condition that made a mark
+ * covered-but-unresolvable — permanently, because probeGridAround then declined to
+ * look again.
+ *
+ * spanCovered fixed the version of this caused by two windows and a gap between
+ * them. It could not fix this one, because here there is only ONE window and the
+ * hole is inside it. And probeToResolve only reaches a mark within about sixteen
+ * frames of the last known one, which is why the fix before this was intermittent:
+ * it depended on how far into the hole the mark had landed.
+ *
+ * So a window now claims only as far as its frames reach. A region with no frames
+ * reads as uncovered, which is what it is, and the ordinary probe fills it.
+ *
+ * THE ONE EXCEPTION IS THE TAIL, and it is deliberate. Probes past the clip's end
+ * return nothing because there is nothing there — not because extraction failed —
+ * and treating that as uncovered would make every step near the finish re-probe a
+ * region already known to be empty. So when the ask ran past the end, the claim is
+ * kept. lastMarkableTime is what keeps a mark out of it.
+ */
+export function coveredWindow(
+  asked: FrameWindow,
+  found: number[],
+  durationSec?: number,
+): FrameWindow {
+  if (!found.length) {
+    // Nothing came back, so nothing is known. An empty window claims no coverage
+    // rather than claiming the whole ask.
+    return { from: asked.from, to: asked.from };
+  }
+  const lo = Math.min(...found);
+  const hi = Math.max(...found);
+  const end = durationSec && durationSec > 0 ? durationSec : Infinity;
+  return {
+    from: Math.max(asked.from, lo),
+    to: asked.to >= end ? Math.max(asked.to, hi) : Math.min(asked.to, hi),
+  };
+}
+
 /** Fold newly discovered frame timestamps into the grid. */
 export function ingestFrames(grid: FrameGrid, window: FrameWindow, actualTimes: number[]): FrameGrid {
   const set = new Set(grid.frames);

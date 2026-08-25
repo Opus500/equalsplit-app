@@ -48,6 +48,7 @@ const {
   adjacentDeltas,
   acceptForTiming,
   acceptForReview,
+  coveredWindow,
   spanCovered,
   whyNotTimeable,
 } = await import('../src/video/timing.ts');
@@ -985,6 +986,70 @@ console.log('\n16. WIDEN, DO NOT SNAP — an edge mark is resolved by measuring'
   const hopeless = await probeToResolve(dead, emptyGrid(), 1.0, d);
   check('a decoder returning nothing gives up', hopeless.resolved, false);
   truthy('after a bounded number of calls', hopeless.calls > 0 && hopeless.calls <= 4);
+}
+
+console.log('\n17. A WINDOW CLAIMS ONLY WHAT CAME BACK');
+{
+  // THE ROOT OF THE SNAPPING LOCK, third and final direction. Two rounds fixed two
+  // symptoms; this is the cause both of them were downstream of.
+  //
+  // ingestFrames recorded the range that was ASKED about. Every failed extraction
+  // therefore left a hole under a claimed span — and a claimed span with no frames
+  // in it is a mark that cannot resolve and will never be probed again, because
+  // probeGridAround sees "covered" and declines. spanCovered fixed the two-window
+  // version of this; it cannot fix the one-window version, where the hole is inside.
+  const d = 1 / 30;
+
+  // The unit rule first.
+  const asked = { from: 1.0, to: 2.0 };
+  check('nothing found claims nothing', coveredWindow(asked, [], 5), { from: 1.0, to: 1.0 });
+  check('frames stopping short shorten the claim', coveredWindow(asked, [1.0, 1.2, 1.4], 5), { from: 1.0, to: 1.4 });
+  check('and a late start raises the floor', coveredWindow(asked, [1.6, 1.8], 5), { from: 1.6, to: 1.8 });
+  check('the claim never exceeds the ask', coveredWindow(asked, [0.5, 3.0], 5), { from: 1.0, to: 2.0 });
+  // THE TAIL IS THE DELIBERATE EXCEPTION: past the clip's end nothing exists, and
+  // treating that as unprobed would make every step near the finish re-probe it.
+  check('past the clip end the ask is kept', coveredWindow({ from: 4.5, to: 5.5 }, [4.5, 4.9], 5), { from: 4.5, to: 5.5 });
+
+  /** A decoder that FAILS inside a band, which is what leaves a hole under a claim. */
+  const flaky = (fps, durationSec, deadFrom, deadTo) => {
+    const step = 1 / fps;
+    const lastIndex = Math.floor(durationSec / step) - 1;
+    return {
+      duration: durationSec,
+      async generateThumbnailsAsync(times) {
+        return times
+          .map((t) => {
+            if (!(t >= 0)) return null;
+            if (t >= deadFrom && t <= deadTo) return null;
+            const i = Math.min(lastIndex, Math.floor(t / step + 1e-9));
+            return i < 0 ? null : { actualTime: i * step };
+          })
+          .filter(Boolean);
+      },
+    };
+  };
+
+  // Probe centred just BELOW a dead band, so the window's upper half falls in it.
+  const player = flaky(30, 15, 1.10, 1.60);
+  const r = await probeGridAround(player, emptyGrid(), 1.0, d);
+  const w = r.grid.windows[0];
+  const top = Math.max(...r.grid.frames);
+
+  truthy('the probe found frames', r.grid.frames.length > 2);
+  truthy('and its window stops at the last one it actually got', Math.abs(w.to - top) < 1e-6);
+  // THE ASSERTION THAT MATTERS: the dead band is NOT claimed.
+  check('a region the decoder refused is not covered', isCovered(r.grid, 1.45), false);
+  // Which is what lets the next probe run instead of early-exiting forever.
+  const again = await probeGridAround(flaky(30, 15, 1.10, 1.60), r.grid, 1.45, d);
+  truthy('so a later probe there is not skipped', again.calls > 0);
+
+  // And once the decoder recovers, the region resolves — no lock, no nudging.
+  const healthy = { duration: 15, async generateThumbnailsAsync(times) {
+    return times.map((t) => (t >= 0 ? { actualTime: Math.floor(t / d + 1e-9) * d } : null)).filter(Boolean);
+  } };
+  const healed = await probeToResolve(healthy, r.grid, 1.45, d);
+  check('a recovered decoder resolves the mark', healed.resolved, true);
+  truthy('with a one-frame duration, not one spanning the hole', Math.abs(markAt(healed.grid, 1.45).frameDurSec - d) < 1e-6);
 }
 
 console.log(

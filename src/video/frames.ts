@@ -29,6 +29,7 @@ import {
   gapProbes,
   ingestFrames,
   markAt,
+  coveredWindow,
   spanCovered,
   type FrameGrid,
 } from './timing';
@@ -169,7 +170,11 @@ export async function probeGridAround(
   );
   const results = await fanOut(times.map((t) => () => oneFrame(player, t, PROBE_SIZE)));
   const found = results.filter((r): r is { actualTime: number; ref: unknown } => r !== null);
-  let next = ingestFrames(grid, window, [anchor.actualTime, ...found.map((r) => r.actualTime)]);
+  const times_found = [anchor.actualTime, ...found.map((r) => r.actualTime)];
+  // CLAIM ONLY WHAT CAME BACK. Recording the asked range instead is what left holes
+  // under covered spans, and a covered span with no frames in it is a mark that can
+  // never resolve and will never be probed again. See coveredWindow.
+  let next = ingestFrames(grid, coveredWindow(window, times_found, player.duration), times_found);
   let calls = 1 + times.length;
 
   // Repair only the holes. On a constant-rate clip there are none and this costs
@@ -179,7 +184,10 @@ export async function probeGridAround(
     const filled = await fanOut(holes.map((t) => () => oneFrame(player, t, PROBE_SIZE)));
     calls += holes.length;
     const got = filled.filter((r): r is { actualTime: number; ref: unknown } => r !== null);
-    if (got.length) next = ingestFrames(next, window, got.map((r) => r.actualTime));
+    if (got.length) {
+      const repaired = got.map((r) => r.actualTime);
+      next = ingestFrames(next, coveredWindow(window, repaired, player.duration), repaired);
+    }
   }
 
   return { grid: next, ms: Date.now() - t0, calls };

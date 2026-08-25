@@ -189,6 +189,21 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // WIDEN, NOT SNAP: the settle measures the missing successor rather than moving
   // the coach's mark to a frame that already has one.
   truthy('and the settle widens rather than merely probing', /probeToResolve\(player, live\.current\.grid/.test(mark));
+
+  // ONE LOCK OVER THE PLAYER. A crash report showed an Expo Modules promise being
+  // destroyed with a null dereference while this screen could have up to eighteen
+  // thumbnail promises outstanding AND a replaceAsync swapping the source underneath
+  // them. loadingClip guarded load-against-load; nothing guarded load-against-settle
+  // or settle-against-step, and those share the player and the grid.
+  truthy('a single lock serialises player work', /const playerLock = useRef<Promise<unknown>>/.test(mark));
+  // THE QUEUEING ITSELF, not the scaffolding around it. Asserting the declaration
+  // and the tail assignment left a mutation alive that replaced the body with a bare
+  // fn() call — lock present, nothing serialised.
+  truthy('work is chained onto the previous run', /const run = playerLock\.current\.then\(fn, fn\);/.test(mark));
+  truthy('the chain cannot inherit a rejection', /playerLock\.current = run\.then\(/.test(mark));
+  truthy('loading a clip takes it', /withPlayer\(async \(\) => \{/.test(mark));
+  truthy('settling takes it', /return await withPlayer\(async \(\) => \{/.test(mark));
+  truthy('and stepping takes it', /withPlayer\(\(\) => probeToResolve\(player, g, at, fd\)\)/.test(mark));
   // The footage survives either way; only the time was refused.
   truthy('with a way out that asks before deleting', /Keep the video\?/.test(mark));
 }

@@ -247,6 +247,35 @@ export default function VideoMarkScreen({
   const loadingClip = useRef(false);
 
   /**
+   * ONE LOCK OVER EVERYTHING THAT TOUCHES THE PLAYER.
+   *
+   * Written after reading a crash report. The faulting thread was destroying an Expo
+   * Modules promise — `destroy for JavaScriptPromise`, null dereference, on a Swift
+   * concurrency executor — with the main thread idle and no camera frame anywhere in
+   * the process. Whatever the precise trigger inside Expo, this screen was handing it
+   * the worst possible conditions: up to eighteen concurrent generateThumbnailsAsync
+   * promises per probe, two probe rounds per settle, and a replaceAsync that could
+   * swap the player's source while all of them were still outstanding.
+   *
+   * `loadingClip` guarded load-against-load. Nothing guarded load-against-settle or
+   * settle-against-step, and those share both the player and the grid.
+   *
+   * This is NOT presented as the proven cause — the report cannot show that. It is a
+   * real race, it is cheap to close, and closing it makes the next crash report mean
+   * something instead of arriving with three things in flight at once.
+   */
+  const playerLock = useRef<Promise<unknown>>(Promise.resolve());
+  const withPlayer = useCallback(<T,>(fn: () => Promise<T>): Promise<T> => {
+    const run = playerLock.current.then(fn, fn);
+    // The chain must never reject, or every later caller inherits the rejection.
+    playerLock.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }, []);
+
+  /**
    * Why this clip's TIME is refused, or null.
    *
    * LAYER 3, and this screen is the only place it can live. capture.ts checks what
@@ -279,10 +308,8 @@ export default function VideoMarkScreen({
    * run: an imported clip has no requested rate to hold the file against.
    */
   const loadClip = useCallback(
-    async (
-      c: Clip,
-      capture?: { requestedFps: number; selectedFps: number | null; timeScale: TimeScale },
-    ) => {
+    (c: Clip, capture?: { requestedFps: number; selectedFps: number | null; timeScale: TimeScale }) =>
+      withPlayer(async () => {
       setClip(c);
       setGrid(emptyGrid());
       setTiles([]);
@@ -360,8 +387,8 @@ export default function VideoMarkScreen({
           Alert.alert('This recording cannot be timed', v.reason);
         }
       }
-    },
-    [player],
+      }),
+    [player, withPlayer],
   );
 
   const pick = useCallback(async () => {
@@ -531,6 +558,7 @@ export default function VideoMarkScreen({
       if (!clip) return;
       setSettling(true);
       try {
+        return await withPlayer(async () => {
         // From the ref, not the closure: a drag can release while a previous settle
         // is still resolving, and the closure's grid would be the pre-drag one.
         //
@@ -573,6 +601,7 @@ export default function VideoMarkScreen({
           `probe ${r.ms}ms/${r.calls}${r.resolved ? '' : ' · UNRESOLVED'} · seek issued ${Date.now() - t0}ms` +
             (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
         );
+        });
       } catch (e) {
         // SAID, NOT SWALLOWED. This had no catch at all, so a throwing probe became
         // an unhandled rejection: the grid stayed as it was, the readout stayed on
@@ -583,7 +612,7 @@ export default function VideoMarkScreen({
         setSettling(false);
       }
     },
-    [clip, player],
+    [clip, player, withPlayer],
   );
 
   const startMark: VideoMark | null = useMemo(() => markAt(grid, startAt), [grid, startAt]);
@@ -756,7 +785,10 @@ export default function VideoMarkScreen({
         // Bounded for the same reason as settleAt, and it matters more here: this
         // loop holds `stepping.current`, so a probe that never returns would leave
         // the arrows dead for the life of the screen as well as the readout stuck.
-        const out = await withDeadline(probeGridAround(player, g, at, fd), PROBE_TIMEOUT_MS);
+        const out = await withDeadline(
+          withPlayer(() => probeToResolve(player, g, at, fd)),
+          PROBE_TIMEOUT_MS,
+        );
         if (!out.ok) {
           setPerf(`step ${delta > 0 ? '+' : ''}${delta} · timed out after ${PROBE_TIMEOUT_MS}ms`);
           continue;
@@ -797,7 +829,7 @@ export default function VideoMarkScreen({
     } finally {
       stepping.current = false;
     }
-  }, [player]);
+  }, [player, withPlayer]);
 
   const step = useCallback(
     (delta: number) => {
