@@ -162,6 +162,21 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // one is "there was nothing to ask", the other is "we could not ask".
   truthy("a recording reports itself as recorded", /timeScale: 'recorded'/.test(rec));
 
+  // A PHONE CALL IS THE ORDINARY CASE. iOS takes the camera for a call, for Control
+  // Centre, or when the app is backgrounded mid-rep, and none of it was handled: the
+  // session went away, the recorder was left believing it was running, and the coach
+  // got no explanation for a rep that did not save.
+  truthy('an interruption stops the recording', /onInterruptionStarted=/.test(rec));
+  truthy('and so does leaving the app', /AppState\.addEventListener\('change'/.test(rec));
+  truthy('with what was filmed KEPT, not discarded', /stopBecauseInterrupted/.test(rec) && /is kept and can be marked/.test(rec));
+  // Leaving the Video tab unmounts the whole tree; a native recorder must not
+  // outlive the screen that knows the id of the file it is writing.
+  truthy('and an unmount cancels rather than orphaning bytes', /screen unmounted while recording/.test(rec));
+
+  // A HARD DENIAL CANNOT BE UNDONE BY ASKING AGAIN — requestPermission resolves
+  // false without showing anything, so a button that only calls it is a dead end.
+  truthy('a refused camera offers Settings', /Linking\.openSettings\(\)/.test(rec));
+
   const mark = at('screens/VideoMarkScreen.tsx');
   truthy('the marking screen runs layer 3', /acceptRecording\(capture\.requestedFps, capture\.selectedFps, measured\)/.test(mark));
   truthy('against the MEASURED rate, not a nominal one', !/acceptRecording\([^)]*nominal/i.test(mark));

@@ -41,6 +41,31 @@ export const DEFAULT_FPS = 120;
  *  serious option — its +/-13.6ms is only 2.7x inside the bias. */
 export const CAPTURE_RATES = [30, 60, 120, 240] as const;
 
+// ---------------------------------------------------------------------------
+// 60fps DOES NOT HOLD ON THE TEST DEVICE, AND THE MECHANISM IS NOT KNOWN.
+//
+// Measured on iPhone18,3 / iOS 26.6: the session reports it settled on 60, layer 2
+// passes, and the file measures 30. Layer 3 refuses it, correctly — this is exactly
+// the failure the three layers exist for, caught in the wild.
+//
+// 30, 120 and 240 all hold on the same device. Only 60 degrades.
+//
+// One hypothesis was offered and the device data killed it. The idea was that 60
+// might be the only offered rate sharing a capture format with a lower one, so the
+// only one able to silently fall back. The device reports:
+//
+//     fps ranges    1-60, 1-30, 1-240, 1-120
+//
+// Every rate is a wide range including 30. 120 and 240 are 1-120 and 1-240, not the
+// point ranges the hypothesis needed. So format-sharing cannot explain why only 60
+// degrades, and no second story is offered here.
+//
+// This is recorded the same way the probe-cost shape is: an observation that
+// reproduces, with the mechanism marked UNIDENTIFIED rather than guessed at. What is
+// established is that the rate is unreliable on this hardware, that layer 3 catches
+// it, and that nothing depends on 60 — DEFAULT_FPS is 120 and it holds.
+// ---------------------------------------------------------------------------
+
 export type CaptureVerdict =
   | { ok: true; fps: number; warn: string | null }
   | { ok: false; reason: string };

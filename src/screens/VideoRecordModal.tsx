@@ -28,7 +28,7 @@
 // nobody uses is one the coach has to decline for no reason.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, Linking, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   Camera,
   useCameraDevice,
@@ -267,6 +267,65 @@ export function VideoRecordModal({
     }
   }, [recording, videoOutput, device, target, settledFps, finish]);
 
+  /**
+   * Stop a recording something else interrupted, and say what happened.
+   *
+   * A PHONE CALL IS THE ORDINARY CASE, not an edge one. iOS takes the camera for an
+   * incoming call, Control Centre, or the app being backgrounded mid-rep, and none of
+   * that was handled at all: the session went away, the recorder was left believing
+   * it was running, and the coach got no explanation for a rep that did not save.
+   *
+   * The file written so far is KEPT. It is a real recording of a real rep, just a
+   * short one, and deleting a coach's footage because the phone rang is the wrong
+   * answer. This is the same reasoning as the duration and byte caps, which also stop
+   * early and keep what they have.
+   */
+  const stopBecauseInterrupted = useCallback(
+    async (what: string) => {
+      const rec = recorder.current;
+      logEvent('CAMERA', `interrupted: ${what}${rec ? ' (recording)' : ''}`);
+      if (!rec) return;
+      try {
+        await rec.stopRecording();
+      } catch {
+        // Already stopping. The finish callback owns the outcome either way.
+      }
+      Alert.alert(
+        'Recording stopped',
+        `${what} interrupted the camera, so the recording was stopped. What was filmed up to ` +
+          'that point is kept and can be marked.',
+      );
+    },
+    [],
+  );
+
+  // BACKGROUNDING. The Camera's own interruption callbacks cover the session being
+  // taken; this covers the app going away, which on iOS suspends JS before anything
+  // else can react. Checked on every change rather than only on 'background',
+  // because 'inactive' is what a call banner produces first.
+  useEffect(() => {
+    if (!recording) return;
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') void stopBecauseInterrupted('Leaving the app');
+    });
+    return () => sub.remove();
+  }, [recording, stopBecauseInterrupted]);
+
+  // A RECORDING MUST NOT OUTLIVE THIS SCREEN. Leaving the Video tab unmounts the
+  // whole tree — App.tsx renders VideoTab conditionally — and without this the native
+  // recorder would keep writing to a file whose id had just been forgotten, leaving
+  // bytes on disk that nothing references and nothing can name.
+  useEffect(() => {
+    return () => {
+      const rec = recorder.current;
+      const id = clipId.current;
+      if (!rec) return;
+      logEvent('CAMERA', 'screen unmounted while recording — cancelling');
+      rec.cancelRecording().catch(() => {});
+      if (id) discardRecording(id);
+    };
+  }, []);
+
   const stop = useCallback(async () => {
     const rec = recorder.current;
     if (!rec) return;
@@ -307,7 +366,27 @@ export function VideoRecordModal({
                 EqualSplit needs the camera to film a rep. Nothing is uploaded and the microphone
                 is never used.
               </Text>
-              <Pressable style={styles.grant} onPress={() => void requestPermission()}>
+              <Pressable
+                onPress={async () => {
+                  // A HARD DENIAL CANNOT BE UNDONE BY ASKING AGAIN. Once the coach has
+                  // refused once, requestPermission resolves false without showing
+                  // anything, so a button that only calls it is a dead end that looks
+                  // like a broken button. Settings is the only route back.
+                  const granted = await requestPermission();
+                  if (!granted) {
+                    Alert.alert(
+                      'Camera access is off',
+                      'iOS will not ask again once access has been refused. Turn the camera on ' +
+                        'for EqualSplit in Settings, then come back.',
+                      [
+                        { text: 'Not now', style: 'cancel' },
+                        { text: 'Open Settings', onPress: () => void Linking.openSettings() },
+                      ],
+                    );
+                  }
+                }}
+                style={styles.grant}
+              >
                 <Text style={styles.grantText}>Allow camera</Text>
               </Pressable>
             </View>
@@ -336,6 +415,10 @@ export function VideoRecordModal({
               onConfigured={() => logEvent('CAMERA', 'session configured')}
               onStarted={() => logEvent('CAMERA', 'session started')}
               onStopped={() => logEvent('CAMERA', 'session stopped')}
+              // The callbacks that were flagged as existing and unused. A phone call
+              // is the ordinary case, and it produces one of these.
+              onInterruptionStarted={(reason: string) => void stopBecauseInterrupted(`Something else (${reason})`)}
+              onInterruptionEnded={() => logEvent('CAMERA', 'interruption ended')}
             />
           )}
 
