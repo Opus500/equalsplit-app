@@ -57,7 +57,7 @@ import {
   endedBecause,
   type RecordingEnd,
 } from '../video/storage';
-import { nominalSdMs, type TimeScale } from '../video/timing';
+import { nominalErrorMs, type TimeScale } from '../video/timing';
 import { logEvent } from '../diag/crashlog';
 import {
   CAUTION,
@@ -153,6 +153,25 @@ export function VideoRecordModal({
   const [space, setSpace] = useState(() => budgetForRecording(freeDiskBytes()));
   useEffect(() => {
     if (visible) setSpace(budgetForRecording(freeDiskBytes()));
+  }, [visible]);
+
+  /**
+   * Whether the camera has ever been on screen, and why that is not just laziness.
+   *
+   * THE PREVIEW CAME BACK BLACK when the Modal became an always-mounted overlay. The
+   * session recorded correctly — the footage was fine — but nothing was drawn, which
+   * is the signature of a preview layer that was laid out while its container had no
+   * size. `display: 'none'` gives a Yoga node zero dimensions, so <Camera> mounted
+   * into a zero-rect view and AVCaptureVideoPreviewLayer kept that frame.
+   *
+   * So the camera is not mounted until the sheet is first OPENED — its very first
+   * layout is a real, full-screen one — and after that it is never unmounted, which
+   * is what the crash fix requires. Hiding is done with opacity rather than display,
+   * so the layout stays valid on every later close and reopen.
+   */
+  const [everOpened, setEverOpened] = useState(false);
+  useEffect(() => {
+    if (visible) setEverOpened(true);
   }, [visible]);
 
   // A rate the session has not spoken about yet is not agreed to.
@@ -394,7 +413,7 @@ export function VideoRecordModal({
   // onRequestClose. iOS-first, and Cancel is on screen.
   return (
     <View
-      style={[styles.overlay, !visible && styles.hidden]}
+      style={[styles.overlay, !visible && styles.offscreen]}
       pointerEvents={visible ? 'auto' : 'none'}
     >
       <View style={styles.root}>
@@ -433,7 +452,7 @@ export function VideoRecordModal({
             <View style={styles.centre}>
               <Text style={styles.placeholder}>No back camera on this device.</Text>
             </View>
-          ) : (
+          ) : !everOpened ? null : (
             <Camera
               style={StyleSheet.absoluteFill}
               device={device}
@@ -477,9 +496,11 @@ export function VideoRecordModal({
 
         <View style={styles.controls}>
           {/* The rate, with what it BUYS beside it. A coach choosing between 120 and
-              240 is choosing quantisation, and the number that decides it is ±ms —
-              not the label. The bias line is why 240 is not the default: it is the
-              term you cannot remove, and it dwarfs both. */}
+              240 is choosing frame length, and the number that decides it is ±ms —
+              not the label. These are WHOLE FRAMES now rather than a statistical
+              spread, so they read larger than they used to and are the figures the
+              method can actually defend. The body-part bias is still the term you
+              cannot remove, and it dwarfs all four. */}
           <View style={styles.rates}>
             {CAPTURE_RATES.map((f) => (
               <Pressable
@@ -492,7 +513,7 @@ export function VideoRecordModal({
               >
                 <Text style={[styles.rateText, target === f && styles.rateTextOn]}>{f}</Text>
                 <Text style={[styles.rateSub, target === f && styles.rateSubOn]}>
-                  ±{nominalSdMs(1 / f).toFixed(1)}ms
+                  ±{nominalErrorMs(1 / f).toFixed(1)}ms
                 </Text>
               </Pressable>
             ))}
@@ -546,7 +567,11 @@ const styles = StyleSheet.create({
   // Absolute rather than a Modal, so the camera session is never garbage. See the
   // note at the render. zIndex keeps it over the marking screen it covers.
   overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10 },
-  hidden: { display: 'none' },
+  // OPACITY, NOT display: 'none'. A hidden Yoga node has zero size, and a camera
+  // preview laid out at zero keeps that frame — which is what turned the preview
+  // black. Opacity leaves the layout real, so the layer is always correctly sized.
+  // pointerEvents on the container is what stops an invisible sheet eating taps.
+  offscreen: { opacity: 0 },
   root: { flex: 1, backgroundColor: GROUND },
   // Black, not SUNKEN: this is the area a camera image fills, and any tint behind
   // it shows at the letterbox edges as a colour cast on the footage.

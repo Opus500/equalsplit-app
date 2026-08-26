@@ -103,23 +103,49 @@ export const VIDEO_DECIMALS = 2;
 
 export type VideoTiming = {
   elapsedMs: number;
-  /** 1 sigma, from the two frames' ACTUAL durations */
-  quantSdMs: number;
-  /** the largest single-sided quantization error possible */
-  quantWorstMs: number;
+  /**
+   * The +/- to show, in ms: one whole frame at the coarser end, rounded up.
+   *
+   * NOT a standard deviation any more, and not named like one. See timeFromMarks.
+   */
+  errorMs: number;
 };
 
 /**
- * Elapsed time between two marked frames, with its quantization error.
+ * Round UP to a tenth of a millisecond.
+ *
+ * Up, not to nearest, because the whole point of this figure is that it must never
+ * understate. A number that rounds down is a smaller claim than the evidence
+ * supports, which is the failure this change exists to remove.
+ */
+export function ceilTenth(ms: number): number {
+  return Math.ceil(ms * 10) / 10;
+}
+
+/**
+ * Elapsed time between two marked frames, with the error it carries.
  *
  * MARKING CONVENTION: the coach marks the first frame in which the athlete HAS
  * crossed. So the true crossing lies within the one frame before each mark, and
- * each mark is biased late by up to one frame duration.
+ * each mark is biased late by up to one frame duration. Both ends are biased in the
+ * SAME direction, so the bias very nearly cancels in the difference.
  *
- * The important consequence: both ends are biased in the SAME direction, so the
- * bias very nearly cancels in the difference and the expected error is ~0 rather
- * than one frame. What is left is spread, not offset — which is why the figure
- * below is a standard deviation and not "half a frame".
+ * THE FIGURE IS A WHOLE FRAME PERIOD, AND IT USED TO BE A STANDARD DEVIATION.
+ *
+ * The old number was sqrt((da^2 + db^2)/12) — the statistical spread from landing
+ * anywhere within a frame at each end. That is correct in isolation and it was the
+ * wrong number to show, for a reason arithmetic cannot see: it sits on screen beside
+ * two LARGER errors that are not in it at all. Camera parallax is not modelled, and
+ * the body-part bias is an estimate at roughly 37ms. Printing +/-1.7ms next to those
+ * claims a precision the method does not have, and a coach reading it would be right
+ * to believe the video was tighter than it is.
+ *
+ * So it is now the worst case: one full frame, at whichever end has the longer one,
+ * rounded UP. 240fps reads 4.2ms rather than 1.7. It is a number that can be
+ * defended without a footnote, which the tighter one could not be.
+ *
+ * SAVED ROWS ARE NOT RECOMPUTED. Old rows keep the figure they were written with,
+ * under the old `quantSdMs` key; new rows carry `errorMs`. See parseVideoRunJson.
  *
  * Returns null for marks that are not in order. A negative elapsed time is not a
  * measurement to be shown with a warning; it is an input error.
@@ -131,12 +157,11 @@ export function timeFromMarks(a: VideoMark, b: VideoMark): VideoTiming | null {
   const elapsedMs = (b.pts - a.pts) * 1000;
   const da = Math.max(0, a.frameDurSec) * 1000;
   const db = Math.max(0, b.frameDurSec) * 1000;
-  // Each mark's error is ~uniform over one frame, so variance is d^2/12 apiece
-  // and the two ends add in quadrature.
-  const quantSdMs = Math.sqrt((da * da + db * db) / 12);
-  const quantWorstMs = Math.max(da, db);
+  // The LONGER of the two frames, whole. A mixed-rate pair is only as good as its
+  // coarser end, and averaging them would hide that.
+  const errorMs = ceilTenth(Math.max(da, db));
 
-  return { elapsedMs, quantSdMs, quantWorstMs };
+  return { elapsedMs, errorMs };
 }
 
 export function formatVideoSeconds(elapsedMs: number, decimals = VIDEO_DECIMALS): string {
@@ -151,7 +176,10 @@ export function formatVideoSeconds(elapsedMs: number, decimals = VIDEO_DECIMALS)
  * dropping it.
  */
 export function formatVideoTime(t: VideoTiming): string {
-  return `${formatVideoSeconds(t.elapsedMs)}s ± ${Math.round(t.quantSdMs)}ms`;
+  // One decimal, because the figures now differ by a tenth where it matters —
+  // 4.2 against 8.3 is the whole 240-vs-120 argument, and Math.round flattened
+  // both to single digits.
+  return `${formatVideoSeconds(t.elapsedMs)}s ± ${t.errorMs.toFixed(1)}ms`;
 }
 
 // -------------------------------------------------------------- accuracy
@@ -270,15 +298,13 @@ export function lastMarkableTime(durationSec: number, frameDurSec: number): numb
 /**
  * The +/- a clip can support before any frame has actually been measured.
  *
- * Same arithmetic as `timeFromMarks` for two frames of equal length — variance
- * d^2/12 at each end, added in quadrature — so a provisional figure and the final
- * one are the same claim computed from the same rule, not a placeholder that
- * happens to look similar. Used while a handle is moving, when the grid around it
- * has not been probed yet and there is no measured pair to work from.
+ * Same rule as `timeFromMarks` for two frames of equal length, so a provisional
+ * figure and the final one are the same claim computed the same way rather than a
+ * placeholder that happens to look similar. Used while a handle is moving, when the
+ * grid around it has not been probed and there is no measured pair to work from.
  */
-export function nominalSdMs(frameDurSec: number): number {
-  const d = Math.max(0, frameDurSec) * 1000;
-  return Math.sqrt((d * d + d * d) / 12);
+export function nominalErrorMs(frameDurSec: number): number {
+  return ceilTenth(Math.max(0, frameDurSec) * 1000);
 }
 
 /**
@@ -844,7 +870,8 @@ export type VideoRunFacts = {
   endPts: number;
   /** measured, never nominal */
   fps: number;
-  quantSdMs: number;
+  /** One whole frame at the coarser end, in ms. See timeFromMarks. */
+  errorMs: number;
 };
 
 /** What a video run writes into raw_json. The accuracy fact travels with the ROW,
@@ -857,7 +884,7 @@ export function videoRunRawJson(f: VideoRunFacts): string {
     fps: f.fps,
     startPts: f.startPts,
     endPts: f.endPts,
-    quantSdMs: f.quantSdMs,
+    errorMs: f.errorMs,
     bodyPartBiasMs: BODY_PART_BIAS_MS,
   });
 }
@@ -873,7 +900,15 @@ export function parseVideoRunJson(raw: string | null | undefined): VideoRunFacts
       startPts: v.startPts,
       endPts: v.endPts,
       fps: Number.isFinite(v.fps) ? v.fps : 0,
-      quantSdMs: Number.isFinite(v.quantSdMs) ? v.quantSdMs : 0,
+      // errorMs FIRST, quantSdMs as the fallback. Rows written before the figure
+      // changed keep the statistical spread they were saved with — they are not
+      // recomputed, and reading them under the new name would silently relabel a
+      // standard deviation as a frame period.
+      errorMs: Number.isFinite(v.errorMs)
+        ? v.errorMs
+        : Number.isFinite(v.quantSdMs)
+          ? v.quantSdMs
+          : 0,
     };
   } catch {
     return null;

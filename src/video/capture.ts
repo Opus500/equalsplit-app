@@ -28,9 +28,15 @@ export const FPS_TOLERANCE = 0.1;
 /**
  * The default capture rate, and it is 120 rather than 240 on purpose.
  *
- * At 120fps a mark carries +/-3.4ms of quantisation against a body-part bias of
- * roughly 37ms — eleven times inside the error we cannot remove. 240fps halves that
- * to +/-1.7ms, which buys precision the method cannot use, for twice the frames.
+ * At 120fps a mark carries +/-8.3ms against a body-part bias estimated at roughly
+ * 37ms — four and a half times inside the error we cannot remove. 240fps halves that
+ * to +/-4.2ms, which buys precision the method cannot use, for twice the frames.
+ *
+ * These figures got LARGER when the error stopped being a standard deviation and
+ * became a whole frame period (see timeFromMarks). The argument survives the change
+ * and is weaker than it was: the margin over the bias went from about eleven times
+ * to about four and a half. Still comfortable, no longer overwhelming — worth
+ * revisiting if the 37ms estimate is ever measured and comes back smaller.
  *
  * It is a DEFAULT, not a limit. 240 stays available for anyone who wants it; what
  * it stops being is the thing you get without choosing.
@@ -38,7 +44,8 @@ export const FPS_TOLERANCE = 0.1;
 export const DEFAULT_FPS = 120;
 
 /** Offered rates, slowest first. 30 is present as a control rather than as a
- *  serious option — its +/-13.6ms is only 2.7x inside the bias. */
+ *  serious option — its +/-33.4ms is not inside the ~37ms bias at all any more, it
+ *  is the same size as it. */
 export const CAPTURE_RATES = [30, 60, 120, 240] as const;
 
 // ---------------------------------------------------------------------------

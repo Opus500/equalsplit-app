@@ -44,10 +44,11 @@ const {
   seekTimeFor,
   filmstripTimes,
   lastMarkableTime,
-  nominalSdMs,
+  nominalErrorMs,
   adjacentDeltas,
   acceptForTiming,
   acceptForReview,
+  ceilTenth,
   coveredWindow,
   spanCovered,
   whyNotTimeable,
@@ -90,7 +91,7 @@ console.log('\n1. MODE 5 exists because mode encodes the PRODUCER');
 
 console.log('\n2. TIME SOURCE is read through one helper');
 {
-  const raw = videoRunRawJson({ startPts: 1, endPts: 5, fps: 30, quantSdMs: 13.6 });
+  const raw = videoRunRawJson({ startPts: 1, endPts: 5, fps: 30, errorMs: 33.4 });
   check('a video run reports video', runTimeSource(raw), 'video');
   check('and is marked inexact', JSON.parse(raw).exact, false);
 
@@ -118,7 +119,7 @@ console.log('\n3. GROUPING folds unknown to gate, but the UI is never told that'
   // because the difference between them is bounded by a body — roughly a frame
   // either way. Hand does not, because human reaction time is larger than the
   // trend being plotted and has the spread to match.
-  const vid = videoRunRawJson({ startPts: 0, endPts: 4, fps: 30, quantSdMs: 13.6 });
+  const vid = videoRunRawJson({ startPts: 0, endPts: 4, fps: 30, errorMs: 33.4 });
   const rest = restRepRawJson({ ms: 64000, closeUs: 1, closeAtMs: 1, lockoutMs: 1000, gateId: 1 });
   check('a video run groups with gate', sourceGroup(seriesTimeSource(vid)), 'timed');
   check('and so does a run that says nothing', sourceGroup(seriesTimeSource(null)), 'timed');
@@ -157,11 +158,15 @@ console.log('\n4. TWO MARKS to an elapsed time');
   const t = timeFromMarks(a, b);
   near('elapsed is the difference of the timestamps', t.elapsedMs, 4000, 1e-6);
 
-  // The bias cancels. Both marks are the first frame AFTER the crossing, so both
-  // are late — and the difference of two same-signed biases is ~0, not one frame.
-  // That is why the figure below is a spread and not an offset.
-  near('1 sigma at 30fps is ~13.6ms, not half a frame', t.quantSdMs, 13.6, 0.2);
-  near('worst single-sided error is one frame', t.quantWorstMs, 33.333, 0.01);
+  // A WHOLE FRAME, not a standard deviation, and the change was deliberate.
+  //
+  // The old figure was sqrt((da^2+db^2)/12) — the statistical spread from landing
+  // anywhere within a frame. Correct in isolation, and the wrong number to show:
+  // it sat beside two LARGER errors not modelled at all (parallax, and a body-part
+  // bias estimated at ~37ms), so a tight +/-1.7ms claimed a precision the method
+  // does not have. The worst case is defensible without a footnote.
+  near('the error at 30fps is one whole frame', t.errorMs, 33.4, 0.001);
+  truthy('which is larger than the spread it replaced', t.errorMs > 13.6);
 
   // Inverted marks are an input error, not a measurement to warn about.
   check('marks out of order are refused', timeFromMarks(b, a), null);
@@ -171,16 +176,32 @@ console.log('\n4. TWO MARKS to an elapsed time');
 
 console.log('\n5. THE +/- COMES FROM THE CLIP, not a constant');
 {
-  const sd = (fps) => timeFromMarks({ pts: 0, frameDurSec: 1 / fps }, { pts: 2, frameDurSec: 1 / fps }).quantSdMs;
-  near('30fps', sd(30), 13.61, 0.05);
-  near('60fps', sd(60), 6.8, 0.05);
-  near('240fps  — 8x better than 30, and it should be allowed to say so', sd(240), 1.7, 0.05);
-  truthy('a faster clip is strictly better', sd(240) < sd(60) && sd(60) < sd(30));
+  const err = (fps) => timeFromMarks({ pts: 0, frameDurSec: 1 / fps }, { pts: 2, frameDurSec: 1 / fps }).errorMs;
+  // One frame period, rounded UP so the number can never understate. Pinned to the
+  // digit, because these four are what a coach reads off the rate picker.
+  near('30fps  is 33.4', err(30), 33.4, 0.001);
+  near('60fps  is 16.7', err(60), 16.7, 0.001);
+  near('120fps is 8.4', err(120), 8.4, 0.001);
+  near('240fps is 4.2  — 8x better than 30, and allowed to say so', err(240), 4.2, 0.001);
+  truthy('a faster clip is strictly better', err(240) < err(120) && err(120) < err(60) && err(60) < err(30));
+
+  // ROUNDING UP IS THE POINT, so it is asserted rather than assumed: every figure
+  // must be at or above the true frame period, never below it.
+  for (const fps of [30, 60, 120, 240]) {
+    truthy(`${fps}fps never understates`, err(fps) >= 1000 / fps - 1e-9);
+  }
+  check('ceilTenth rounds up, not to nearest', ceilTenth(8.3333), 8.4);
+  check('and leaves an exact tenth alone', ceilTenth(4.2), 4.2);
 
   // Variable frame rate: the two marks can sit on frames of DIFFERENT lengths,
   // which is precisely why this takes durations rather than one fps number.
+  //
+  // A mixed pair takes the COARSER end whole, rather than landing between the two.
+  // A measurement is only as good as its worst end, and averaging would hide which
+  // end that was.
   const mixed = timeFromMarks({ pts: 0, frameDurSec: 1 / 30 }, { pts: 2, frameDurSec: 1 / 240 });
-  truthy('a mixed-rate pair lands between the two', mixed.quantSdMs < sd(30) && mixed.quantSdMs > sd(240));
+  near('a mixed-rate pair takes the coarser end', mixed.errorMs, err(30), 0.001);
+  truthy('not the finer one', mixed.errorMs > err(240));
 
   // Display shows two decimals ALWAYS, with the uncertainty beside it. Rounding a
   // 30fps time to 4.2s was arithmetically defensible and practically worse: a
@@ -194,8 +215,11 @@ console.log('\n5. THE +/- COMES FROM THE CLIP, not a constant');
 
   const slow = timeFromMarks({ pts: 0, frameDurSec: 1 / 30 }, { pts: 4.213, frameDurSec: 1 / 30 });
   const fast = timeFromMarks({ pts: 0, frameDurSec: 1 / 240 }, { pts: 4.213, frameDurSec: 1 / 240 });
-  check('the same digits, but the honesty rides alongside', formatVideoTime(slow), '4.21s ± 14ms');
-  check('and a faster clip says a smaller number', formatVideoTime(fast), '4.21s ± 2ms');
+  // ONE DECIMAL on the +/-, because the figures now differ by a tenth where it
+  // matters: 8.4 against 4.2 is the entire 120-vs-240 argument, and Math.round
+  // flattened both to single digits.
+  check('the same digits, but the honesty rides alongside', formatVideoTime(slow), '4.21s ± 33.4ms');
+  check('and a faster clip says a smaller number', formatVideoTime(fast), '4.21s ± 4.2ms');
 
   // THE CLAIM THE OLD DUPLICATE WAS TRYING TO MAKE. It read "and so does a 240fps
   // one" while calling formatVideoSeconds(4213) a second time — byte-identical to
@@ -223,9 +247,18 @@ console.log('\n6. THE ERRORS THAT DO NOT SHRINK are kept out of the computed fig
   near('20 degrees is worse than 10', parallaxErrorMs(20, 1, 8), 45.5, 1);
   truthy('and standing closer to the reference helps', parallaxErrorMs(10, 0.5, 8) < parallaxErrorMs(10, 1, 8));
 
-  // Neither is folded into quantSdMs — a computed number must not carry estimates.
+  // NEITHER IS FOLDED IN. errorMs is frame length and nothing else — a computed
+  // number must not carry estimates, or a coach cannot tell which part was measured.
+  //
+  // And the relationship stated as a fact rather than an inequality that happens to
+  // hold: at 30fps the frame is now the SAME SIZE as the bias estimate, which is the
+  // honest reason 30 is a control and not an option.
   const t = timeFromMarks({ pts: 0, frameDurSec: 1 / 30 }, { pts: 2, frameDurSec: 1 / 30 });
-  truthy('the computed sigma is quantization only', t.quantSdMs < BODY_PART_BIAS_MS);
+  near('a 30fps frame is one whole frame, not a spread', t.errorMs, 33.4, 0.001);
+  truthy('which is about the size of the bias estimate', Math.abs(t.errorMs - BODY_PART_BIAS_MS) < 5);
+  // At the DEFAULT the margin is real, which is what keeps 120 defensible.
+  const at120 = timeFromMarks({ pts: 0, frameDurSec: 1 / 120 }, { pts: 2, frameDurSec: 1 / 120 });
+  truthy('while 120fps sits well inside it', at120.errorMs * 4 < BODY_PART_BIAS_MS);
 }
 
 console.log('\n7. LAZY GRID: clips are uncapped, so coverage is tracked');
@@ -321,12 +354,32 @@ console.log('\n9. VARIABLE FRAME RATE is detected, not assumed away');
 
 console.log('\n10. THE ROW carries its own accuracy');
 {
-  const raw = videoRunRawJson({ startPts: 1.5, endPts: 5.75, fps: 59.94, quantSdMs: 6.8 });
+  const raw = videoRunRawJson({ startPts: 1.5, endPts: 5.75, fps: 59.94, errorMs: 16.7 });
   const back = parseVideoRunJson(raw);
   near('start survives', back.startPts, 1.5, 1e-9);
   near('end survives', back.endPts, 5.75, 1e-9);
   near('the MEASURED fps survives, not a nominal one', back.fps, 59.94, 1e-9);
-  near('and so does the error bar', back.quantSdMs, 6.8, 1e-9);
+  near('and so does the error bar', back.errorMs, 16.7, 1e-9);
+
+  // OLD ROWS ARE NOT RECOMPUTED, and they are not relabelled either. A row written
+  // before the figure changed carries `quantSdMs` holding a standard deviation;
+  // reading it back must return that number, not silently present it as a frame
+  // period or drop it for zero.
+  const legacy = JSON.stringify({
+    engine: 'video',
+    timeSource: 'video',
+    exact: false,
+    fps: 30,
+    startPts: 0,
+    endPts: 4,
+    quantSdMs: 13.61,
+  });
+  near('a pre-change row keeps its own figure', parseVideoRunJson(legacy).errorMs, 13.61, 1e-9);
+  truthy('rather than being zeroed', parseVideoRunJson(legacy).errorMs > 0);
+  // And a row carrying BOTH prefers the new one, which is the only way a rewritten
+  // row could ever be distinguished from a legacy one.
+  const both = JSON.stringify({ ...JSON.parse(legacy), errorMs: 33.4 });
+  near('a row with both prefers errorMs', parseVideoRunJson(both).errorMs, 33.4, 1e-9);
 
   // THE SEPARATION. raw_json answers "how was this timed"; runs.clip_id answers
   // "is there footage". If the clip lived here, attaching review video to a GATE
@@ -485,10 +538,10 @@ console.log('\n11d. THE PROVISIONAL +/- IS THE SAME CLAIM, not a placeholder');
   // jump on release for reasons that are about the code rather than the clip.
   for (const fps of [24, 30, 60, 240]) {
     const settled = timeFromMarks({ pts: 0, frameDurSec: 1 / fps }, { pts: 2, frameDurSec: 1 / fps });
-    near(`${fps}fps: provisional equals settled for equal frames`, nominalSdMs(1 / fps), settled.quantSdMs, 1e-9);
+    near(`${fps}fps: provisional equals settled for equal frames`, nominalErrorMs(1 / fps), settled.errorMs, 1e-9);
   }
-  truthy('a faster clip still promises less error', nominalSdMs(1 / 240) < nominalSdMs(1 / 30));
-  check('and a nonsense frame duration is not NaN', nominalSdMs(-1), 0);
+  truthy('a faster clip still promises less error', nominalErrorMs(1 / 240) < nominalErrorMs(1 / 30));
+  check('and a nonsense frame duration is not NaN', nominalErrorMs(-1), 0);
 }
 
 console.log('\n11e. GRID STATISTICS NEVER MEASURE ACROSS AN UNPROBED GAP');

@@ -64,7 +64,7 @@ import {
   lastMarkableTime,
   markAt,
   measuredFps,
-  nominalSdMs,
+  nominalErrorMs,
   seekTimeFor,
   stepFrames,
   timeFromMarks,
@@ -595,6 +595,15 @@ export default function VideoMarkScreen({
         player.currentTime = m ? seekTimeFor(m) : seconds;
         const d = dragSeeks.current;
         setSettleNote(null);
+        // BOTH MARKS, because `resolved` only ever described the handle just let go
+        // of — and that one is almost always fine. A settle can report resolved:true
+        // while the OTHER mark sits unresolvable, which is exactly the state that
+        // shows SNAPPING, and the diagnostic printed nothing about it. Reported on
+        // device as "N=18 and no UNRESOLVED": the probe ran in full, the dragged
+        // handle resolved, and the readout still would not clear.
+        const both =
+          `start:${markAt(r.grid, live.current.startAt) ? 'ok' : 'NULL'}` +
+          ` finish:${markAt(r.grid, live.current.finishAt) ? 'ok' : 'NULL'}`;
         // "ISSUED", not "seek". Assigning currentTime hands a request to
         // AVFoundation and returns; the frame arrives later. Timing the assignment
         // measures the setter, not the seek, and this line called it "seek Xms" for
@@ -602,7 +611,8 @@ export default function VideoMarkScreen({
         // real thing means polling for the readback, which costs more than the
         // figure is worth, so it is labelled honestly instead of measured badly.
         setPerf(
-          `probe ${r.ms}ms/${r.calls}${r.resolved ? '' : ' · UNRESOLVED'} · seek issued ${Date.now() - t0}ms` +
+          `probe ${r.ms}ms/${r.calls}${r.resolved ? '' : ' · UNRESOLVED'} · ${both}` +
+            ` · seek issued ${Date.now() - t0}ms` +
             (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
         );
         });
@@ -877,7 +887,7 @@ export default function VideoMarkScreen({
             // is telling you it is variable, and the row should record what was
             // actually observed between the marks.
             fps: measuredFps(grid) ?? 1 / frameDur,
-            quantSdMs: timing.quantSdMs,
+            errorMs: timing.errorMs,
           }),
           // The clip is a COLUMN, not part of raw_json. raw_json says how the run
           // was timed; clip_id says whether there is footage. Keeping them apart is
@@ -972,12 +982,12 @@ export default function VideoMarkScreen({
 
                 The precision STATE now has its own slot to the right, at a fixed
                 width, so it changes without moving or replacing anything else. And
-                the provisional ± is not a placeholder: nominalSdMs is the same
+                the provisional ± is not a placeholder: nominalErrorMs is the same
                 arithmetic timeFromMarks uses for two frames of equal length, so
                 the number only tightens when the real frame durations arrive. */}
             <View style={styles.pmRow}>
               <Text style={styles.pm}>
-                ± {Math.round(timing ? timing.quantSdMs : nominalSdMs(frameDur))}ms frame timing
+                ± {(timing ? timing.errorMs : nominalErrorMs(frameDur)).toFixed(1)}ms frame timing
               </Text>
               <Text style={[styles.snap, timing ? styles.snapOn : styles.snapOff]}>
                 {timing ? 'ON FRAME' : 'SNAPPING'}
@@ -1095,9 +1105,10 @@ export default function VideoMarkScreen({
               is the SMALL term; camera angle and which body part you judge are
               larger and are not measurable from the file. */}
           <Text style={styles.caveat}>
-            Video timing is not gate-accurate. Beyond the ±{timing ? timing.quantSdMs.toFixed(0) : '—'}ms
-            above, a camera that is not square to the finish line and the body part you judge add more
-            — around {BODY_PART_BIAS_MS}ms for the latter, in one direction rather than either. Video
+            Video timing is not gate-accurate. Beyond the ±{timing ? timing.errorMs.toFixed(1) : '—'}ms
+            above — which is a WHOLE FRAME, the worst case, not a statistical spread — a camera that
+            is not square to the finish line and the body part you judge add more, around{' '}
+            {BODY_PART_BIAS_MS}ms for the latter, in one direction rather than either. Video
             runs share a chart with gate runs and are marked on it, so that difference stays visible
             without splitting the drill in two.
           </Text>

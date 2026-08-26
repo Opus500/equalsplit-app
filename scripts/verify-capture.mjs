@@ -200,7 +200,12 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // <Camera> and left a live capture session for the collector to find.
   const recCode = code(join(SRC, 'screens', 'VideoRecordModal.tsx'));
   check('the sheet is not a Modal', /<Modal/.test(recCode), false);
-  truthy('it is an always-mounted overlay', /style=\{\[styles\.overlay, !visible && styles\.hidden\]\}/.test(recCode));
+  truthy('it is an always-mounted overlay', /style=\{\[styles\.overlay, !visible && styles\.offscreen\]\}/.test(recCode));
+  // HIDDEN BY OPACITY, NOT display. A hidden Yoga node has zero size, and a camera
+  // preview laid out at zero keeps that frame — which turned the preview black the
+  // first time this stopped being a Modal.
+  check('and never by display:none', /styles\.hidden/.test(recCode), false);
+  truthy('the camera waits for a real layout before mounting', /!everOpened \? null :/.test(recCode));
   truthy('with the camera inside that overlay', recCode.indexOf('styles.overlay') < recCode.indexOf('<Camera'));
   truthy('and only the SESSION stopped', /isActive=\{visible\}/.test(recCode));
 
