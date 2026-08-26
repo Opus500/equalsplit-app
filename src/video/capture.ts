@@ -42,28 +42,26 @@ export const DEFAULT_FPS = 120;
 export const CAPTURE_RATES = [30, 60, 120, 240] as const;
 
 // ---------------------------------------------------------------------------
-// 60fps DOES NOT HOLD ON THE TEST DEVICE, AND THE MECHANISM IS NOT KNOWN.
+// 60fps IS PROBABLY FINE. THIS NOTE USED TO SAY THE OPPOSITE.
 //
-// Measured on iPhone18,3 / iOS 26.6: the session reports it settled on 60, layer 2
-// passes, and the file measures 30. Layer 3 refuses it, correctly — this is exactly
-// the failure the three layers exist for, caught in the wild.
+// It read "60fps does not hold on the test device, mechanism unknown", on the
+// strength of layer 3 refusing a 60fps recording that measured 30. That refusal was
+// real and the reasoning behind it was wrong: the PROBE was seeded with the previous
+// clip's frame rate, because replaceAsync resolves before duration and videoTrack
+// reflect the new item. A seed one rate below the truth samples every second frame
+// and can only ever measure half. See loadClipInto in frames.ts.
 //
-// 30, 120 and 240 all hold on the same device. Only 60 degrades.
+// The tell was the ladder: 60 measured 30, and 120 measured 60. Exactly half, every
+// time, which is a sampling artefact and not how hardware degrades. And a fresh app
+// recording at one rate without touching the selector was clean.
 //
-// One hypothesis was offered and the device data killed it. The idea was that 60
-// might be the only offered rate sharing a capture format with a lower one, so the
-// only one able to silently fall back. The device reports:
-//
-//     fps ranges    1-60, 1-30, 1-240, 1-120
-//
-// Every rate is a wide range including 30. 120 and 240 are 1-120 and 1-240, not the
-// point ranges the hypothesis needed. So format-sharing cannot explain why only 60
-// degrades, and no second story is offered here.
-//
-// This is recorded the same way the probe-cost shape is: an observation that
-// reproduces, with the mechanism marked UNIDENTIFIED rather than guessed at. What is
-// established is that the rate is unreliable on this hardware, that layer 3 catches
-// it, and that nothing depends on 60 — DEFAULT_FPS is 120 and it holds.
+// So no rate is known to be unreliable on this device. Two hypotheses about 60fps
+// have now been offered and both were wrong — the format-sharing one, killed by the
+// device reporting 1-60, 1-30, 1-240, 1-120, and this one, killed by finding the
+// actual bug elsewhere. What is left is that layer 3 caught something real, reported
+// it faithfully, and pointed at the camera when the fault was upstream of it. That
+// is worth keeping in mind about all three layers: they can only judge the numbers
+// they are given.
 // ---------------------------------------------------------------------------
 
 export type CaptureVerdict =
