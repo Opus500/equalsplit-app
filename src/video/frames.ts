@@ -305,7 +305,59 @@ export function nominalFrameDur(player: VideoPlayer): number {
   return 1 / fps;
 }
 
-/** Whether the clip's own frame rate is readable YET. See waitForClip. */
+/**
+ * Put a clip on a player and read back ITS length and rate — not the last one's.
+ *
+ * THE BUG THIS EXISTS FOR, confirmed on device from two symptoms at once.
+ *
+ * `replaceAsync` resolves before `duration` and `videoTrack` reflect the new item.
+ * Polling them straight afterwards reads whatever the PREVIOUS clip left behind, and
+ * both of those numbers are load-bearing:
+ *
+ *   duration   A 0.7s recording reported 7 seconds — the clip before it — so the
+ *              finish handle was clamped into space the clip does not contain and
+ *              the second mark could not be reached at all.
+ *   frameDur   Worse, because it is silent. The probe aims at frame centres using
+ *              this seed, so a seed one rate BELOW the truth samples every second
+ *              frame and measuredFps reports exactly half. That is the "60 measures
+ *              30, 120 measures 60" ladder: not a camera degrading, a probe
+ *              measuring the previous clip's grid. Layer 3 then refuses a perfectly
+ *              good recording and blames the hardware, which it did, for days.
+ *
+ * waitForClip alone could not fix it and did not: it waits for duration > 0 and a
+ * readable track, and the STALE values satisfy both instantly. Waiting harder on a
+ * value that is already wrong never helps.
+ *
+ * So the source is CLEARED first and the clear is confirmed. After replaceAsync(null)
+ * the player must report no duration; only then is any duration > 0 known to belong
+ * to the clip just handed over. It costs one extra round trip and it is the only
+ * version of this that cannot read a previous clip's numbers.
+ */
+export async function loadClipInto(
+  player: VideoPlayer,
+  uri: string,
+  timeoutMs: number,
+): Promise<{ durationSec: number; frameDurSec: number; tracked: boolean }> {
+  await player.replaceAsync(null);
+  // CONFIRM THE CLEAR ON BOTH FACTS, not just the length.
+  //
+  // Waiting only for duration to reach zero was not enough, and the offline fixture
+  // caught it: the track settles AFTER the duration, so a player can report the new
+  // clip's length while videoTrack still describes the previous one. That leaves the
+  // seed stale — which is the whole "60 measures 30" ladder — with the duration
+  // looking perfectly correct, so nothing on screen would have hinted at it.
+  //
+  // Bounded, because a player that will not let go is a broken player and hanging
+  // here would be worse than proceeding with a warning.
+  const clearBy = Date.now() + timeoutMs;
+  while (((player.duration || 0) > 0 || hasFrameRate(player)) && Date.now() < clearBy) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  await player.replaceAsync(uri);
+  return waitForClip(player, timeoutMs);
+}
+
+/** Whether the clip's own frame rate is readable YET. See loadClipInto. */
 export function hasFrameRate(player: VideoPlayer): boolean {
   const track = player.videoTrack ?? player.availableVideoTracks[0] ?? null;
   return !!(track?.frameRate && track.frameRate > 0);
@@ -330,7 +382,7 @@ export function hasFrameRate(player: VideoPlayer): boolean {
  * `tracked: false` means the rate never became readable. The caller must NOT treat
  * whatever the grid then measures as evidence: it is a measurement of the guess.
  */
-export async function waitForClip(
+async function waitForClip(
   player: VideoPlayer,
   timeoutMs: number,
 ): Promise<{ durationSec: number; frameDurSec: number; tracked: boolean }> {

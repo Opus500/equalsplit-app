@@ -56,7 +56,7 @@ const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble
 // The REAL probe path. frames.ts imports expo-video for types only, so it loads
 // standalone — which is what lets block 11h drive it against a fake decoder rather
 // than reasoning about what it would do.
-const { probeGridAround, probeToResolve } = await import('../src/video/frames.ts');
+const { probeGridAround, probeToResolve, loadClipInto } = await import('../src/video/frames.ts');
 // The real grouping path — the ONLY thing that groups anything, now that
 // timing.ts's callerless seriesKey() copy of the rule is gone.
 const { buildProgression, seriesUid, sourceGroup } = await import('../src/roster/progression.ts');
@@ -1050,6 +1050,111 @@ console.log('\n17. A WINDOW CLAIMS ONLY WHAT CAME BACK');
   const healed = await probeToResolve(healthy, r.grid, 1.45, d);
   check('a recovered decoder resolves the mark', healed.resolved, true);
   truthy('with a one-frame duration, not one spanning the hole', Math.abs(markAt(healed.grid, 1.45).frameDurSec - d) < 1e-6);
+}
+
+console.log('\n18. A CLIP REPORTS ITS OWN LENGTH AND RATE, NOT THE LAST ONE\'S');
+{
+  // CONFIRMED ON DEVICE FROM TWO SYMPTOMS AT ONCE, and they turned out to be one bug.
+  //
+  //   duration   a 0.7s recording reported 7 seconds — the clip before it — so the
+  //              finish handle was clamped into space the clip does not contain.
+  //   frameDur   the probe aims using this seed, so a seed one rate BELOW the truth
+  //              samples every second frame and measuredFps reports exactly half.
+  //              "60 measures 30, 120 measures 60" was never a camera degrading; it
+  //              was the probe measuring the PREVIOUS clip's grid, and layer 3
+  //              refusing a good recording and blaming the hardware.
+  //
+  // waitForClip could not fix this and did not: it waits for duration > 0 and a
+  // readable track, and the stale values satisfy both instantly.
+
+  /** A player that behaves like expo-video: replaceAsync RESOLVES while duration and
+   *  the track still describe the previous source, for `lag` polls. */
+  //
+  // THE CLEAR LAGS TOO, and that detail is the test. Modelling replaceAsync(null) as
+  // instant left nothing for the confirmation loop to wait on, so deleting that loop
+  // survived the mutation — the fixture was proving half the fix.
+  const laggyPlayer = (lag) => {
+    // WHAT THE PLAYER REPORTS lags what it was asked to load, and during that window
+    // it reports the PREVIOUS clip — not null, not zero. That is the entire bug, and
+    // two earlier versions of this fixture modelled the gap as null instead, which
+    // made the clear look unnecessary and let the mutation survive.
+    //
+    // The TRACK settles after the duration, which is why waiting on duration alone
+    // was never enough even before staleness was understood.
+    let shown = null;
+    let shownTrack = null;
+    let target = null;
+    let left = 0;
+    let trackLeft = 0;
+    const tick = () => {
+      if (left > 0) {
+        left -= 1;
+        if (left === 0) shown = target;
+      }
+      if (trackLeft > 0) {
+        trackLeft -= 1;
+        if (trackLeft === 0) shownTrack = target;
+      }
+    };
+    return {
+      get duration() {
+        tick();
+        return shown ? shown.duration : 0;
+      },
+      get videoTrack() {
+        tick();
+        return shownTrack ? { frameRate: shownTrack.fps } : null;
+      },
+      availableVideoTracks: [],
+      async replaceAsync(source) {
+        target = source;
+        left = Math.max(1, lag);
+        trackLeft = Math.max(1, lag) + 4;
+      },
+    };
+  };
+
+  // The first clip: 7 seconds at 30fps.
+  const p = laggyPlayer(1);
+  await p.replaceAsync({ duration: 7.0, fps: 30 });
+  const first = await loadClipInto(p, { duration: 7.0, fps: 30 }, 500);
+  check('the first clip reads its own length', first.durationSec, 7.0);
+  check('and its own rate', Math.round(1 / first.frameDurSec), 30);
+
+  // Now a 0.7s clip at 60fps, on a player that lags. THE DEVICE CASE.
+  const laggy = laggyPlayer(6);
+  await laggy.replaceAsync({ duration: 7.0, fps: 30 });
+  // FULLY LOAD IT FIRST. The first version of this fixture skipped this, so the
+  // player never held a previous clip and the whole block passed against the OLD
+  // behaviour too — a test that could not fail, which is worse than no test. Caught
+  // by mutating loadClipInto back and watching nothing happen.
+  while ((laggy.duration || 0) === 0 || !laggy.videoTrack) await new Promise((r) => setTimeout(r, 5));
+  check('the previous clip really is loaded', laggy.duration, 7.0);
+  check('and its track is the stale one', laggy.videoTrack.frameRate, 30);
+
+  const second = await loadClipInto(laggy, { duration: 0.7, fps: 60 }, 2000);
+  check('a short clip after a long one reports ITS length', second.durationSec, 0.7);
+  truthy('not the previous 7 seconds', second.durationSec !== 7.0);
+  check('and ITS frame rate', Math.round(1 / second.frameDurSec), 60);
+  truthy('not the previous 30 — the half-measurement ladder', Math.round(1 / second.frameDurSec) !== 30);
+  check('with the rate marked readable', second.tracked, true);
+
+  // THE LADDER, stated as the consequence rather than the mechanism: a seed one rate
+  // below the truth can only ever measure half, whatever the camera did.
+  const seededLow = 1 / 30;
+  const realFrames = [];
+  for (let i = 0; i < 20; i += 1) realFrames.push(i / 60);
+  // Aiming at 1/30 centres on a 60fps clip hits every second frame.
+  const hit = new Set();
+  for (let k = 0; k < 10; k += 1) {
+    const t = (k + 0.5) * seededLow;
+    let best = 0;
+    for (const f of realFrames) if (f <= t + 1e-9) best = f;
+    hit.add(Number(best.toFixed(6)));
+  }
+  const gaps = [...hit].sort((a, b) => a - b).slice(1).map((f, i) => f - [...hit].sort((a, b) => a - b)[i]);
+  truthy('a 1/30 seed on a 60fps clip only ever finds 30fps spacing',
+    gaps.every((g) => Math.abs(g - 1 / 30) < 1e-6));
 }
 
 console.log(

@@ -34,6 +34,21 @@ const SRC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'src');
  */
 const read = (abs) => readFileSync(abs, 'utf8').replace(/\r\n/g, '\n');
 
+/**
+ * The same file with COMMENTS REMOVED, for structural claims.
+ *
+ * A note explaining "this is not a Modal" contains the very string that would
+ * prove it still is one. Two assertions failed on their own prose the moment they
+ * were written — a guard has to look at what RUNS, not at what the file says about
+ * itself. Same lesson as the CRLF normalisation above, from the other direction.
+ */
+const code = (abs) =>
+  read(abs)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*)/.test(l))
+    .join('\n');
+
 let failures = 0;
 const check = (label, got, want) => {
   const g = JSON.stringify(got);
@@ -176,6 +191,18 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // A HARD DENIAL CANNOT BE UNDONE BY ASKING AGAIN — requestPermission resolves
   // false without showing anything, so a button that only calls it is a dead end.
   truthy('a refused camera offers Settings', /Linking\.openSettings\(\)/.test(rec));
+
+  // THE CAMERA MUST NOT BECOME GARBAGE. Two crash reports, one backtrace: Hermes's
+  // background GC thread ("hades") swept a dead NativeState, which ran
+  // HybridCameraSession.deinit, which called -[AVCaptureSession dealloc] OFF the main
+  // thread, where AVFoundation's own teardown assertion aborts. React Native's Modal
+  // returns null from render() when hidden, so every close of this sheet unmounted
+  // <Camera> and left a live capture session for the collector to find.
+  const recCode = code(join(SRC, 'screens', 'VideoRecordModal.tsx'));
+  check('the sheet is not a Modal', /<Modal/.test(recCode), false);
+  truthy('it is an always-mounted overlay', /style=\{\[styles\.overlay, !visible && styles\.hidden\]\}/.test(recCode));
+  truthy('with the camera inside that overlay', recCode.indexOf('styles.overlay') < recCode.indexOf('<Camera'));
+  truthy('and only the SESSION stopped', /isActive=\{visible\}/.test(recCode));
 
   const mark = at('screens/VideoMarkScreen.tsx');
   truthy('the marking screen runs layer 3', /acceptRecording\(capture\.requestedFps, capture\.selectedFps, measured\)/.test(mark));

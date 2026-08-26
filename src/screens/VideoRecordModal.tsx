@@ -28,7 +28,7 @@
 // nobody uses is one the coach has to decline for no reason.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, AppState, Linking, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
   Camera,
   useCameraDevice,
@@ -356,8 +356,47 @@ export function VideoRecordModal({
 
   const remaining = Math.max(0, MAX_CLIP_MS / 1000 - live.seconds);
 
+  // NOT A <Modal>, AND THAT IS THE CRASH FIX.
+  //
+  // Three crash reports, two of them identical, and the backtrace names the cause
+  // exactly once you read it bottom-up:
+  //
+  //     hermes::vm::HadesGC::Executor::worker()          <- the JS garbage collector,
+  //     hermes::vm::HadesGC::incrementalCollect             on its own background
+  //     hermes::vm::HadesGC::OldGen::sweepNext              thread, named "hades"
+  //     facebook::hermes::deleteShared(... NativeState*)
+  //     margelo::nitro::camera::HybridCameraSessionSpecSwift::~...
+  //     HybridCameraSession.deinit
+  //     -[AVCaptureSession dealloc]
+  //     -[AVCaptureSession _makeConfigurationLive:]
+  //     -[AVCaptureOutput detachFromFigCaptureSession:]
+  //     __assert_rtn  ->  abort()                        <- AVFoundation refuses
+  //
+  // The camera session was collected as JS GARBAGE and therefore deallocated on
+  // Hermes's background GC thread, where AVFoundation's own teardown assertion
+  // fails. React Native's Modal returns null from render() whenever it is hidden, so
+  // EVERY close of this sheet unmounted <Camera> and left a live capture session for
+  // the collector to find. The crash then lands whenever GC next runs — which is why
+  // it read as random, and why it clustered during rapid record/mark/keep cycles and
+  // rate switching: those are what produce the garbage.
+  //
+  // An always-mounted overlay keeps the session object referenced for as long as this
+  // screen lives, so it is never collected while in use. isActive still stops the
+  // hardware; what changed is that the OBJECT stays alive.
+  //
+  // RESIDUAL, stated rather than hidden: leaving the Video tab unmounts VideoTab (see
+  // App.tsx) and drops the session for real. That is once per tab-leave instead of
+  // once per rep, and it is a VisionCamera/Nitro teardown-thread bug underneath —
+  // fixing it properly needs the session torn down on the main thread before its last
+  // reference goes, which this API does not expose.
+  //
+  // Android's hardware back no longer closes the sheet, since that was the Modal's
+  // onRequestClose. iOS-first, and Cancel is on screen.
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={() => void leave()}>
+    <View
+      style={[styles.overlay, !visible && styles.hidden]}
+      pointerEvents={visible ? 'auto' : 'none'}
+    >
       <View style={styles.root}>
         <View style={styles.preview}>
           {!hasPermission ? (
@@ -499,11 +538,15 @@ export function VideoRecordModal({
           </View>
         </View>
       </View>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // Absolute rather than a Modal, so the camera session is never garbage. See the
+  // note at the render. zIndex keeps it over the marking screen it covers.
+  overlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 10 },
+  hidden: { display: 'none' },
   root: { flex: 1, backgroundColor: GROUND },
   // Black, not SUNKEN: this is the area a camera image fills, and any tint behind
   // it shows at the letterbox edges as a colour cast on the footage.

@@ -53,7 +53,7 @@ import {
 } from '../video/clips';
 import { acceptRecording } from '../video/capture';
 import { describeClip } from '../video/storage';
-import { filmstrip, probeGridAround, probeToResolve, waitForClip, type Tile } from '../video/frames';
+import { filmstrip, loadClipInto, probeGridAround, probeToResolve, type Tile } from '../video/frames';
 import {
   acceptForTiming,
   BODY_PART_BIAS_MS,
@@ -314,7 +314,6 @@ export default function VideoMarkScreen({
       setGrid(emptyGrid());
       setTiles([]);
       setRefused(null);
-      await player.replaceAsync(c.uri);
       setBusy('Reading the clip…');
       // WAIT for the tracks, do not assume a duration.
       //
@@ -325,10 +324,15 @@ export default function VideoMarkScreen({
       // duration afterwards, because it is a property of a mutable player object
       // that React has no reason to re-render for, so the screen stays dead until
       // the clip is loaded again.
-      // BOTH facts, not just the length. See waitForClip: duration arrives first,
-      // and reading the frame rate before the track exists silently seeds every
-      // probe on this clip at 30fps.
-      const { durationSec: d, frameDurSec: dur, tracked } = await waitForClip(player, DURATION_TIMEOUT_MS);
+      // ITS length and ITS rate, not the previous clip's. loadClipInto clears the
+      // source and confirms the clear before reading anything, because replaceAsync
+      // resolves before duration and videoTrack catch up — which is what put a 7
+      // second duration on a 0.7s recording and seeded the probe one rate low.
+      const { durationSec: d, frameDurSec: dur, tracked } = await loadClipInto(
+        player,
+        c.uri,
+        DURATION_TIMEOUT_MS,
+      );
       setFrameDur(dur);
       setActive('start');
       if (!d) {
