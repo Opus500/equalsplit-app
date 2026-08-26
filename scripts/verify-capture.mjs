@@ -234,8 +234,23 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // But a verdict and a failed attempt are not states, and must survive a drag.
   truthy('while a layer 3 refusal is never suppressed', /refused \?\?[\s\S]{0,40}settleNote \?\?/.test(mark));
   // WIDEN, NOT SNAP: the settle measures the missing successor rather than moving
-  // the coach's mark to a frame that already has one.
-  truthy('and the settle widens rather than merely probing', /probeToResolve\(player, live\.current\.grid/.test(mark));
+  // the coach's mark to a frame that already has one. resolveMarks calls
+  // probeToResolve for each mark, so widening is still what happens.
+  //
+  // BOTH MARKS, which is the part that was actually broken. A settle probed only the
+  // handle just released, so a mark stranded by an earlier settle was never looked at
+  // again — every later settle reported resolved:true while Keep stayed disabled and
+  // the readout sat on SNAPPING. Pinned as a call site rather than a count, because
+  // the failure mode is a probe aimed at one mark, and a count cannot see aim.
+  truthy('and the settle resolves BOTH marks, not just the moved one',
+    /resolveMarks\(player, live\.current\.grid, seconds, other, live\.current\.frameDur\)/.test(mark));
+  truthy('with the other mark being the handle NOT moved',
+    /which === 'start' \? live\.current\.finishAt : live\.current\.startAt/.test(mark));
+  // And the perf line must call it UNRESOLVED when EITHER mark failed. Reporting only
+  // the moved one is what made "N=18, no UNRESOLVED, cannot time the clip" look like
+  // a contradiction for three rounds.
+  truthy('and UNRESOLVED covers both marks',
+    /r\.movedResolved && r\.otherResolved \? '' : ' · UNRESOLVED'/.test(mark));
 
   // ONE LOCK OVER THE PLAYER. A crash report showed an Expo Modules promise being
   // destroyed with a null dereference while this screen could have up to eighteen
@@ -250,7 +265,12 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   truthy('the chain cannot inherit a rejection', /playerLock\.current = run\.then\(/.test(mark));
   truthy('loading a clip takes it', /withPlayer\(async \(\) => \{/.test(mark));
   truthy('settling takes it', /return await withPlayer\(async \(\) => \{/.test(mark));
-  truthy('and stepping takes it', /withPlayer\(\(\) => probeToResolve\(player, g, at, fd\)\)/.test(mark));
+  truthy('and stepping takes it', /withPlayer\(\(\) => resolveMarks\(player, g, at, otherAt, fd\)\)/.test(mark));
+  // Stepping resolves both marks too. The arrows are how the last one-frame
+  // adjustment gets made, so this is exactly when the readout has to be able to
+  // clear — leaving the other mark stranded here is the same bug in the same screen.
+  truthy('and stepping resolves the other mark as well',
+    /const otherAt = which === 'start' \? f : s;/.test(mark));
   // The footage survives either way; only the time was refused.
   truthy('with a way out that asks before deleting', /Keep the video\?/.test(mark));
 }

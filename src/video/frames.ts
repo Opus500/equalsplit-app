@@ -272,6 +272,88 @@ export async function probeToResolve(
 }
 
 /**
+ * Resolve the mark that just moved, and then the one that did NOT.
+ *
+ * THE BUG THIS EXISTS FOR, and it is the reason three previous fixes each moved the
+ * symptom instead of removing it.
+ *
+ * A settle probes ONE position: the handle the coach just let go of. If some other
+ * settle earlier in the session left the OTHER mark unresolvable — a failed
+ * extraction, a hole probeToResolve could not reach past — nothing ever looks at it
+ * again. The coach can drag the first handle twenty more times and every one of those
+ * settles reports `resolved: true` after a full probe, because it is reporting on the
+ * mark under their finger. Meanwhile `timing` is null, Keep stays disabled, and the
+ * readout sits on SNAPPING with the diagnostic insisting everything resolved.
+ *
+ * That is exactly the device signature: `probe 239ms/18 start:ok finish:NULL`. A full
+ * eighteen-call probe, no UNRESOLVED, and a mark that cannot be timed. The probe was
+ * never aimed at the mark that was failing.
+ *
+ * Reproduced offline against a player with a 5% unreadable-frame rate: one settle
+ * comes back `resolved: false` and strands a mark, and every settle after it on the
+ * other handle reads `res=true, other NULL` until the coach happens to touch the
+ * stranded handle again. It recovers only by luck.
+ *
+ * WHY IT SURFACED WHEN THE SEED WAS FIXED. `framesEitherSide` is a count of FRAMES,
+ * so a window's width in SECONDS is proportional to frameDurSec. While loadClipInto
+ * was reading the previous clip's rate, the seed was one rate too coarse (or the 1/30
+ * fallback), and every probed window was two to eight times wider in seconds than it
+ * should have been. Wide windows from separate settles overlap and merge, so a hole
+ * left by a failed extraction was almost always covered by a neighbouring window's
+ * frames and markAt found a successor anyway. Measured on one clip, same failures,
+ * same drags, varying only the seed: 1/240 gives a 61ms mean window and 5 of 20
+ * settles show a NULL mark; 1/120 gives 498ms and 0 of 20; 1/30 gives 955ms and 0 of
+ * 20. The stale seed was not preventing this bug, it was hiding it.
+ *
+ * The second probe costs NOTHING on the happy path — markAt is an array scan, and it
+ * is only when the other mark is genuinely unresolvable that an extraction is spent.
+ *
+ * `movedResolved` is recomputed from the FINAL grid rather than carried over from the
+ * first probe, so the flag always describes the grid actually handed back. That is a
+ * consistency choice and NOT a guard against a real hazard: the guard it was first
+ * written as claimed that adding frames can unresolve a mark, and that claim is
+ * false. A mutation replacing the recompute with the carried-over answer survived the
+ * whole suite, which was the correct signal — a randomised search over 73,213 grids
+ * where a mark resolved found no ingest that made it stop. Windows merge and only
+ * ever grow, so a nearer frame is always inside a window that already reaches its
+ * successor. Written down because the next person to see two ways of computing the
+ * same flag deserves to know they agree, rather than inventing a reason they might
+ * not.
+ */
+export async function resolveMarks(
+  player: VideoPlayer,
+  grid: FrameGrid,
+  moved: number,
+  other: number,
+  frameDurSec: number,
+): Promise<{
+  grid: FrameGrid;
+  ms: number;
+  calls: number;
+  movedResolved: boolean;
+  otherResolved: boolean;
+}> {
+  const a = await probeToResolve(player, grid, moved, frameDurSec);
+  if (markAt(a.grid, other)) {
+    return {
+      grid: a.grid,
+      ms: a.ms,
+      calls: a.calls,
+      movedResolved: a.resolved,
+      otherResolved: true,
+    };
+  }
+  const b = await probeToResolve(player, a.grid, other, frameDurSec);
+  return {
+    grid: b.grid,
+    ms: a.ms + b.ms,
+    calls: a.calls + b.calls,
+    movedResolved: markAt(b.grid, moved) !== null,
+    otherResolved: b.resolved,
+  };
+}
+
+/**
  * Tiles for a filmstrip covering [from, to].
  *
  * Only ever asked for the VISIBLE window. Clips are uncapped, and a ten-minute

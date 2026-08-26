@@ -57,7 +57,7 @@ const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble
 // The REAL probe path. frames.ts imports expo-video for types only, so it loads
 // standalone — which is what lets block 11h drive it against a fake decoder rather
 // than reasoning about what it would do.
-const { probeGridAround, probeToResolve, loadClipInto } = await import('../src/video/frames.ts');
+const { probeGridAround, probeToResolve, resolveMarks, loadClipInto } = await import('../src/video/frames.ts');
 // The real grouping path — the ONLY thing that groups anything, now that
 // timing.ts's callerless seriesKey() copy of the rule is gone.
 const { buildProgression, seriesUid, sourceGroup } = await import('../src/roster/progression.ts');
@@ -1208,6 +1208,104 @@ console.log('\n18. A CLIP REPORTS ITS OWN LENGTH AND RATE, NOT THE LAST ONE\'S')
   const gaps = [...hit].sort((a, b) => a - b).slice(1).map((f, i) => f - [...hit].sort((a, b) => a - b)[i]);
   truthy('a 1/30 seed on a 60fps clip only ever finds 30fps spacing',
     gaps.every((g) => Math.abs(g - 1 / 30) < 1e-6));
+}
+
+console.log('\n19. A SETTLE RESOLVES THE MARK NOBODY IS TOUCHING');
+{
+  // THE DEVICE SIGNATURE THIS EXISTS FOR: `probe 239ms/18 start:ok finish:NULL`.
+  //
+  // Eighteen calls, no UNRESOLVED, and a clip that cannot be timed. Three fixes each
+  // moved that symptom without removing it, because all three were aimed at the wrong
+  // question. The probe was not failing. It was never pointed at the failing mark.
+  //
+  // A settle probes ONE position — the handle just released. A mark stranded by some
+  // earlier settle is never examined again, so every later settle on the other handle
+  // truthfully reports resolved:true while Keep stays disabled and the readout sits
+  // on SNAPPING. Recovery was by luck: the coach had to happen to drag the stranded
+  // handle.
+  //
+  // A decoder that will not return one particular frame, which is what leaves the
+  // hole in the first place.
+  const D = 1 / 30;
+  const holeAt = (bad) => ({
+    duration: 6,
+    async generateThumbnailsAsync(times) {
+      const out = [];
+      for (const t of times) {
+        if (t < 0 || t >= 6) continue;
+        const i = Math.floor(t / D + 1e-9);
+        if (bad.has(i)) continue;
+        out.push({ actualTime: Number((i * D).toFixed(6)) });
+      }
+      return out;
+    },
+  });
+
+  // A grid with the finish mark stranded: covered, but with no frame that has a
+  // measured successor at that position.
+  const stranded = { frames: [], windows: [{ from: 0, to: 0.4 }, { from: 3.0, to: 3.4 }] };
+  for (let i = 0; i * D <= 0.4 + 1e-9; i += 1) stranded.frames.push(Number((i * D).toFixed(6)));
+  stranded.frames.push(3.0);
+  const startPos = stranded.frames[2];
+  const finishPos = 3.0;
+
+  truthy('the mark under the finger resolves', !!markAt(stranded, startPos));
+  check('the OTHER mark does not', markAt(stranded, finishPos), null);
+
+  // What the old one-mark settle did. probeToResolve is still exported and still
+  // right for what it does; the point is what it leaves behind.
+  const oneMark = await probeToResolve(holeAt(new Set()), stranded, startPos, D);
+  check('a one-mark settle calls it resolved', oneMark.resolved, true);
+  check('while the other mark is still unresolvable', markAt(oneMark.grid, finishPos), null);
+  // Which is the lie exactly: a settle that reports success and leaves the screen
+  // unable to time the clip.
+
+  const both = await resolveMarks(holeAt(new Set()), stranded, startPos, finishPos, D);
+  check('resolveMarks resolves the moved mark', both.movedResolved, true);
+  check('AND the one nobody touched', both.otherResolved, true);
+  truthy('the stranded mark now reads back', !!markAt(both.grid, finishPos));
+  truthy('and the moved mark still does', !!markAt(both.grid, startPos));
+
+  // NEITHER MARK MOVED. Repairing by relocating a handle would hide the gap rather
+  // than fill it, and would change the time the coach recorded without saying so.
+  check('the finish mark is at the timestamp it was already on', markAt(both.grid, finishPos).pts, finishPos);
+  truthy('with a MEASURED duration', Math.abs(markAt(both.grid, finishPos).frameDurSec - D) < 1e-6);
+
+  // FREE WHEN THERE IS NOTHING TO REPAIR. The second probe must cost no extractions
+  // on the happy path, or every settle in an ordinary session pays for a rescue that
+  // is not needed. markAt is a pure array scan; that is the whole reason this is
+  // affordable.
+  //
+  // Stated as a COMPARISON against the one-mark probe on the same grid, not as an
+  // absolute call count. An absolute count silently folds in whatever the moved
+  // mark's own probe cost, and the first version of this assertion did exactly that
+  // and failed at 12 — a number that was entirely the moved mark's, and said nothing
+  // about the second one.
+  const healthy = { frames: [], windows: [{ from: 0, to: 1.0 }] };
+  for (let i = 0; i * D <= 1.0 + 1e-9; i += 1) healthy.frames.push(Number((i * D).toFixed(6)));
+  //
+  // The other mark is deliberately placed where a probe WOULD cost extractions if one
+  // ran — resolvable, but close enough to the window edge that spanCovered is false.
+  // The first version of this put it in the middle of the window, where a probe
+  // early-exits at zero calls anyway, so "costs nothing" was true whether the skip
+  // worked or not. A mutation that removed the skip entirely passed it.
+  const movedAt = healthy.frames[8];
+  const otherAt = healthy.frames[28];
+  const wouldCost = await probeToResolve(holeAt(new Set()), healthy, otherAt, D);
+  truthy('probing the other mark would not be free', wouldCost.calls > 0);
+  const alone = await probeToResolve(holeAt(new Set()), healthy, movedAt, D);
+  truthy('a healthy pair needs no probing at all', alone.calls === 0);
+  const cheap = await resolveMarks(holeAt(new Set()), healthy, movedAt, otherAt, D);
+  check('and resolving BOTH costs exactly what resolving one did', cheap.calls, alone.calls);
+  check('and both are reported resolved', cheap.movedResolved && cheap.otherResolved, true);
+
+  // HONEST WHEN IT CANNOT. A frame the decoder will not hand back stays unreadable,
+  // and the answer is to SAY so — this is what puts UNRESOLVED on the perf line and
+  // the "will not read back" message on screen, instead of a silent SNAPPING.
+  const dead = { duration: 6, async generateThumbnailsAsync() { return []; } };
+  const cannot = await resolveMarks(dead, stranded, startPos, finishPos, D);
+  check('an unreadable region is reported, not hidden', cannot.otherResolved, false);
+  truthy('after a bounded number of calls', cannot.calls > 0 && cannot.calls <= 8);
 }
 
 console.log(

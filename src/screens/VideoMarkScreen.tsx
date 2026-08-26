@@ -53,7 +53,7 @@ import {
 } from '../video/clips';
 import { acceptRecording } from '../video/capture';
 import { describeClip } from '../video/storage';
-import { filmstrip, loadClipInto, probeGridAround, probeToResolve, type Tile } from '../video/frames';
+import { filmstrip, loadClipInto, probeGridAround, resolveMarks, type Tile } from '../video/frames';
 import {
   acceptForTiming,
   BODY_PART_BIAS_MS,
@@ -558,7 +558,7 @@ export default function VideoMarkScreen({
   const [settling, setSettling] = useState(false);
 
   const settleAt = useCallback(
-    async (seconds: number) => {
+    async (which: Which, seconds: number) => {
       if (!clip) return;
       setSettling(true);
       try {
@@ -569,12 +569,20 @@ export default function VideoMarkScreen({
         // BOUNDED. Nothing here used to be, so a probe that never came back left the
         // readout on SNAPPING with no way out but reloading the clip — and no way to
         // tell that from a mark that simply had not resolved.
-        // probeToResolve, not probeGridAround: if the mark lands on the last frame
-        // of its window it has no measured successor, and the answer is to go and
-        // measure one rather than to ask the coach to nudge the handle. See the note
-        // there on why this widens instead of snapping.
+        // BOTH MARKS, not just the one that moved. A settle used to probe only the
+        // handle the coach let go of, so a mark stranded by an earlier settle was
+        // never looked at again — and every settle after it reported resolved:true
+        // while Keep stayed disabled. See resolveMarks. The other mark costs nothing
+        // unless it is actually unresolvable.
+        //
+        // resolveMarks calls probeToResolve rather than probeGridAround: if a mark
+        // lands on the last frame of its window it has no measured successor, and the
+        // answer is to go and measure one rather than to ask the coach to nudge the
+        // handle. See the note there on why this widens instead of snapping.
+        const other =
+          which === 'start' ? live.current.finishAt : live.current.startAt;
         const out = await withDeadline(
-          probeToResolve(player, live.current.grid, seconds, live.current.frameDur),
+          resolveMarks(player, live.current.grid, seconds, other, live.current.frameDur),
           PROBE_TIMEOUT_MS,
         );
         if (!out.ok) {
@@ -595,12 +603,12 @@ export default function VideoMarkScreen({
         player.currentTime = m ? seekTimeFor(m) : seconds;
         const d = dragSeeks.current;
         setSettleNote(null);
-        // BOTH MARKS, because `resolved` only ever described the handle just let go
-        // of — and that one is almost always fine. A settle can report resolved:true
-        // while the OTHER mark sits unresolvable, which is exactly the state that
-        // shows SNAPPING, and the diagnostic printed nothing about it. Reported on
-        // device as "N=18 and no UNRESOLVED": the probe ran in full, the dragged
-        // handle resolved, and the readout still would not clear.
+        // BOTH MARKS, because a single flag only ever described the handle just let
+        // go of — and that one is almost always fine. This is what "N=18 and no
+        // UNRESOLVED" turned out to mean on device: the probe ran in full, the
+        // dragged handle resolved, and the readout still would not clear because the
+        // OTHER mark was the broken one. Kept now that resolveMarks probes both, so
+        // the next report of this says which mark survived a probe aimed at it.
         const both =
           `start:${markAt(r.grid, live.current.startAt) ? 'ok' : 'NULL'}` +
           ` finish:${markAt(r.grid, live.current.finishAt) ? 'ok' : 'NULL'}`;
@@ -611,7 +619,7 @@ export default function VideoMarkScreen({
         // real thing means polling for the readback, which costs more than the
         // figure is worth, so it is labelled honestly instead of measured badly.
         setPerf(
-          `probe ${r.ms}ms/${r.calls}${r.resolved ? '' : ' · UNRESOLVED'} · ${both}` +
+          `probe ${r.ms}ms/${r.calls}${r.movedResolved && r.otherResolved ? '' : ' · UNRESOLVED'} · ${both}` +
             ` · seek issued ${Date.now() - t0}ms` +
             (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
         );
@@ -754,7 +762,7 @@ export default function VideoMarkScreen({
         // would silently make every later seek land on the wrong frame.
         player.scrubbingModeOptions = { scrubbingModeEnabled: false };
         player.seekTolerance = { toleranceBefore: 0, toleranceAfter: 0 };
-        void settleAt(which === 'start' ? live.current.startAt : live.current.finishAt);
+        void settleAt(which, which === 'start' ? live.current.startAt : live.current.finishAt);
       },
       // A terminate still has to restore the player, or a gesture stolen by the
       // system would leave loose tolerances behind for good.
@@ -799,8 +807,13 @@ export default function VideoMarkScreen({
         // Bounded for the same reason as settleAt, and it matters more here: this
         // loop holds `stepping.current`, so a probe that never returns would leave
         // the arrows dead for the life of the screen as well as the readout stuck.
+        // Both marks here too, for the same reason as settleAt: stepping one handle
+        // must not leave the other stranded and unexamined for the life of the
+        // screen. The arrows are how a coach makes the final one-frame adjustment,
+        // so this is precisely when the readout needs to be able to clear.
+        const otherAt = which === 'start' ? f : s;
         const out = await withDeadline(
-          withPlayer(() => probeToResolve(player, g, at, fd)),
+          withPlayer(() => resolveMarks(player, g, at, otherAt, fd)),
           PROBE_TIMEOUT_MS,
         );
         if (!out.ok) {
