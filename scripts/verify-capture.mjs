@@ -252,6 +252,49 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   truthy('and UNRESOLVED covers both marks',
     /r\.movedResolved && r\.otherResolved \? '' : ' · UNRESOLVED'/.test(mark));
 
+  // THE REF IS LOAD-BEARING, and only one of the two ways to move a mark knew it.
+  //
+  // live.current is rebuilt during render, so it holds what React last committed. A
+  // move runs at continuous priority and its render is scheduled; the release that
+  // follows is discrete and runs first. So the release could hand settleAt a position
+  // one or more moves behind the finger, and the probe would resolve a point nobody
+  // is looking at while the mark on screen sat in unprobed clip and read NULL.
+  //
+  // drainSteps has written the ref alongside the state since it was written, with a
+  // comment giving this exact reason. The drag path did not. Asserted for BOTH
+  // handles, because writing one and not the other is the same bug half-fixed.
+  truthy('a start drag writes the ref, not just the state',
+    /setStartAt\(clamped\);[\s\S]{0,60}live\.current\.startAt = clamped;/.test(mark));
+  truthy('and a finish drag does too',
+    /setFinishAt\(clamped\);[\s\S]{0,60}live\.current\.finishAt = clamped;/.test(mark));
+
+  // AIM DRIFT, PRINTED. If the position probed and the position displayed ever come
+  // apart again, that has to be visible as itself rather than as an apparent decode
+  // failure — a full probe, a resolved answer, and a mark that will not read back.
+  truthy('the perf line compares what was probed with what is shown',
+    /DRIFT \$\{driftMs\.toFixed\(0\)\}ms/.test(mark));
+  // AND WHETHER THE RESCUE RAN. "Probed the other mark and it is still unreadable"
+  // and "never probed the other mark" are different bugs with the same symptom.
+  // From the two POSITIONS, not from a constant. A mutation replacing the
+  // subtraction with 0 passed a guard that only looked for the word DRIFT.
+  truthy('and computes the drift from both of them',
+    /const driftMs = Math\.abs\(showing - seconds\) \* 1000;/.test(mark));
+  truthy('and says whether the other mark was probed', /r\.probedOther/.test(mark));
+  truthy('distinguishing a rescue that ran and failed', /rescue:probed, STILL NULL/.test(mark));
+  truthy('from one that was never needed', /rescue:not needed/.test(mark));
+
+  // A FINISHED SETTLE IS NOT "NOT YET". whyNotTimeable is suppressed while dragging
+  // or settling, which left a settle that ended with an unreadable mark showing
+  // nothing at all — a silent SNAPPING, waiting for a quiet moment that a
+  // repeatedly-nudged handle never gives it. settleNote is not suppressed, and a
+  // completed attempt is exactly what it describes.
+  truthy('a completed settle records why a mark is still unreadable',
+    /const why = whyNotTimeable\([\s\S]{0,260}setSettleNote\(why\);/.test(mark));
+  // Which then has to be cleared when a new attempt starts, or a mark that resolved
+  // would keep wearing the failure before it.
+  truthy('and a new drag clears it',
+    /dragSeeks\.current = \{ n: 0[\s\S]{0,340}setSettleNote\(null\);/.test(mark));
+
   // ONE LOCK OVER THE PLAYER. A crash report showed an Expo Modules promise being
   // destroyed with a null dereference while this screen could have up to eighteen
   // thumbnail promises outstanding AND a replaceAsync swapping the source underneath

@@ -1263,6 +1263,10 @@ console.log('\n19. A SETTLE RESOLVES THE MARK NOBODY IS TOUCHING');
   const both = await resolveMarks(holeAt(new Set()), stranded, startPos, finishPos, D);
   check('resolveMarks resolves the moved mark', both.movedResolved, true);
   check('AND the one nobody touched', both.otherResolved, true);
+  // AND SAYS THAT IT WENT AND LOOKED. On device, "the mark is still NULL" was
+  // indistinguishable from "the rescue never ran", and the only way to tell was to
+  // count calls and reason about it. The answer is reported instead.
+  check('reporting that it actually probed the other mark', both.probedOther, true);
   truthy('the stranded mark now reads back', !!markAt(both.grid, finishPos));
   truthy('and the moved mark still does', !!markAt(both.grid, startPos));
 
@@ -1297,6 +1301,7 @@ console.log('\n19. A SETTLE RESOLVES THE MARK NOBODY IS TOUCHING');
   truthy('a healthy pair needs no probing at all', alone.calls === 0);
   const cheap = await resolveMarks(holeAt(new Set()), healthy, movedAt, otherAt, D);
   check('and resolving BOTH costs exactly what resolving one did', cheap.calls, alone.calls);
+  check('because it never probed the other mark', cheap.probedOther, false);
   check('and both are reported resolved', cheap.movedResolved && cheap.otherResolved, true);
 
   // HONEST WHEN IT CANNOT. A frame the decoder will not hand back stays unreadable,

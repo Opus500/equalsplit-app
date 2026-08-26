@@ -332,6 +332,15 @@ export async function resolveMarks(
   calls: number;
   movedResolved: boolean;
   otherResolved: boolean;
+  /**
+   * Whether the other mark was actually PROBED.
+   *
+   * Reported because "probed it and it is still unreadable" and "never probed it"
+   * are different bugs that look identical on screen, and the perf line could not
+   * tell them apart. Asked for by name after a device run where a mark stayed NULL
+   * with no way to know whether the rescue had even run.
+   */
+  probedOther: boolean;
 }> {
   const a = await probeToResolve(player, grid, moved, frameDurSec);
   if (markAt(a.grid, other)) {
@@ -341,6 +350,7 @@ export async function resolveMarks(
       calls: a.calls,
       movedResolved: a.resolved,
       otherResolved: true,
+      probedOther: false,
     };
   }
   const b = await probeToResolve(player, a.grid, other, frameDurSec);
@@ -350,6 +360,7 @@ export async function resolveMarks(
     calls: a.calls + b.calls,
     movedResolved: markAt(b.grid, moved) !== null,
     otherResolved: b.resolved,
+    probedOther: true,
   };
 }
 

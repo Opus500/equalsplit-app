@@ -602,7 +602,45 @@ export default function VideoMarkScreen({
         // representation and can show the frame before.
         player.currentTime = m ? seekTimeFor(m) : seconds;
         const d = dragSeeks.current;
-        setSettleNote(null);
+
+        // WHAT THE HANDLE SHOWS versus WHAT WAS PROBED. A settle aims at the position
+        // it was handed; the screen times the position in state. Those are the same
+        // number only if the ref was current when the finger lifted, and when they
+        // are not, everything downstream looks like a decode failure: a full probe, a
+        // resolved answer, and a mark on screen that will not read back. Printed so
+        // that stops being invisible — if `aim` ever shows a drift, it is this and
+        // not the clip.
+        const showing = which === 'start' ? live.current.startAt : live.current.finishAt;
+        const driftMs = Math.abs(showing - seconds) * 1000;
+        const aim =
+          driftMs < 0.5
+            ? `aim ${which} ${seconds.toFixed(3)}`
+            : `aim ${which} ${seconds.toFixed(3)} · SHOWING ${showing.toFixed(3)} · DRIFT ${driftMs.toFixed(0)}ms`;
+
+        // DID THE RESCUE RUN, AND WHAT DID IT DO. "Probed the other mark and it is
+        // still unreadable" and "never probed the other mark" are different bugs
+        // wearing the same symptom, and the line could not tell them apart.
+        const rescue = !r.probedOther
+          ? 'rescue:not needed'
+          : r.otherResolved
+            ? 'rescue:probed, fixed'
+            : 'rescue:probed, STILL NULL';
+
+        // SAY IT WHEN THE SETTLE ENDS, not only once every state settles down.
+        //
+        // whyNotTimeable is suppressed while dragging or settling, because mid-drag a
+        // mark is un-resolved rather than unresolvable. But a settle that has just
+        // FINISHED with a mark still unreadable is no longer "not yet" — it is a fact
+        // about the attempt, which is what settleNote carries and why settleNote is
+        // not suppressed. Without this the screen sat on a silent SNAPPING: the state
+        // message was waiting for a quiet moment that a repeatedly-nudged handle
+        // never gives it.
+        const why = whyNotTimeable({
+          frameCount: r.grid.frames.length,
+          startResolved: !!markAt(r.grid, live.current.startAt),
+          finishResolved: !!markAt(r.grid, live.current.finishAt),
+        });
+        setSettleNote(why);
         // BOTH MARKS, because a single flag only ever described the handle just let
         // go of — and that one is almost always fine. This is what "N=18 and no
         // UNRESOLVED" turned out to mean on device: the probe ran in full, the
@@ -620,6 +658,7 @@ export default function VideoMarkScreen({
         // figure is worth, so it is labelled honestly instead of measured badly.
         setPerf(
           `probe ${r.ms}ms/${r.calls}${r.movedResolved && r.otherResolved ? '' : ' · UNRESOLVED'} · ${both}` +
+            ` · moved:${r.movedResolved ? 'ok' : 'NULL'} · ${aim} · ${rescue}` +
             ` · seek issued ${Date.now() - t0}ms` +
             (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
         );
@@ -703,6 +742,11 @@ export default function VideoMarkScreen({
         // compounds, and is why a 20pt drag crossed most of the strip.
         dragBase.current = which === 'start' ? live.current.startAt : live.current.finishAt;
         dragSeeks.current = { n: 0, ms: 0, lastAt: 0, lastT: -1 };
+        // A note describes the LAST attempt, and touching a handle starts a new one.
+        // It is deliberately not suppressed while dragging — see keepBlocked — so it
+        // has to be cleared here or a resolved mark would keep wearing the failure
+        // that preceded it.
+        setSettleNote(null);
         // Touching a handle also makes it the one the arrows drive — otherwise the
         // coach drags one mark and then nudges the other.
         setActive(which);
@@ -739,8 +783,34 @@ export default function VideoMarkScreen({
           which === 'start'
             ? Math.min(next, live.current.finishAt - frameDur)
             : Math.max(next, live.current.startAt + frameDur);
-        if (which === 'start') setStartAt(clamped);
-        else setFinishAt(clamped);
+        // BOTH the state AND the ref, and the ref is the part that was missing.
+        //
+        // `live.current` is rebuilt during RENDER, so it holds the last value React
+        // committed — not the last value this handler produced. A move runs at
+        // continuous priority and its render is scheduled, not immediate; the release
+        // that follows is a discrete event and runs its handler first. So
+        // onPanResponderRelease could read a position one or more moves behind the
+        // finger, and settleAt then probed THAT position while the screen displayed,
+        // and timed, the one in state. The probe lands in the right shape at the
+        // wrong place: `resolved: true` for a point nobody is looking at, and the
+        // mark the coach can actually see sits in unprobed clip and reads NULL.
+        //
+        // drainSteps has written the ref alongside the state since it was written,
+        // with a comment giving this exact reason. The drag path has the same hazard
+        // and never did — the two ways of moving a mark disagreed about whether the
+        // ref is load-bearing, and only one of them was right.
+        //
+        // Why it went unseen until the seed was fixed: a probe window is a fixed
+        // number of FRAMES, so at the old too-coarse seed it spanned 500-950ms of
+        // clip and comfortably contained both positions. At a correct 240fps seed it
+        // spans about 33ms, which one frame of fast finger travel clears easily.
+        if (which === 'start') {
+          setStartAt(clamped);
+          live.current.startAt = clamped;
+        } else {
+          setFinishAt(clamped);
+          live.current.finishAt = clamped;
+        }
 
         // Two gates before seeking. Time-based so the decoder is never asked for
         // more than ~16 seeks a second, and frame-based so a move that has not
