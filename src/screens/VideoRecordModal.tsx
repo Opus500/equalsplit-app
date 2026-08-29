@@ -157,6 +157,20 @@ export function VideoRecordModal({
   /** Set when the coach cancels mid-recording, so the finish callback throws the
    *  file away instead of handing back a rep nobody wants. */
   const abandoned = useRef(false);
+  /**
+   * A start already in flight, as a REF rather than as state.
+   *
+   * `recording` is state and is set after `await createRecorder(...)`, so two presses
+   * inside that window both pass the state guard: two native recorders are created,
+   * the second overwrites `recorder.current`, and the first is never stopped, never
+   * cancelled and never referenced again. Its clip directory leaks with it, because
+   * `clipId.current` is overwritten too.
+   *
+   * That is the same shape as the crash this screen already carries a fix for — a
+   * native object created and dropped for the GC to find on a background thread. A ref
+   * set synchronously before the first await is the only guard that closes the window.
+   */
+  const starting = useRef(false);
 
   // Space, checked when the sheet opens so a refusal is visible BEFORE the athlete
   // is on the line — and checked again on the press, because the answer is only true
@@ -205,6 +219,13 @@ export function VideoRecordModal({
 
   const finish = useCallback(
     (reason: RecordingEnd) => {
+      // FIRST, and unconditionally, so every createRecorder in the log has exactly one
+      // counterpart. Reading a run of four createRecorder lines against one `session
+      // stopped` was what raised the leak question — and those two are not a pair at
+      // all: `session stopped` is the CAPTURE SESSION ending when the sheet closes,
+      // not a recording finishing. With this line the question is answerable from the
+      // log rather than from reading the source.
+      logEvent('CAMERA', `recorder released (${reason})`);
       const id = clipId.current;
       const stoppedAt = stoppedAtSeconds.current;
       stoppedAtSeconds.current = null;
@@ -268,7 +289,9 @@ export function VideoRecordModal({
   );
 
   const start = useCallback(async () => {
-    if (recording || !videoOutput || !device) return;
+    // starting.current, not just `recording`. See the ref — the state flag lands after
+    // two awaits and cannot keep a second press out of the window.
+    if (recording || starting.current || !videoOutput || !device) return;
 
     // LAYER 1 AND LAYER 2, before the rep. Refused, not warned: a rate that was
     // negotiated away produces a plausible time that is wrong by the ratio, and the
@@ -291,7 +314,13 @@ export function VideoRecordModal({
     const { id, path } = newRecordingTarget();
     clipId.current = id;
     abandoned.current = false;
+    starting.current = true;
 
+    // Held outside the try so a failure can TEAR IT DOWN. Dropping the reference is
+    // not the same as releasing the object: createRecorder can succeed and
+    // startRecording still throw, and setting recorder.current = null then leaves a
+    // live native recorder with nothing pointing at it.
+    let rec: Recorder | null = null;
     try {
       // BOTH BOUNDS ARE THE RECORDER'S, not ours. maxDuration is the safety rail and
       // maxFileSize is the budget cut from measured free space; either one ending the
@@ -299,7 +328,7 @@ export function VideoRecordModal({
       // phone would not say how much space is free — see storage.ts on why that is a
       // warning here and a refusal in capture.ts.
       logEvent('CAMERA', `createRecorder at ${target}fps, session reported ${settledFps ?? 'nothing'}`);
-      const rec = await videoOutput.createRecorder({
+      rec = await videoOutput.createRecorder({
         filePath: path,
         maxDuration: MAX_CLIP_MS / 1000,
         ...(now.budgetBytes !== null ? { maxFileSize: now.budgetBytes } : {}),
@@ -311,9 +340,13 @@ export function VideoRecordModal({
       await rec.startRecording(
         (_filePath, reason) => finish(reason as RecordingEnd),
         (err) => {
+          logEvent('CAMERA', `recorder failed, cancelling: ${String(err)}`);
+          const dead = recorder.current;
           clipId.current = null;
           recorder.current = null;
           setRecording(false);
+          // CANCELLED, not just forgotten. Same reason as the catch below.
+          dead?.cancelRecording().catch(() => {});
           discardRecording(id);
           Alert.alert('The recording failed', err instanceof Error ? err.message : String(err));
         },
@@ -322,8 +355,18 @@ export function VideoRecordModal({
       clipId.current = null;
       recorder.current = null;
       setRecording(false);
+      // THE RECORDER MAY EXIST EVEN THOUGH THE START FAILED. createRecorder can
+      // succeed and startRecording throw, and the old code dropped the reference
+      // without releasing the object — a native recorder with nothing pointing at it,
+      // waiting to be collected on whichever thread the GC runs on.
+      if (rec) {
+        logEvent('CAMERA', 'start failed after createRecorder — cancelling the recorder');
+        rec.cancelRecording().catch(() => {});
+      }
       discardRecording(id);
       Alert.alert('Could not start recording', e instanceof Error ? e.message : String(e));
+    } finally {
+      starting.current = false;
     }
   }, [recording, videoOutput, device, target, settledFps, finish]);
 

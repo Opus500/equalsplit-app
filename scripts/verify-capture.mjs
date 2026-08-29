@@ -164,7 +164,15 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   const rec = at('screens/VideoRecordModal.tsx');
   truthy('the camera screen asks acceptSession', /acceptSession\(target, device\.supportsFPS\(target\), settledFps\)/.test(rec));
   truthy('and refuses rather than warning', /if \(!verdict\.ok\)[\s\S]{0,120}return;/.test(rec));
-  truthy('before any recorder is created', rec.indexOf('acceptSession(') < rec.indexOf('createRecorder('));
+  // AGAINST THE CODE, not the file. This compared indexes in the raw source, so a
+  // COMMENT mentioning createRecorder() earlier in the file failed it — the same
+  // trap as the guards that once matched their own prose. Ordering claims have to
+  // read the code alone.
+  {
+    const only = code(join(SRC, 'screens', 'VideoRecordModal.tsx'));
+    truthy('before any recorder is created',
+      only.indexOf('acceptSession(') < only.indexOf('createRecorder('));
+  }
 
   // THE STALE-SESSION TRAP. Changing the rate renegotiates the session, and until it
   // reports again the previous answer describes a different configuration. Pairing

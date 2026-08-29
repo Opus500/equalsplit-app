@@ -253,6 +253,37 @@ console.log('\n9. BOTH BOUNDS REACH THE RECORDER, and no clock is invented');
   // enough, unreadable, or the recorder's elapsed time disagreeing with the file's.
   truthy('and says which value it read', /stop pressed, recorder says/.test(rec));
   truthy('and which way the decision went', /discarded as a tap/.test(rec));
+
+  // A NATIVE RECORDER MUST NOT BE MERELY FORGOTTEN. Same class as the crash this
+  // screen already carries a fix for: an object created and dropped for the GC to
+  // find on whichever thread it runs on.
+  //
+  // The re-entrancy guard has to be a REF, because `recording` is state set after
+  // `await createRecorder(...)` — two presses inside that window both pass a state
+  // guard, the second overwrites recorder.current, and the first is never stopped,
+  // never cancelled and never referenced again.
+  truthy('a second press cannot start a second recorder',
+    /if \(recording \|\| starting\.current \|\| !videoOutput/.test(rec));
+  truthy('with the guard taken before the first await',
+    /starting\.current = true;[\s\S]{0,400}createRecorder/.test(rec));
+  truthy('and released however it ends', /finally \{[\s\S]{0,60}starting\.current = false;/.test(rec));
+
+  // createRecorder can SUCCEED and startRecording still throw. Setting the ref to
+  // null then leaves a live native recorder with nothing pointing at it, so the
+  // handle is held outside the try and cancelled on the way out.
+  truthy('the recorder is held where a failure can reach it', /let rec: Recorder \| null = null;/.test(rec));
+  // ANCHORED ON THIS PATH'S OWN LINE. The first version matched `if (rec) {` plus a
+  // cancelRecording within 200 characters, which the INTERRUPTION path already
+  // satisfies — so it passed while the failure path forgot the recorder entirely.
+  // A mutation removing the cancel survived it, which is how it was found.
+  truthy('and is cancelled when the start throws',
+    /start failed after createRecorder[\s\S]{0,120}rec\.cancelRecording\(\)/.test(rec));
+  truthy('and when the recorder reports a failure',
+    /dead\?\.cancelRecording\(\)/.test(rec));
+
+  // ONE LINE PER RECORDER, so a run of createRecorder calls with no counterpart is
+  // visible in the log instead of needing the source to be read.
+  truthy('every recorder logs its release', /recorder released \(\$\{reason\}\)/.test(rec));
   truthy('and gates on that, not on a clock',
     /misTapNote\(stoppedAt \* 1000, reason\)/.test(rec));
   // A LENGTH THAT COULD NOT BE READ KEEPS THE CLIP. The default on a path that
