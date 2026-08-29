@@ -279,7 +279,7 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // markable range — so what has to be pinned is that the scale's range comes from
   // the grid, not that a separate Math.min does.
   truthy('the drag range is derived from the grid',
-    /stripScale\(w, HANDLE_W, markableEnd\(liveGrid, d, frameDur\)\)/.test(mark));
+    /stripScale\([\s\S]{0,40}w,[\s\S]{0,40}HANDLE_W,[\s\S]{0,60}markableStart\(liveGrid\),[\s\S]{0,80}markableEnd\(liveGrid, d, frameDur\)/.test(mark));
   // And the formula survives ONLY as the pre-grid seed, where there is no grid to
   // ask yet. Pinned so it cannot quietly come back as the drag rule.
   truthy('while the formula stays the load seed',
@@ -294,9 +294,23 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   truthy('and the drag converts back through it',
     /xToTime\(timeToX\(dragBase\.current, liveScale\) \+ g\.dx, liveScale\)/.test(mark));
   truthy('over the markable range, not the clip duration',
-    /stripScale\(stripW, HANDLE_W, markEnd\)/.test(mark));
+    /stripScale\(stripW, HANDLE_W, markStart, markEnd\)/.test(mark));
+  // BOTH ENDS. The first version spanned [0, markEnd], so a clip whose first frame
+  // has a timestamp above zero rendered a leading region no mark can resolve into —
+  // the same wall as the far end, left in place because only one end was looked at.
+  truthy('with the near end measured too', /markableStart\(grid\)/.test(mark));
+  // AND THE HANDLES START AT THE STRIP'S ENDS. Both used to be computed separately
+  // from the strip they are drawn on: the start from markAt(g, 0), which is time
+  // zero whether or not the first frame is there, and the finish from the formula
+  // the strip had stopped using. A handle that begins anywhere but the end of its
+  // own track leaves a sliver you can see, cannot start in, and can drag into.
+  truthy('the start handle initialises at the strip left edge',
+    /setStartAt\(markableStart\(g\)\);/.test(mark));
+  truthy('and the finish handle at the right edge',
+    /setFinishAt\(markableEnd\(g, d, dur\)\);/.test(mark));
+  check('neither is computed from the old formula', /setFinishAt\(markAt\(g, endAt\)/.test(mark), false);
   truthy('and the filmstrip is spread over the same range',
-    /filmstrip\(player, 0, markEnd, TILE_COUNT\)/.test(mark));
+    /filmstrip\(player, markStart, markEnd, TILE_COUNT\)/.test(mark));
   // No second end clamp beside the scale. xToTime cannot return a time outside the
   // markable range, and a clamp alongside it is a second opinion free to differ.
   check('the duration is no longer a display denominator', /\/ duration\) \*/.test(mark), false);

@@ -63,6 +63,7 @@ import {
   isVariableRate,
   lastMarkableTime,
   markableEnd,
+  markableStart,
   stripScale,
   timeToX,
   xToTime,
@@ -360,8 +361,16 @@ export default function VideoMarkScreen({
       g = (await probeGridAround(player, g, 0, dur)).grid;
       g = (await probeGridAround(player, g, endAt, dur)).grid;
       setGrid(g);
-      setStartAt(markAt(g, 0)?.pts ?? 0);
-      setFinishAt(markAt(g, endAt)?.pts ?? endAt);
+      // AT THE ENDS OF THE STRIP, which is now the same thing as the ends of the
+      // markable range. Both of these used to be computed separately from the strip
+      // they are drawn on, and both were wrong in the same way once the strip was
+      // rescaled: the start from `markAt(g, 0)`, which is time zero whether or not the
+      // clip's first frame is there, and the finish from lastMarkableTime, the formula
+      // the strip stopped using. A handle that initialises anywhere but the end of its
+      // own track leaves a sliver the coach can see, cannot start in, and can drag
+      // into — which is exactly how both were reported.
+      setStartAt(markableStart(g));
+      setFinishAt(markableEnd(g, d, dur));
       player.currentTime = dur / 2;
 
       // LAYER 3, against the frames that were just probed rather than against
@@ -532,11 +541,15 @@ export default function VideoMarkScreen({
    * Spanning the strip over what can be marked means the strip simply ends where the
    * marks do.
    */
+  const markStart = useMemo(() => markableStart(grid), [grid]);
   const markEnd = useMemo(
     () => markableEnd(grid, duration, frameDur),
     [grid, duration, frameDur],
   );
-  const scale = useMemo(() => stripScale(stripW, HANDLE_W, markEnd), [stripW, markEnd]);
+  const scale = useMemo(
+    () => stripScale(stripW, HANDLE_W, markStart, markEnd),
+    [stripW, markStart, markEnd],
+  );
 
 
   // Tiles for the whole clip. Cheap at this count, and rebuilt rather than cached:
@@ -553,7 +566,7 @@ export default function VideoMarkScreen({
     if (!clip || !duration || !grid.frames.length) return;
     let alive = true;
     setBusy('Building filmstrip…');
-    filmstrip(player, 0, markEnd, TILE_COUNT)
+    filmstrip(player, markStart, markEnd, TILE_COUNT)
       .then((t) => alive && setTiles(t))
       .catch(() => alive && setTiles([]))
       .finally(() => alive && setBusy(null));
@@ -563,7 +576,7 @@ export default function VideoMarkScreen({
     // markEnd, not duration: it is what the tiles are spread across. It is a number,
     // so a grid that grows without moving the clip's last frame leaves it untouched
     // and this does not re-run — which is every probe after the load.
-  }, [clip, duration, markEnd, grid.frames.length, player]);
+  }, [clip, duration, markStart, markEnd, grid.frames.length, player]);
 
   /** Probe the frame grid around a position, then seek to the frame it resolves to. */
   /**
@@ -797,7 +810,12 @@ export default function VideoMarkScreen({
         // `x()` is what let the two drift — the old drag divided by the full strip
         // width while `x()` divided by the handle's travel, so the handle lagged the
         // finger by the width of the handle.
-        const liveScale = stripScale(w, HANDLE_W, markableEnd(liveGrid, d, frameDur));
+        const liveScale = stripScale(
+          w,
+          HANDLE_W,
+          markableStart(liveGrid),
+          markableEnd(liveGrid, d, frameDur),
+        );
         let next = xToTime(timeToX(dragBase.current, liveScale) + g.dx, liveScale);
         // NOT Math.min(d, …). The last frame of a clip has no measured successor,
         // so its duration is unknown and markAt/stepFrames both refuse it — by
@@ -812,11 +830,12 @@ export default function VideoMarkScreen({
         // something you do by accident, and it surfaced on a slow-motion clip
         // because the stretched duration makes the drag many times more sensitive
         // in seconds per point — you hit the edge without meaning to.
-        // No separate end clamp: the scale's own range IS the markable range, and
-        // xToTime cannot return a time outside it. That is the second reason to route
-        // the drag through the mapping rather than alongside it — there is no longer a
-        // clamp that can disagree with the strip the coach is dragging on.
-        next = Math.max(0, next);
+        // No separate clamp at either end: the scale's own range IS the markable
+        // range, and xToTime cannot return a time outside it. That is the second
+        // reason to route the drag through the mapping rather than alongside it —
+        // there is no longer a clamp that can disagree with the strip being dragged
+        // on. `Math.max(0, next)` lived here and was the near-end version of the same
+        // assumption, clamping to zero rather than to the first markable frame.
         // The handles cannot cross. A finish before a start is not a measurement
         // to warn about later, it is a state to prevent now.
         const clamped =

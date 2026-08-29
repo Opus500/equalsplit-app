@@ -45,6 +45,7 @@ const {
   filmstripTimes,
   lastMarkableTime,
   markableEnd,
+  markableStart,
   stripScale,
   timeToX,
   xToTime,
@@ -1405,7 +1406,7 @@ console.log('\n21. THE STRIP AND THE CLIP AGREE, IN BOTH DIRECTIONS');
   // moment two places convert between them independently they are free to disagree —
   // which this screen has already been bitten by twice. One mapping, both directions,
   // and the round trip asserted rather than assumed.
-  const s = stripScale(320, 22, 0.16567);
+  const s = stripScale(320, 22, 0, 0.16567);
   check('the travel is the strip less one handle', s.travelPx, 298);
 
   // ROUND TRIP, TIME -> PIXEL -> TIME, across the whole range.
@@ -1434,8 +1435,8 @@ console.log('\n21. THE STRIP AND THE CLIP AGREE, IN BOTH DIRECTIONS');
   check('a time past the end clamps', timeToX(99, s), s.travelPx);
   check('a negative time clamps', timeToX(-5, s), 0);
   check('a pixel past the end clamps', xToTime(9999, s), s.endSec);
-  check('a degenerate strip is not a division by zero', timeToX(0.1, stripScale(0, 22, 1)), 0);
-  check('nor is a clip with no markable range', xToTime(10, stripScale(320, 22, 0)), 0);
+  check('a degenerate strip is not a division by zero', timeToX(0.1, stripScale(0, 22, 0, 1)), 0);
+  check('nor is a clip with no markable range', xToTime(10, stripScale(320, 22, 0, 0)), 0);
 
   // THE CLAIM THAT MATTERS, and it is the composed one rather than either half: a
   // mark placed at a display position must resolve to the timestamp that position
@@ -1460,7 +1461,7 @@ console.log('\n21. THE STRIP AND THE CLIP AGREE, IN BOTH DIRECTIONS');
   g = (await probeGridAround(p, g, lastMarkableTime(dur, fd), fd)).grid;
   // A short clip, so probe the middle too — the coach would, by dragging.
   g = (await probeGridAround(p, g, dur / 2, fd)).grid;
-  const live = stripScale(320, 22, markableEnd(g, dur, fd));
+  const live = stripScale(320, 22, markableStart(g), markableEnd(g, dur, fd));
 
   let unresolvable = 0;
   let worstBack = 0;
@@ -1480,6 +1481,82 @@ console.log('\n21. THE STRIP AND THE CLIP AGREE, IN BOTH DIRECTIONS');
 
   // AND THE TIMESTAMP IS THE CLIP'S, not a rescaled one. The rescale lives between a
   // pixel and a second; nothing stored changes.
+
+  // ===================================================== THE NEAR END, TOO
+  //
+  // Reported after the far end was fixed: a sliver at the START that the handle did
+  // not begin in, but which accepted a mark once dragged into. Two separate causes
+  // wearing one symptom, and both are the same mistake as the end clamp was —
+  // a position computed from an assumption rather than from the grid.
+  //
+  // ONE: the strip began at time zero by construction, whether or not time zero was
+  // markable. A clip whose first frame has a presentation timestamp above zero — an
+  // edit list, a track that does not start at the origin — rendered a leading region
+  // no mark can resolve into.
+  const offset = 0.25;
+  const offPts = [];
+  for (let i = 0; offset + i * fd < dur + offset; i += 1) offPts.push(Number((offset + i * fd).toFixed(9)));
+  const offPlayer = {
+    duration: offset + dur,
+    async generateThumbnailsAsync(times) {
+      const t = times[0];
+      if (t < 0 || t >= offset + dur) return [];
+      // Before the first frame the decoder clamps to it, which is what makes the
+      // leading region look probed while holding nothing markable.
+      let i = 0;
+      for (let k = offPts.length - 1; k >= 0; k -= 1) if (offPts[k] <= t + 1e-12) { i = k; break; }
+      return [{ actualTime: offPts[i] }];
+    },
+  };
+  let og = emptyGrid();
+  og = (await probeGridAround(offPlayer, og, 0, fd)).grid;
+  og = (await probeGridAround(offPlayer, og, lastMarkableTime(offset + dur, fd), fd)).grid;
+  og = (await probeGridAround(offPlayer, og, offset + dur / 2, fd)).grid;
+
+  truthy('the clip does not start at zero', markableStart(og) > 0);
+  check('and time zero is not markable', markAt(og, 0), null);
+  check('so the strip does not start there either', markableStart(og), og.frames[0]);
+
+  const offScale = stripScale(320, 22, markableStart(og), markableEnd(og, offset + dur, fd));
+  let offBad = 0;
+  for (let px = 0; px <= offScale.travelPx; px += 1) {
+    if (!markAt(og, xToTime(px, offScale))) offBad += 1;
+  }
+  check('every pixel of an offset clip is markable too', offBad, 0);
+  check('the left edge IS the first markable time', xToTime(0, offScale), markableStart(og));
+  truthy('and a mark there resolves', !!markAt(og, xToTime(0, offScale)));
+
+  // The round trip has to survive a non-zero origin, which the first version could
+  // not have caught: it only ever tested a scale starting at zero, where the offset
+  // term is invisible.
+  let worstOff = 0;
+  for (let i = 0; i <= 200; i += 1) {
+    const t = offScale.startSec + (i / 200) * (offScale.endSec - offScale.startSec);
+    worstOff = Math.max(worstOff, Math.abs(xToTime(timeToX(t, offScale), offScale) - t));
+  }
+  truthy(`a time survives it with an offset origin (worst ${(worstOff * 1e6).toFixed(2)}us)`, worstOff < 1e-9);
+
+  // TWO: the handles initialised from their own arithmetic rather than from the
+  // strip, so each could start somewhere the strip does not begin or end. They are
+  // the ends of the markable range now, which is what the strip draws.
+  check('the start handle initialises at the left edge', markableStart(og), xToTime(0, offScale));
+  check('the finish handle initialises at the right edge',
+    markableEnd(og, offset + dur, fd), xToTime(offScale.travelPx, offScale));
+  truthy('and both of those are markable',
+    !!markAt(og, markableStart(og)) && !!markAt(og, markableEnd(og, offset + dur, fd)));
+
+  // THE STRIP CANNOT RUN BACKWARDS. Asserted with a range that really is inverted:
+  // the first version used an empty grid, where start and end are both zero and the
+  // claim holds whether the guard exists or not. A mutation removing the guard passed
+  // it. A grid can be probed in the middle and nowhere else, which is exactly when a
+  // measured start can sit past a formula-floored end.
+  const inverted = stripScale(320, 22, 5, 1);
+  truthy('an inverted range is collapsed, not flipped', inverted.endSec >= inverted.startSec);
+  check('and maps to a single point rather than a negative span', timeToX(3, inverted), 0);
+  check('with no time outside it', xToTime(999, inverted), inverted.startSec);
+  const empty = stripScale(320, 22, markableStart(emptyGrid()), 0);
+  truthy('an empty grid gives a strip that does not run backwards', empty.endSec >= empty.startSec);
+
   const atEnd = markAt(g, xToTime(live.travelPx, live));
   truthy('the mark at the far end is a real frame of the clip', pts.includes(atEnd.pts));
   truthy('and sits inside the clip, not at the rescaled end', atEnd.pts < dur);

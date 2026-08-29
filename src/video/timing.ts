@@ -332,6 +332,10 @@ const MARK_EDGE_EPS_SEC = 0.001;
  * measured, and markAt refuses it rather than inventing an error bar. That is about
  * 2% of a short clip's strip.
  */
+export function markableStart(grid: FrameGrid): number {
+  return grid.frames[0] ?? 0;
+}
+
 export function markableEnd(grid: FrameGrid, durationSec: number, frameDurSec: number): number {
   const seed = lastMarkableTime(durationSec, frameDurSec);
   const last = grid.frames[grid.frames.length - 1];
@@ -362,26 +366,58 @@ export function markableEnd(grid: FrameGrid, durationSec: number, frameDurSec: n
 export type StripScale = {
   /** pixels the handle's left edge may travel */
   travelPx: number;
-  /** the clip time, in seconds, at the far end of that travel */
+  /** the clip time, in seconds, at the left end of that travel */
+  startSec: number;
+  /** the clip time, in seconds, at the right end of it */
   endSec: number;
 };
 
-export function stripScale(stripW: number, handleW: number, endSec: number): StripScale {
-  return { travelPx: Math.max(0, stripW - handleW), endSec: Math.max(0, endSec) };
+/**
+ * BOTH ENDS, and the near end was missed the first time round.
+ *
+ * The strip used to begin at time zero by construction, whether or not time zero
+ * could be marked. A clip whose first frame has a presentation timestamp above zero
+ * therefore rendered a leading region that no mark can resolve into — the same wall
+ * as the one at the far end, arrived at from the other side and left in place because
+ * only one end had been looked at.
+ *
+ * A range, not an end, so there is one rule rather than a rule and an exception.
+ */
+export function stripScale(
+  stripW: number,
+  handleW: number,
+  startSec: number,
+  endSec: number,
+): StripScale {
+  const lo = Math.max(0, startSec);
+  return {
+    travelPx: Math.max(0, stripW - handleW),
+    startSec: lo,
+    // Never inverted. A grid too small to have a markable range at all collapses to a
+    // point rather than to a strip that runs backwards.
+    endSec: Math.max(lo, endSec),
+  };
+}
+
+/** The span of clip the strip covers. Zero when nothing is markable yet. */
+function stripSpan(s: StripScale): number {
+  return s.endSec - s.startSec;
 }
 
 /** Where on the strip a clip time sits. Clamped, so an out-of-range mark cannot
  *  render off the end of its own track. */
 export function timeToX(t: number, s: StripScale): number {
-  if (!(s.endSec > 0) || !(s.travelPx > 0) || !Number.isFinite(t)) return 0;
-  return (Math.max(0, Math.min(s.endSec, t)) / s.endSec) * s.travelPx;
+  const span = stripSpan(s);
+  if (!(span > 0) || !(s.travelPx > 0) || !Number.isFinite(t)) return 0;
+  return ((Math.max(s.startSec, Math.min(s.endSec, t)) - s.startSec) / span) * s.travelPx;
 }
 
 /** What clip time a position on the strip means. The exact inverse of timeToX
  *  within the clamped range — asserted, not assumed. */
 export function xToTime(x: number, s: StripScale): number {
-  if (!(s.endSec > 0) || !(s.travelPx > 0) || !Number.isFinite(x)) return 0;
-  return (Math.max(0, Math.min(s.travelPx, x)) / s.travelPx) * s.endSec;
+  const span = stripSpan(s);
+  if (!(span > 0) || !(s.travelPx > 0) || !Number.isFinite(x)) return s.startSec;
+  return s.startSec + (Math.max(0, Math.min(s.travelPx, x)) / s.travelPx) * span;
 }
 
 /**
