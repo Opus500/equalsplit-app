@@ -340,6 +340,51 @@ export function markableEnd(grid: FrameGrid, durationSec: number, frameDurSec: n
 }
 
 /**
+ * The strip's coordinate system: pixels on screen against seconds in the clip.
+ *
+ * ONE MAPPING, BOTH DIRECTIONS, and that is the point rather than a tidiness. The
+ * strip no longer spans the clip's DURATION — it spans the markable range, so the
+ * handle reaches the end of the strip and there is no band at the end that visibly
+ * refuses a mark. The moment a screen displays one range and stores another, every
+ * place that converts is free to disagree with every other, and this screen has
+ * already been bitten twice by exactly that: `x()` divided by the clip duration while
+ * the drag divided by a different width, so the handle quietly lagged the finger.
+ *
+ * MARKS ARE STILL REAL CLIP TIMESTAMPS. Nothing stored changes. `xToTime` returns a
+ * time in the clip, `markAt` resolves it against the real frame grid, and what is
+ * written to a run is `markAt(...).pts` exactly as before. The rescale lives entirely
+ * between a pixel and a second.
+ *
+ * `travelPx` is the span a handle's LEFT edge moves across, so at the far end the
+ * handle's right edge sits on the end of the strip rather than hanging past it. That
+ * is the ordinary slider convention and it is why the handle appears to reach the end.
+ */
+export type StripScale = {
+  /** pixels the handle's left edge may travel */
+  travelPx: number;
+  /** the clip time, in seconds, at the far end of that travel */
+  endSec: number;
+};
+
+export function stripScale(stripW: number, handleW: number, endSec: number): StripScale {
+  return { travelPx: Math.max(0, stripW - handleW), endSec: Math.max(0, endSec) };
+}
+
+/** Where on the strip a clip time sits. Clamped, so an out-of-range mark cannot
+ *  render off the end of its own track. */
+export function timeToX(t: number, s: StripScale): number {
+  if (!(s.endSec > 0) || !(s.travelPx > 0) || !Number.isFinite(t)) return 0;
+  return (Math.max(0, Math.min(s.endSec, t)) / s.endSec) * s.travelPx;
+}
+
+/** What clip time a position on the strip means. The exact inverse of timeToX
+ *  within the clamped range — asserted, not assumed. */
+export function xToTime(x: number, s: StripScale): number {
+  if (!(s.endSec > 0) || !(s.travelPx > 0) || !Number.isFinite(x)) return 0;
+  return (Math.max(0, Math.min(s.travelPx, x)) / s.travelPx) * s.endSec;
+}
+
+/**
  * The +/- a clip can support before any frame has actually been measured.
  *
  * Same rule as `timeFromMarks` for two frames of equal length, so a provisional

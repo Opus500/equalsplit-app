@@ -267,12 +267,31 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // frames back from the clip end refused marks that resolve perfectly well —
   // 5.4% of a 0.17s 120fps clip, a quarter of the same clip at 30fps — showing as
   // a band at the end the handle would not enter. See markableEnd.
-  truthy('the drag clamp is derived from the grid',
-    /Math\.min\(markableEnd\(liveGrid, d, frameDur\), next\)/.test(mark));
+  // The end clamp now lives IN the scale — xToTime cannot return a time outside the
+  // markable range — so what has to be pinned is that the scale's range comes from
+  // the grid, not that a separate Math.min does.
+  truthy('the drag range is derived from the grid',
+    /stripScale\(w, HANDLE_W, markableEnd\(liveGrid, d, frameDur\)\)/.test(mark));
   // And the formula survives ONLY as the pre-grid seed, where there is no grid to
   // ask yet. Pinned so it cannot quietly come back as the drag rule.
   truthy('while the formula stays the load seed',
     /const endAt = lastMarkableTime\(d, dur\);/.test(mark));
+
+  // ONE MAPPING, BOTH DIRECTIONS. The strip spans the markable range rather than
+  // the duration, so a pixel and a second are no longer interchangeable — and two
+  // places converting independently is the shape that has bitten this screen twice.
+  // Pinned as call sites: the render and the drag must go through the same pair.
+  truthy('the render maps time through the scale',
+    /const x = \(t: number\) => timeToX\(t, scale\);/.test(mark));
+  truthy('and the drag converts back through it',
+    /xToTime\(timeToX\(dragBase\.current, liveScale\) \+ g\.dx, liveScale\)/.test(mark));
+  truthy('over the markable range, not the clip duration',
+    /stripScale\(stripW, HANDLE_W, markEnd\)/.test(mark));
+  truthy('and the filmstrip is spread over the same range',
+    /filmstrip\(player, 0, markEnd, TILE_COUNT\)/.test(mark));
+  // No second end clamp beside the scale. xToTime cannot return a time outside the
+  // markable range, and a clamp alongside it is a second opinion free to differ.
+  check('the duration is no longer a display denominator', /\/ duration\) \*/.test(mark), false);
 
   truthy('a start drag writes the ref, not just the state',
     /setStartAt\(clamped\);[\s\S]{0,60}live\.current\.startAt = clamped;/.test(mark));

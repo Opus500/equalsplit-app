@@ -63,6 +63,9 @@ import {
   isVariableRate,
   lastMarkableTime,
   markableEnd,
+  stripScale,
+  timeToX,
+  xToTime,
   markAt,
   measuredFps,
   nominalErrorMs,
@@ -520,22 +523,47 @@ export default function VideoMarkScreen({
 
   // ------------------------------------------------------- strip + grid
 
+  /**
+   * The clip range the strip actually shows — the MARKABLE range, not the duration.
+   *
+   * The last frame of a clip has no successor, so its duration cannot be measured and
+   * markAt refuses it. Rendering it anyway put a band at the end of the strip that the
+   * handle would not enter: a wall you can see and cannot cross, which reads as broken.
+   * Spanning the strip over what can be marked means the strip simply ends where the
+   * marks do.
+   */
+  const markEnd = useMemo(
+    () => markableEnd(grid, duration, frameDur),
+    [grid, duration, frameDur],
+  );
+  const scale = useMemo(() => stripScale(stripW, HANDLE_W, markEnd), [stripW, markEnd]);
+
+
   // Tiles for the whole clip. Cheap at this count, and rebuilt rather than cached:
   // ~14 tiles at ~24ms with a fan of 8 is a couple of hundred ms, against megabytes
   // per clip to store — and keeping storage to the clip alone is what makes the
   // size shown at the delete point exactly what deleting reclaims.
   useEffect(() => {
-    if (!clip || !duration) return;
+    // WAIT FOR THE GRID, not just for a duration. The strip spans the markable range,
+    // and before the load probes land that range is only the formula's guess — so
+    // building here would draw a strip at one scale and redraw it at another a moment
+    // later, paying for two filmstrips to show the first one being wrong. A clip whose
+    // frames never arrive shows no strip, which is consistent with the screen already
+    // saying that nothing could be read from it.
+    if (!clip || !duration || !grid.frames.length) return;
     let alive = true;
     setBusy('Building filmstrip…');
-    filmstrip(player, 0, duration, TILE_COUNT)
+    filmstrip(player, 0, markEnd, TILE_COUNT)
       .then((t) => alive && setTiles(t))
       .catch(() => alive && setTiles([]))
       .finally(() => alive && setBusy(null));
     return () => {
       alive = false;
     };
-  }, [clip, duration, player]);
+    // markEnd, not duration: it is what the tiles are spread across. It is a number,
+    // so a grid that grows without moving the clip's last frame leaves it untouched
+    // and this does not re-run — which is every probe after the load.
+  }, [clip, duration, markEnd, grid.frames.length, player]);
 
   /** Probe the frame grid around a position, then seek to the frame it resolves to. */
   /**
@@ -763,7 +791,14 @@ export default function VideoMarkScreen({
       onPanResponderMove: (_e, g) => {
         const { stripW: w, duration: d, grid: liveGrid } = live.current;
         if (!w || !d) return;
-        let next = dragBase.current + (g.dx / w) * d;
+        // THROUGH THE SAME MAPPING THE RENDER USES, in both directions: the base time
+        // becomes a pixel, the finger's displacement is added in pixels, and the
+        // result becomes a time again. Converting one way here and the other way in
+        // `x()` is what let the two drift — the old drag divided by the full strip
+        // width while `x()` divided by the handle's travel, so the handle lagged the
+        // finger by the width of the handle.
+        const liveScale = stripScale(w, HANDLE_W, markableEnd(liveGrid, d, frameDur));
+        let next = xToTime(timeToX(dragBase.current, liveScale) + g.dx, liveScale);
         // NOT Math.min(d, …). The last frame of a clip has no measured successor,
         // so its duration is unknown and markAt/stepFrames both refuse it — by
         // design, because an error bar computed from a frame length nobody
@@ -777,13 +812,11 @@ export default function VideoMarkScreen({
         // something you do by accident, and it surfaced on a slow-motion clip
         // because the stretched duration makes the drag many times more sensitive
         // in seconds per point — you hit the edge without meaning to.
-        // FROM THE GRID, not from the formula. lastMarkableTime backs off a fixed
-        // 1.5 frames from the duration, which on a 0.17s 120fps clip left a 9.1ms
-        // band — 5.4% of it — that the handle would not enter even though every
-        // position in it resolves. The grid already holds the clip's final frame,
-        // because alignedProbes fetches it on purpose. See markableEnd; the formula
-        // survives there as a floor for when the grid cannot answer.
-        next = Math.max(0, Math.min(markableEnd(liveGrid, d, frameDur), next));
+        // No separate end clamp: the scale's own range IS the markable range, and
+        // xToTime cannot return a time outside it. That is the second reason to route
+        // the drag through the mapping rather than alongside it — there is no longer a
+        // clamp that can disagree with the strip the coach is dragging on.
+        next = Math.max(0, next);
         // The handles cannot cross. A finish before a start is not a measurement
         // to warn about later, it is a state to prevent now.
         const clamped =
@@ -1038,7 +1071,7 @@ export default function VideoMarkScreen({
 
   // ------------------------------------------------------------ render
 
-  const x = (t: number) => (duration ? (t / duration) * Math.max(0, stripW - HANDLE_W) : 0);
+  const x = (t: number) => timeToX(t, scale);
 
   return (
     // Column, not a ScrollView: the preview must TAKE the leftover space rather

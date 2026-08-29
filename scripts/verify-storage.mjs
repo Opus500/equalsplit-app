@@ -241,15 +241,29 @@ console.log('\n9. BOTH BOUNDS REACH THE RECORDER, and no clock is invented');
   // disagreeing with the encoder would delete real footage. Read at the press rather
   // than polled, so it carries no tick lag — a 600ms recording cannot read as 400.
   truthy('the tap guard reads the recorder, at the press',
-    /stoppedAtSeconds\.current = rec\.recordedDuration;/.test(rec));
+    /const d = rec\.recordedDuration;/.test(rec));
+  // Number.isFinite, not a null check. A missing Nitro getter hands back
+  // `undefined`, which is not null — it sailed past the null test and became NaN
+  // one multiplication later, and NaN fails every comparison, so the clip was kept
+  // and nothing recorded that the length had never been read. The guard was a no-op
+  // that looked like a guard, which is exactly how it was reported from device.
+  truthy('and treats an unreadable value as unreadable',
+    /stoppedAtSeconds\.current = Number\.isFinite\(d\) \? d : null;/.test(rec));
+  // Logged, because 'kept' has three causes that look identical from outside: long
+  // enough, unreadable, or the recorder's elapsed time disagreeing with the file's.
+  truthy('and says which value it read', /stop pressed, recorder says/.test(rec));
+  truthy('and which way the decision went', /discarded as a tap/.test(rec));
   truthy('and gates on that, not on a clock',
     /misTapNote\(stoppedAt \* 1000, reason\)/.test(rec));
   // A LENGTH THAT COULD NOT BE READ KEEPS THE CLIP. The default on a path that
   // deletes without asking has to be the safe one.
   truthy('an unreadable length keeps the clip', /stoppedAt === null \? null :/.test(rec));
   // BEFORE the clip is claimed, or the row exists and the file is only then removed.
+  // GATED ON THE VERDICT, and ordered before the claim. Asserting only the text
+  // ORDER was too weak: replacing `if (tap)` with `if (false)` left the order intact
+  // and the guard passed while the branch was dead.
   truthy('and the tap is discarded before anything claims it',
-    /const tap = [\s\S]{0,220}discardRecording\(id\);[\s\S]{0,200}const clip = claimRecording/.test(rec));
+    /if \(tap\) \{[\s\S]{0,80}discardRecording\(id\);[\s\S]{0,300}const clip = claimRecording/.test(rec));
   truthy('saying why, never silently', /Alert\.alert\('Nothing recorded', tap\)/.test(rec));
 
   // The final size comes off the FILE, never off the recorder, which reports 0 once

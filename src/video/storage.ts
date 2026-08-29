@@ -180,6 +180,20 @@ export const MIN_CLIP_MS = 500;
  */
 export function misTapNote(elapsedMs: number, reason: RecordingEnd): string | null {
   if (reason !== 'stopped') return null;
+  // NOT FINITE IS NOT SHORT.
+  //
+  // DELIBERATELY REDUNDANT, and said so because a mutation proved it: removing this
+  // line changes no behaviour, since `!(NaN < MIN_CLIP_MS)` already returns null. It
+  // stays as intent with a name on it — the next person to rewrite the comparison
+  // below should have to notice that non-finite input is a case, not discover it.
+  //
+  // The first version relied on `!(elapsedMs < MIN_CLIP_MS)` to cover this, which it
+  // does — NaN fails every comparison, so the clip is kept. That is the right OUTCOME
+  // reached by accident, and it made the guard indistinguishable from a working one:
+  // the caller read `undefined` off the recorder, `undefined === null` was false, so
+  // NaN arrived here and left as "keep" without anything anywhere recording that the
+  // length had never been read. The guard was a no-op and looked exactly like a guard.
+  if (!Number.isFinite(elapsedMs)) return null;
   if (!(elapsedMs < MIN_CLIP_MS)) return null;
   return (
     'That was a tap rather than a recording, so nothing was kept. Press record, let the rep ' +

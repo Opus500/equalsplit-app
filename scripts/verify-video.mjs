@@ -45,6 +45,9 @@ const {
   filmstripTimes,
   lastMarkableTime,
   markableEnd,
+  stripScale,
+  timeToX,
+  xToTime,
   nominalErrorMs,
   adjacentDeltas,
   acceptForTiming,
@@ -1391,6 +1394,95 @@ console.log('\n20. THE HANDLE STOPS WHERE THE FRAMES DO, NOT WHERE A FORMULA SAY
     markableEnd(emptyGrid(), 3.0, fd120), lastMarkableTime(3.0, fd120));
   truthy('the result is never earlier than the formula',
     markableEnd(g, 0.17, fd120) >= formula && markableEnd(sparse, 3.0, fd120) >= lastMarkableTime(3.0, fd120));
+}
+
+
+console.log('\n21. THE STRIP AND THE CLIP AGREE, IN BOTH DIRECTIONS');
+{
+  // The strip spans the MARKABLE range rather than the clip's duration, so the handle
+  // reaches the end of the strip instead of stopping at a visible wall it will not
+  // cross. That means a pixel and a second are no longer the same coordinate, and the
+  // moment two places convert between them independently they are free to disagree —
+  // which this screen has already been bitten by twice. One mapping, both directions,
+  // and the round trip asserted rather than assumed.
+  const s = stripScale(320, 22, 0.16567);
+  check('the travel is the strip less one handle', s.travelPx, 298);
+
+  // ROUND TRIP, TIME -> PIXEL -> TIME, across the whole range.
+  let worstT = 0;
+  for (let i = 0; i <= 200; i += 1) {
+    const t = (i / 200) * s.endSec;
+    worstT = Math.max(worstT, Math.abs(xToTime(timeToX(t, s), s) - t));
+  }
+  truthy(`a time survives the round trip (worst ${(worstT * 1e6).toFixed(2)}us)`, worstT < 1e-9);
+
+  // AND PIXEL -> TIME -> PIXEL, which is the direction a drag actually uses.
+  let worstX = 0;
+  for (let px = 0; px <= s.travelPx; px += 1) {
+    worstX = Math.max(worstX, Math.abs(timeToX(xToTime(px, s), s) - px));
+  }
+  truthy(`a pixel survives it too (worst ${worstX.toExponential(1)}px)`, worstX < 1e-9);
+
+  // THE ENDS ARE THE ENDS. The whole complaint was a handle that could not reach the
+  // end of the strip, so this is the assertion that the fix actually landed.
+  check('time zero is the left edge', timeToX(0, s), 0);
+  check('the markable end is the right edge', timeToX(s.endSec, s), s.travelPx);
+  check('and the right edge means the markable end', xToTime(s.travelPx, s), s.endSec);
+
+  // NOTHING ESCAPES THE RANGE, in either direction, so a stale mark cannot render off
+  // its own track and a fast drag cannot ask for a time the clip does not have.
+  check('a time past the end clamps', timeToX(99, s), s.travelPx);
+  check('a negative time clamps', timeToX(-5, s), 0);
+  check('a pixel past the end clamps', xToTime(9999, s), s.endSec);
+  check('a degenerate strip is not a division by zero', timeToX(0.1, stripScale(0, 22, 1)), 0);
+  check('nor is a clip with no markable range', xToTime(10, stripScale(320, 22, 0)), 0);
+
+  // THE CLAIM THAT MATTERS, and it is the composed one rather than either half: a
+  // mark placed at a display position must resolve to the timestamp that position
+  // claims. Run against a real probed grid, not against arithmetic.
+  const fps = 120;
+  const fd = 1 / fps;
+  const dur = 0.17;
+  const pts = [];
+  for (let i = 0; i * fd < dur; i += 1) pts.push(Number((i * fd).toFixed(9)));
+  const p = {
+    duration: dur,
+    async generateThumbnailsAsync(times) {
+      const t = times[0];
+      if (t < 0 || t >= dur) return [];
+      let i = 0;
+      for (let k = pts.length - 1; k >= 0; k -= 1) if (pts[k] <= t + 1e-12) { i = k; break; }
+      return [{ actualTime: pts[i] }];
+    },
+  };
+  let g = emptyGrid();
+  g = (await probeGridAround(p, g, 0, fd)).grid;
+  g = (await probeGridAround(p, g, lastMarkableTime(dur, fd), fd)).grid;
+  // A short clip, so probe the middle too — the coach would, by dragging.
+  g = (await probeGridAround(p, g, dur / 2, fd)).grid;
+  const live = stripScale(320, 22, markableEnd(g, dur, fd));
+
+  let unresolvable = 0;
+  let worstBack = 0;
+  for (let px = 0; px <= live.travelPx; px += 1) {
+    const t = xToTime(px, live);
+    const m = markAt(g, t);
+    if (!m) { unresolvable += 1; continue; }
+    // The mark resolves to a FRAME, so its pixel is the frame's pixel — which must be
+    // within one frame's width of where the finger was. More than that would mean the
+    // handle jumps somewhere the coach did not point at.
+    worstBack = Math.max(worstBack, Math.abs(timeToX(m.pts, live) - px));
+  }
+  const framePx = (fd / live.endSec) * live.travelPx;
+  check('every position on the strip is markable', unresolvable, 0);
+  truthy(`and resolves within one frame of where it was placed` +
+    ` (worst ${worstBack.toFixed(1)}px, a frame is ${framePx.toFixed(1)}px)`, worstBack <= framePx + 1e-9);
+
+  // AND THE TIMESTAMP IS THE CLIP'S, not a rescaled one. The rescale lives between a
+  // pixel and a second; nothing stored changes.
+  const atEnd = markAt(g, xToTime(live.travelPx, live));
+  truthy('the mark at the far end is a real frame of the clip', pts.includes(atEnd.pts));
+  truthy('and sits inside the clip, not at the rescaled end', atEnd.pts < dur);
 }
 
 

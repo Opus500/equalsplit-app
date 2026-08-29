@@ -232,6 +232,15 @@ export function VideoRecordModal({
       // whether a file is deleted. A length that could not be read keeps the clip —
       // the default on a destructive path has to be the safe one.
       const tap = stoppedAt === null ? null : misTapNote(stoppedAt * 1000, reason);
+      // SAID OUT LOUD, because "kept" has three causes that look identical from the
+      // outside: it was long enough, the length could not be read, or the recorder's
+      // elapsed time and the file's own duration disagree. One run of the log now
+      // separates them instead of a second round of guessing.
+      logEvent(
+        'CAMERA',
+        `finish reason=${reason} stoppedAt=${stoppedAt === null ? 'UNREADABLE' : `${stoppedAt}s`}` +
+          ` -> ${tap ? 'discarded as a tap' : 'kept'}`,
+      );
       if (tap) {
         discardRecording(id);
         Alert.alert('Nothing recorded', tap);
@@ -381,13 +390,22 @@ export function VideoRecordModal({
     const rec = recorder.current;
     if (!rec) return;
     try {
-      // BEFORE stopping, because afterwards the recorder throws rather than reporting.
+      // BEFORE stopping, because afterwards the recorder reports zero.
       // This is the encoder's own figure at the moment the finger landed.
-      stoppedAtSeconds.current = rec.recordedDuration;
-    } catch {
+      //
+      // Number.isFinite, not a null check. A Nitro getter that is missing hands back
+      // `undefined`, which is not null, so it sailed past `stoppedAt === null` and
+      // became NaN one multiplication later — and NaN fails every comparison, so the
+      // clip was kept and nothing recorded that the length had never been read. The
+      // guard was a no-op that looked like a guard.
+      const d = rec.recordedDuration;
+      stoppedAtSeconds.current = Number.isFinite(d) ? d : null;
+      logEvent('CAMERA', `stop pressed, recorder says ${JSON.stringify(d)}s`);
+    } catch (e) {
       // Unknown length keeps the clip. See misTapNote — the default on this path has
-      // to be the non-destructive one.
+      // to be the non-destructive one, and it has to be VISIBLE or it hides a bug.
       stoppedAtSeconds.current = null;
+      logEvent('CAMERA', `stop pressed, recordedDuration threw: ${String(e)}`);
     }
     try {
       await rec.stopRecording();
