@@ -44,16 +44,25 @@ const {
   seekTimeFor,
   filmstripTimes,
   lastMarkableTime,
-  nominalSdMs,
+  markableEnd,
+  markableStart,
+  stripScale,
+  timeToX,
+  xToTime,
+  nominalErrorMs,
   adjacentDeltas,
   acceptForTiming,
   acceptForReview,
+  ceilTenth,
+  coveredWindow,
+  spanCovered,
+  whyNotTimeable,
 } = await import('../src/video/timing.ts');
 const { restRepRawJson, runStartSource, REPEAT_MODE } = await import('../src/ble/repeats.ts');
 // The REAL probe path. frames.ts imports expo-video for types only, so it loads
 // standalone — which is what lets block 11h drive it against a fake decoder rather
 // than reasoning about what it would do.
-const { probeGridAround } = await import('../src/video/frames.ts');
+const { probeGridAround, probeToResolve, resolveMarks, loadClipInto } = await import('../src/video/frames.ts');
 // The real grouping path — the ONLY thing that groups anything, now that
 // timing.ts's callerless seriesKey() copy of the rule is gone.
 const { buildProgression, seriesUid, sourceGroup } = await import('../src/roster/progression.ts');
@@ -87,7 +96,7 @@ console.log('\n1. MODE 5 exists because mode encodes the PRODUCER');
 
 console.log('\n2. TIME SOURCE is read through one helper');
 {
-  const raw = videoRunRawJson({ startPts: 1, endPts: 5, fps: 30, quantSdMs: 13.6 });
+  const raw = videoRunRawJson({ startPts: 1, endPts: 5, fps: 30, errorMs: 33.4 });
   check('a video run reports video', runTimeSource(raw), 'video');
   check('and is marked inexact', JSON.parse(raw).exact, false);
 
@@ -115,7 +124,7 @@ console.log('\n3. GROUPING folds unknown to gate, but the UI is never told that'
   // because the difference between them is bounded by a body — roughly a frame
   // either way. Hand does not, because human reaction time is larger than the
   // trend being plotted and has the spread to match.
-  const vid = videoRunRawJson({ startPts: 0, endPts: 4, fps: 30, quantSdMs: 13.6 });
+  const vid = videoRunRawJson({ startPts: 0, endPts: 4, fps: 30, errorMs: 33.4 });
   const rest = restRepRawJson({ ms: 64000, closeUs: 1, closeAtMs: 1, lockoutMs: 1000, gateId: 1 });
   check('a video run groups with gate', sourceGroup(seriesTimeSource(vid)), 'timed');
   check('and so does a run that says nothing', sourceGroup(seriesTimeSource(null)), 'timed');
@@ -154,11 +163,15 @@ console.log('\n4. TWO MARKS to an elapsed time');
   const t = timeFromMarks(a, b);
   near('elapsed is the difference of the timestamps', t.elapsedMs, 4000, 1e-6);
 
-  // The bias cancels. Both marks are the first frame AFTER the crossing, so both
-  // are late — and the difference of two same-signed biases is ~0, not one frame.
-  // That is why the figure below is a spread and not an offset.
-  near('1 sigma at 30fps is ~13.6ms, not half a frame', t.quantSdMs, 13.6, 0.2);
-  near('worst single-sided error is one frame', t.quantWorstMs, 33.333, 0.01);
+  // A WHOLE FRAME, not a standard deviation, and the change was deliberate.
+  //
+  // The old figure was sqrt((da^2+db^2)/12) — the statistical spread from landing
+  // anywhere within a frame. Correct in isolation, and the wrong number to show:
+  // it sat beside two LARGER errors not modelled at all (parallax, and a body-part
+  // bias estimated at ~37ms), so a tight +/-1.7ms claimed a precision the method
+  // does not have. The worst case is defensible without a footnote.
+  near('the error at 30fps is one whole frame', t.errorMs, 33.4, 0.001);
+  truthy('which is larger than the spread it replaced', t.errorMs > 13.6);
 
   // Inverted marks are an input error, not a measurement to warn about.
   check('marks out of order are refused', timeFromMarks(b, a), null);
@@ -168,16 +181,32 @@ console.log('\n4. TWO MARKS to an elapsed time');
 
 console.log('\n5. THE +/- COMES FROM THE CLIP, not a constant');
 {
-  const sd = (fps) => timeFromMarks({ pts: 0, frameDurSec: 1 / fps }, { pts: 2, frameDurSec: 1 / fps }).quantSdMs;
-  near('30fps', sd(30), 13.61, 0.05);
-  near('60fps', sd(60), 6.8, 0.05);
-  near('240fps  — 8x better than 30, and it should be allowed to say so', sd(240), 1.7, 0.05);
-  truthy('a faster clip is strictly better', sd(240) < sd(60) && sd(60) < sd(30));
+  const err = (fps) => timeFromMarks({ pts: 0, frameDurSec: 1 / fps }, { pts: 2, frameDurSec: 1 / fps }).errorMs;
+  // One frame period, rounded UP so the number can never understate. Pinned to the
+  // digit, because these four are what a coach reads off the rate picker.
+  near('30fps  is 33.4', err(30), 33.4, 0.001);
+  near('60fps  is 16.7', err(60), 16.7, 0.001);
+  near('120fps is 8.4', err(120), 8.4, 0.001);
+  near('240fps is 4.2  — 8x better than 30, and allowed to say so', err(240), 4.2, 0.001);
+  truthy('a faster clip is strictly better', err(240) < err(120) && err(120) < err(60) && err(60) < err(30));
+
+  // ROUNDING UP IS THE POINT, so it is asserted rather than assumed: every figure
+  // must be at or above the true frame period, never below it.
+  for (const fps of [30, 60, 120, 240]) {
+    truthy(`${fps}fps never understates`, err(fps) >= 1000 / fps - 1e-9);
+  }
+  check('ceilTenth rounds up, not to nearest', ceilTenth(8.3333), 8.4);
+  check('and leaves an exact tenth alone', ceilTenth(4.2), 4.2);
 
   // Variable frame rate: the two marks can sit on frames of DIFFERENT lengths,
   // which is precisely why this takes durations rather than one fps number.
+  //
+  // A mixed pair takes the COARSER end whole, rather than landing between the two.
+  // A measurement is only as good as its worst end, and averaging would hide which
+  // end that was.
   const mixed = timeFromMarks({ pts: 0, frameDurSec: 1 / 30 }, { pts: 2, frameDurSec: 1 / 240 });
-  truthy('a mixed-rate pair lands between the two', mixed.quantSdMs < sd(30) && mixed.quantSdMs > sd(240));
+  near('a mixed-rate pair takes the coarser end', mixed.errorMs, err(30), 0.001);
+  truthy('not the finer one', mixed.errorMs > err(240));
 
   // Display shows two decimals ALWAYS, with the uncertainty beside it. Rounding a
   // 30fps time to 4.2s was arithmetically defensible and practically worse: a
@@ -191,8 +220,11 @@ console.log('\n5. THE +/- COMES FROM THE CLIP, not a constant');
 
   const slow = timeFromMarks({ pts: 0, frameDurSec: 1 / 30 }, { pts: 4.213, frameDurSec: 1 / 30 });
   const fast = timeFromMarks({ pts: 0, frameDurSec: 1 / 240 }, { pts: 4.213, frameDurSec: 1 / 240 });
-  check('the same digits, but the honesty rides alongside', formatVideoTime(slow), '4.21s ± 14ms');
-  check('and a faster clip says a smaller number', formatVideoTime(fast), '4.21s ± 2ms');
+  // ONE DECIMAL on the +/-, because the figures now differ by a tenth where it
+  // matters: 8.4 against 4.2 is the entire 120-vs-240 argument, and Math.round
+  // flattened both to single digits.
+  check('the same digits, but the honesty rides alongside', formatVideoTime(slow), '4.21s ± 33.4ms');
+  check('and a faster clip says a smaller number', formatVideoTime(fast), '4.21s ± 4.2ms');
 
   // THE CLAIM THE OLD DUPLICATE WAS TRYING TO MAKE. It read "and so does a 240fps
   // one" while calling formatVideoSeconds(4213) a second time — byte-identical to
@@ -220,9 +252,18 @@ console.log('\n6. THE ERRORS THAT DO NOT SHRINK are kept out of the computed fig
   near('20 degrees is worse than 10', parallaxErrorMs(20, 1, 8), 45.5, 1);
   truthy('and standing closer to the reference helps', parallaxErrorMs(10, 0.5, 8) < parallaxErrorMs(10, 1, 8));
 
-  // Neither is folded into quantSdMs — a computed number must not carry estimates.
+  // NEITHER IS FOLDED IN. errorMs is frame length and nothing else — a computed
+  // number must not carry estimates, or a coach cannot tell which part was measured.
+  //
+  // And the relationship stated as a fact rather than an inequality that happens to
+  // hold: at 30fps the frame is now the SAME SIZE as the bias estimate, which is the
+  // honest reason 30 is a control and not an option.
   const t = timeFromMarks({ pts: 0, frameDurSec: 1 / 30 }, { pts: 2, frameDurSec: 1 / 30 });
-  truthy('the computed sigma is quantization only', t.quantSdMs < BODY_PART_BIAS_MS);
+  near('a 30fps frame is one whole frame, not a spread', t.errorMs, 33.4, 0.001);
+  truthy('which is about the size of the bias estimate', Math.abs(t.errorMs - BODY_PART_BIAS_MS) < 5);
+  // At the DEFAULT the margin is real, which is what keeps 120 defensible.
+  const at120 = timeFromMarks({ pts: 0, frameDurSec: 1 / 120 }, { pts: 2, frameDurSec: 1 / 120 });
+  truthy('while 120fps sits well inside it', at120.errorMs * 4 < BODY_PART_BIAS_MS);
 }
 
 console.log('\n7. LAZY GRID: clips are uncapped, so coverage is tracked');
@@ -318,12 +359,32 @@ console.log('\n9. VARIABLE FRAME RATE is detected, not assumed away');
 
 console.log('\n10. THE ROW carries its own accuracy');
 {
-  const raw = videoRunRawJson({ startPts: 1.5, endPts: 5.75, fps: 59.94, quantSdMs: 6.8 });
+  const raw = videoRunRawJson({ startPts: 1.5, endPts: 5.75, fps: 59.94, errorMs: 16.7 });
   const back = parseVideoRunJson(raw);
   near('start survives', back.startPts, 1.5, 1e-9);
   near('end survives', back.endPts, 5.75, 1e-9);
   near('the MEASURED fps survives, not a nominal one', back.fps, 59.94, 1e-9);
-  near('and so does the error bar', back.quantSdMs, 6.8, 1e-9);
+  near('and so does the error bar', back.errorMs, 16.7, 1e-9);
+
+  // OLD ROWS ARE NOT RECOMPUTED, and they are not relabelled either. A row written
+  // before the figure changed carries `quantSdMs` holding a standard deviation;
+  // reading it back must return that number, not silently present it as a frame
+  // period or drop it for zero.
+  const legacy = JSON.stringify({
+    engine: 'video',
+    timeSource: 'video',
+    exact: false,
+    fps: 30,
+    startPts: 0,
+    endPts: 4,
+    quantSdMs: 13.61,
+  });
+  near('a pre-change row keeps its own figure', parseVideoRunJson(legacy).errorMs, 13.61, 1e-9);
+  truthy('rather than being zeroed', parseVideoRunJson(legacy).errorMs > 0);
+  // And a row carrying BOTH prefers the new one, which is the only way a rewritten
+  // row could ever be distinguished from a legacy one.
+  const both = JSON.stringify({ ...JSON.parse(legacy), errorMs: 33.4 });
+  near('a row with both prefers errorMs', parseVideoRunJson(both).errorMs, 33.4, 1e-9);
 
   // THE SEPARATION. raw_json answers "how was this timed"; runs.clip_id answers
   // "is there footage". If the clip lived here, attaching review video to a GATE
@@ -482,10 +543,10 @@ console.log('\n11d. THE PROVISIONAL +/- IS THE SAME CLAIM, not a placeholder');
   // jump on release for reasons that are about the code rather than the clip.
   for (const fps of [24, 30, 60, 240]) {
     const settled = timeFromMarks({ pts: 0, frameDurSec: 1 / fps }, { pts: 2, frameDurSec: 1 / fps });
-    near(`${fps}fps: provisional equals settled for equal frames`, nominalSdMs(1 / fps), settled.quantSdMs, 1e-9);
+    near(`${fps}fps: provisional equals settled for equal frames`, nominalErrorMs(1 / fps), settled.errorMs, 1e-9);
   }
-  truthy('a faster clip still promises less error', nominalSdMs(1 / 240) < nominalSdMs(1 / 30));
-  check('and a nonsense frame duration is not NaN', nominalSdMs(-1), 0);
+  truthy('a faster clip still promises less error', nominalErrorMs(1 / 240) < nominalErrorMs(1 / 30));
+  check('and a nonsense frame duration is not NaN', nominalErrorMs(-1), 0);
 }
 
 console.log('\n11e. GRID STATISTICS NEVER MEASURE ACROSS AN UNPROBED GAP');
@@ -768,6 +829,49 @@ console.log('\n11h. PROBING STOPS AT THE END OF THE CLIP — and still finds the
   check('six presses, six frames, no early refusal', steps, 6);
 }
 
+console.log('\n11i. A CLIP WE RECORDED IS NOT A CLIP WE CANNOT CHECK');
+{
+  // The trap this exists to close. acceptForTiming has an 'unknown' branch that
+  // accepts with "this clip is not from your photo library, so it cannot be checked
+  // for slow motion" — correct for a file picked out of Files, and false for a clip
+  // the app recorded itself. We set the capture rate and wrote the file; there is no
+  // Photos round trip and therefore no rendered version to be handed instead of the
+  // original, which is the entire mechanism the refusal exists for.
+  //
+  // Without its own value, in-app recording lands in 'unknown' and every recorded
+  // run carries a caveat about a risk it does not have — on the happy path, forty
+  // times a session, until the coach stops reading caveats.
+  const rec = acceptForTiming('recorded');
+  check('a recorded clip is accepted', rec.accept, true);
+  check('and says NOTHING', rec.warn ?? null, null);
+
+  // The contrast that makes it worth a value of its own.
+  const unk = acceptForTiming('unknown');
+  check('an unchecked clip is still accepted', unk.accept, true);
+  truthy('but warned about', !!unk.warn);
+  truthy('naming the photo library as the reason', /photo library/i.test(unk.warn));
+
+  // THE REFUSALS ARE UNTOUCHED. Adding a way to say "we know this one" must not
+  // become a way to skip the check on clips that still need it.
+  check('slow motion is still refused', acceptForTiming('slow-motion').accept, false);
+  check('time-lapse too', acceptForTiming('time-lapse').accept, false);
+  truthy('and the slow-motion reason still explains the rendered version', /slowed version/i.test(acceptForTiming('slow-motion').reason));
+
+  // Review is more permissive by design and stays that way: nothing computes a time
+  // from attached footage, and watching a sprint in slow motion is why you film it
+  // that way.
+  check('review accepts a recorded clip', acceptForReview('recorded').accept, true);
+  check('silently', acceptForReview('recorded').warn ?? null, null);
+  check('and still accepts slow motion', acceptForReview('slow-motion').accept, true);
+  truthy('with the caveat that it cannot be timed', /cannot be used to mark a time/i.test(acceptForReview('slow-motion').warn));
+
+  // 'normal' is a photo-library clip CHECKED and found ordinary; 'recorded' is one
+  // that never needed checking. Same outcome, different claim — and both silent, so
+  // the difference must be visible in the type rather than in the message.
+  check('normal is silent too', acceptForTiming('normal').warn ?? null, null);
+  truthy('but they are different values', 'normal' !== 'recorded');
+}
+
 console.log('\n12. FAN-OUT batching');
 {
   check('fan-out is the measured width', FRAME_FAN_OUT, 8);
@@ -801,6 +905,663 @@ console.log('\n13. FILMSTRIP tiles');
   // The reachable case is unaffected: from = 0 is the only value the app passes.
   truthy('a real clip is untouched by the clamp', filmstripTimes(0, 10, 5).every((t) => t > 0 && t < 10));
 }
+
+console.log('\n14. THE SNAPPING LOCK — a span is not two points');
+{
+  // FOUND ON DEVICE, REPRODUCED OFFLINE. The marking screen would stick on
+  // SNAPPING permanently: not slow, stuck, until the clip was reloaded. Two wrong
+  // diagnoses preceded this one, and neither survived contact with a simulation.
+  //
+  // probeGridAround decided whether to re-probe by asking isCovered about the two
+  // EDGES of the span it needed and inferring the middle. Windows are merged and
+  // non-overlapping, so that holds until a mark lands in a gap NARROWER than
+  // 2*margin: both edges sit in the windows either side, the centre sits in the
+  // hole, the probe is skipped, and markAt can never resolve the point — for good,
+  // because every later release runs the same test and skips the same probe.
+  //
+  // The exact geometry from the reproduction, so a regression names itself.
+  const gappy = {
+    frames: [14.5, 14.5333, 14.5667, 14.6667, 14.7, 14.7333],
+    windows: [
+      { from: 0, to: 14.5667 },
+      { from: 14.6667, to: 15.2333 },
+    ],
+  };
+  const centre = 14.6341;
+  const margin = 0.1;
+
+  truthy('both EDGES of the span are covered', isCovered(gappy, centre - margin) && isCovered(gappy, centre + margin));
+  check('while the centre itself is not', isCovered(gappy, centre), false);
+  // Which is the whole point: edge-sampling says yes, the span says no.
+  check('so asking about the SPAN refuses', spanCovered(gappy, centre - margin, centre + margin), false);
+
+  // And it still says yes when the span really is inside one window, or the early
+  // exit would never fire and every release would pay a full probe.
+  truthy('a span inside one window is covered', spanCovered(gappy, 14.51, 14.56));
+  check('a span crossing a window edge is not', spanCovered(gappy, 14.55, 14.60), false);
+  check('nor is one spanning both windows', spanCovered(gappy, 14.5, 14.75), false);
+  check('an empty grid covers nothing', spanCovered(emptyGrid(), 0, 1), false);
+  // Order must not matter: the caller passes centre-margin first, but a negative
+  // margin or a reversed pair must not silently answer yes.
+  check('the ends may be given in either order', spanCovered(gappy, 14.56, 14.51), true);
+}
+
+console.log('\n15. A DISABLED CONTROL SAYS WHY');
+{
+  // Keep was gated on `timing` and said nothing, so a permanently stuck grid and a
+  // mark parked past the last frame looked identical: a button that did not
+  // respond. That cost a device session and two wrong diagnoses.
+  check('both marks resolved needs no explanation', whyNotTimeable({ frameCount: 40, startResolved: true, finishResolved: true }), null);
+
+  const none = whyNotTimeable({ frameCount: 0, startResolved: false, finishResolved: false });
+  truthy('nothing read at all says so', /No frames could be read/i.test(none));
+  truthy('and suggests loading it again', /again/i.test(none));
+
+  const neither = whyNotTimeable({ frameCount: 40, startResolved: false, finishResolved: false });
+  truthy('frames but no marks is a different sentence', /Neither mark/i.test(neither));
+  check('and is NOT the no-frames one', /No frames could be read/i.test(neither), false);
+
+  const start = whyNotTimeable({ frameCount: 40, startResolved: false, finishResolved: true });
+  const finish = whyNotTimeable({ frameCount: 40, startResolved: true, finishResolved: false });
+  truthy('an unresolved START names the start', /start mark/i.test(start));
+  truthy('an unresolved FINISH names the finish', /finish mark/i.test(finish));
+  check('and the two are not the same message', start === finish, false);
+  // The distinction the coach acts on: one mark unresolved is a position they can
+  // fix by moving that handle, and the message has to say which handle.
+  // WORDED FOR AFTER THE RETRY. The screen only reaches these once probeToResolve
+  // has probed around the mark and once past it, so the message must not imply the
+  // coach is being asked to do the app's job — it is reporting a region that will
+  // not decode.
+  truthy('both say the retry already happened', /looking again/i.test(start) && /looking again/i.test(finish));
+  truthy('and still offer an action', /Move it a little/i.test(start) && /pick a different moment/i.test(finish));
+}
+
+console.log('\n16. WIDEN, DO NOT SNAP — an edge mark is resolved by measuring');
+{
+  // A mark fails to resolve when its frame is the LAST in its probed window: the
+  // successor is across an unprobed gap, so the frame's DURATION is unknown and
+  // markAt refuses rather than invent an error bar. Correct, and kept.
+  //
+  // The cure is to take the missing measurement, not to move the mark. Snapping to
+  // the nearest resolvable frame would relocate the coach's mark silently — 8ms a
+  // frame at 120fps — and would HIDE the gap rather than fill it, so the next mark
+  // in that region hits the same edge.
+
+  /** A decoder that clamps past-the-end requests, as AVFoundation does. */
+  const player = (fps, durationSec) => {
+    const d = 1 / fps;
+    const lastIndex = Math.floor(durationSec / d) - 1;
+    return {
+      duration: durationSec,
+      async generateThumbnailsAsync(times) {
+        return times
+          .map((t) => {
+            if (!(t >= 0)) return null;
+            const i = Math.min(lastIndex, Math.floor(t / d + 1e-9));
+            return i < 0 ? null : { actualTime: i * d };
+          })
+          .filter(Boolean);
+      },
+    };
+  };
+
+  const d = 1 / 30;
+  // A window that CLAIMS more than its frames reach: covered to 1.0, frames stop at
+  // 0.5. That is the shape a settle leaves behind at a window edge.
+  const frames = [];
+  for (let i = 0; i * d <= 0.5 + 1e-9; i += 1) frames.push(Number((i * d).toFixed(6)));
+  const edgeGrid = { frames, windows: [{ from: 0, to: 1.0 }] };
+  const at = frames[frames.length - 1];
+
+  check('the mark is UNRESOLVABLE — its frame has no measured successor', markAt(edgeGrid, at), null);
+  truthy('while the span around it reads as covered', spanCovered(edgeGrid, at - 3 * d, at + 3 * d));
+  // Which together are why a plain probe cannot help: it early-exits on the span.
+  const plain = await probeGridAround(player(30, 3), edgeGrid, at, d);
+  check('so a plain probe does nothing at all', plain.calls, 0);
+  check('and the mark is still unresolvable afterwards', markAt(plain.grid, at), null);
+
+  // The widening probe steps PAST the edge, which is what gives that frame a
+  // successor to measure.
+  const fixed = await probeToResolve(player(30, 3), edgeGrid, at, d);
+  check('probeToResolve resolves it', fixed.resolved, true);
+  truthy('by actually probing', fixed.calls > 0);
+  truthy('and the mark now resolves', !!markAt(fixed.grid, at));
+
+  // THE MARK DID NOT MOVE. This is the difference from snapping, stated as an
+  // assertion so a future "just snap it" cannot pass quietly.
+  check('at the same timestamp the coach chose', markAt(fixed.grid, at).pts, at);
+  truthy('with a MEASURED duration, not an assumed one', Math.abs(markAt(fixed.grid, at).frameDurSec - d) < 1e-6);
+
+  // Already-resolvable marks must not pay for the retry.
+  const mid = frames[3];
+  const cheap = await probeToResolve(player(30, 3), edgeGrid, mid, d);
+  check('a resolvable mark resolves without widening', cheap.resolved, true);
+  check('and costs nothing', cheap.calls, 0);
+
+  // BOUNDED. A decoder that returns nothing cannot be searched into submission —
+  // the caller is told, and says so, rather than probing forever.
+  const dead = { duration: 3, async generateThumbnailsAsync() { return []; } };
+  const hopeless = await probeToResolve(dead, emptyGrid(), 1.0, d);
+  check('a decoder returning nothing gives up', hopeless.resolved, false);
+  truthy('after a bounded number of calls', hopeless.calls > 0 && hopeless.calls <= 4);
+}
+
+console.log('\n17. A WINDOW CLAIMS ONLY WHAT CAME BACK');
+{
+  // THE ROOT OF THE SNAPPING LOCK, third and final direction. Two rounds fixed two
+  // symptoms; this is the cause both of them were downstream of.
+  //
+  // ingestFrames recorded the range that was ASKED about. Every failed extraction
+  // therefore left a hole under a claimed span — and a claimed span with no frames
+  // in it is a mark that cannot resolve and will never be probed again, because
+  // probeGridAround sees "covered" and declines. spanCovered fixed the two-window
+  // version of this; it cannot fix the one-window version, where the hole is inside.
+  const d = 1 / 30;
+
+  // The unit rule first.
+  const asked = { from: 1.0, to: 2.0 };
+  check('nothing found claims nothing', coveredWindow(asked, [], 5), { from: 1.0, to: 1.0 });
+  check('frames stopping short shorten the claim', coveredWindow(asked, [1.0, 1.2, 1.4], 5), { from: 1.0, to: 1.4 });
+  check('and a late start raises the floor', coveredWindow(asked, [1.6, 1.8], 5), { from: 1.6, to: 1.8 });
+  check('the claim never exceeds the ask', coveredWindow(asked, [0.5, 3.0], 5), { from: 1.0, to: 2.0 });
+  // THE TAIL IS THE DELIBERATE EXCEPTION: past the clip's end nothing exists, and
+  // treating that as unprobed would make every step near the finish re-probe it.
+  check('past the clip end the ask is kept', coveredWindow({ from: 4.5, to: 5.5 }, [4.5, 4.9], 5), { from: 4.5, to: 5.5 });
+
+  /** A decoder that FAILS inside a band, which is what leaves a hole under a claim. */
+  const flaky = (fps, durationSec, deadFrom, deadTo) => {
+    const step = 1 / fps;
+    const lastIndex = Math.floor(durationSec / step) - 1;
+    return {
+      duration: durationSec,
+      async generateThumbnailsAsync(times) {
+        return times
+          .map((t) => {
+            if (!(t >= 0)) return null;
+            if (t >= deadFrom && t <= deadTo) return null;
+            const i = Math.min(lastIndex, Math.floor(t / step + 1e-9));
+            return i < 0 ? null : { actualTime: i * step };
+          })
+          .filter(Boolean);
+      },
+    };
+  };
+
+  // Probe centred just BELOW a dead band, so the window's upper half falls in it.
+  const player = flaky(30, 15, 1.10, 1.60);
+  const r = await probeGridAround(player, emptyGrid(), 1.0, d);
+  const w = r.grid.windows[0];
+  const top = Math.max(...r.grid.frames);
+
+  truthy('the probe found frames', r.grid.frames.length > 2);
+  truthy('and its window stops at the last one it actually got', Math.abs(w.to - top) < 1e-6);
+  // THE ASSERTION THAT MATTERS: the dead band is NOT claimed.
+  check('a region the decoder refused is not covered', isCovered(r.grid, 1.45), false);
+  // Which is what lets the next probe run instead of early-exiting forever.
+  const again = await probeGridAround(flaky(30, 15, 1.10, 1.60), r.grid, 1.45, d);
+  truthy('so a later probe there is not skipped', again.calls > 0);
+
+  // And once the decoder recovers, the region resolves — no lock, no nudging.
+  const healthy = { duration: 15, async generateThumbnailsAsync(times) {
+    return times.map((t) => (t >= 0 ? { actualTime: Math.floor(t / d + 1e-9) * d } : null)).filter(Boolean);
+  } };
+  const healed = await probeToResolve(healthy, r.grid, 1.45, d);
+  check('a recovered decoder resolves the mark', healed.resolved, true);
+  truthy('with a one-frame duration, not one spanning the hole', Math.abs(markAt(healed.grid, 1.45).frameDurSec - d) < 1e-6);
+}
+
+console.log('\n18. A CLIP REPORTS ITS OWN LENGTH AND RATE, NOT THE LAST ONE\'S');
+{
+  // CONFIRMED ON DEVICE FROM TWO SYMPTOMS AT ONCE, and they turned out to be one bug.
+  //
+  //   duration   a 0.7s recording reported 7 seconds — the clip before it — so the
+  //              finish handle was clamped into space the clip does not contain.
+  //   frameDur   the probe aims using this seed, so a seed one rate BELOW the truth
+  //              samples every second frame and measuredFps reports exactly half.
+  //              "60 measures 30, 120 measures 60" was never a camera degrading; it
+  //              was the probe measuring the PREVIOUS clip's grid, and layer 3
+  //              refusing a good recording and blaming the hardware.
+  //
+  // waitForClip could not fix this and did not: it waits for duration > 0 and a
+  // readable track, and the stale values satisfy both instantly.
+
+  /** A player that behaves like expo-video: replaceAsync RESOLVES while duration and
+   *  the track still describe the previous source, for `lag` polls. */
+  //
+  // THE CLEAR LAGS TOO, and that detail is the test. Modelling replaceAsync(null) as
+  // instant left nothing for the confirmation loop to wait on, so deleting that loop
+  // survived the mutation — the fixture was proving half the fix.
+  const laggyPlayer = (lag) => {
+    // WHAT THE PLAYER REPORTS lags what it was asked to load, and during that window
+    // it reports the PREVIOUS clip — not null, not zero. That is the entire bug, and
+    // two earlier versions of this fixture modelled the gap as null instead, which
+    // made the clear look unnecessary and let the mutation survive.
+    //
+    // The TRACK settles after the duration, which is why waiting on duration alone
+    // was never enough even before staleness was understood.
+    let shown = null;
+    let shownTrack = null;
+    let target = null;
+    let left = 0;
+    let trackLeft = 0;
+    const tick = () => {
+      if (left > 0) {
+        left -= 1;
+        if (left === 0) shown = target;
+      }
+      if (trackLeft > 0) {
+        trackLeft -= 1;
+        if (trackLeft === 0) shownTrack = target;
+      }
+    };
+    return {
+      get duration() {
+        tick();
+        return shown ? shown.duration : 0;
+      },
+      get videoTrack() {
+        tick();
+        return shownTrack ? { frameRate: shownTrack.fps } : null;
+      },
+      availableVideoTracks: [],
+      async replaceAsync(source) {
+        target = source;
+        left = Math.max(1, lag);
+        trackLeft = Math.max(1, lag) + 4;
+      },
+    };
+  };
+
+  // The first clip: 7 seconds at 30fps.
+  const p = laggyPlayer(1);
+  await p.replaceAsync({ duration: 7.0, fps: 30 });
+  const first = await loadClipInto(p, { duration: 7.0, fps: 30 }, 500);
+  check('the first clip reads its own length', first.durationSec, 7.0);
+  check('and its own rate', Math.round(1 / first.frameDurSec), 30);
+
+  // Now a 0.7s clip at 60fps, on a player that lags. THE DEVICE CASE.
+  const laggy = laggyPlayer(6);
+  await laggy.replaceAsync({ duration: 7.0, fps: 30 });
+  // FULLY LOAD IT FIRST. The first version of this fixture skipped this, so the
+  // player never held a previous clip and the whole block passed against the OLD
+  // behaviour too — a test that could not fail, which is worse than no test. Caught
+  // by mutating loadClipInto back and watching nothing happen.
+  while ((laggy.duration || 0) === 0 || !laggy.videoTrack) await new Promise((r) => setTimeout(r, 5));
+  check('the previous clip really is loaded', laggy.duration, 7.0);
+  check('and its track is the stale one', laggy.videoTrack.frameRate, 30);
+
+  const second = await loadClipInto(laggy, { duration: 0.7, fps: 60 }, 2000);
+  check('a short clip after a long one reports ITS length', second.durationSec, 0.7);
+  truthy('not the previous 7 seconds', second.durationSec !== 7.0);
+  check('and ITS frame rate', Math.round(1 / second.frameDurSec), 60);
+  truthy('not the previous 30 — the half-measurement ladder', Math.round(1 / second.frameDurSec) !== 30);
+  check('with the rate marked readable', second.tracked, true);
+
+  // THE LADDER, stated as the consequence rather than the mechanism: a seed one rate
+  // below the truth can only ever measure half, whatever the camera did.
+  const seededLow = 1 / 30;
+  const realFrames = [];
+  for (let i = 0; i < 20; i += 1) realFrames.push(i / 60);
+  // Aiming at 1/30 centres on a 60fps clip hits every second frame.
+  const hit = new Set();
+  for (let k = 0; k < 10; k += 1) {
+    const t = (k + 0.5) * seededLow;
+    let best = 0;
+    for (const f of realFrames) if (f <= t + 1e-9) best = f;
+    hit.add(Number(best.toFixed(6)));
+  }
+  const gaps = [...hit].sort((a, b) => a - b).slice(1).map((f, i) => f - [...hit].sort((a, b) => a - b)[i]);
+  truthy('a 1/30 seed on a 60fps clip only ever finds 30fps spacing',
+    gaps.every((g) => Math.abs(g - 1 / 30) < 1e-6));
+}
+
+console.log('\n19. A SETTLE RESOLVES THE MARK NOBODY IS TOUCHING');
+{
+  // THE DEVICE SIGNATURE THIS EXISTS FOR: `probe 239ms/18 start:ok finish:NULL`.
+  //
+  // Eighteen calls, no UNRESOLVED, and a clip that cannot be timed. Three fixes each
+  // moved that symptom without removing it, because all three were aimed at the wrong
+  // question. The probe was not failing. It was never pointed at the failing mark.
+  //
+  // A settle probes ONE position — the handle just released. A mark stranded by some
+  // earlier settle is never examined again, so every later settle on the other handle
+  // truthfully reports resolved:true while Keep stays disabled and the readout sits
+  // on SNAPPING. Recovery was by luck: the coach had to happen to drag the stranded
+  // handle.
+  //
+  // A decoder that will not return one particular frame, which is what leaves the
+  // hole in the first place.
+  const D = 1 / 30;
+  const holeAt = (bad) => ({
+    duration: 6,
+    async generateThumbnailsAsync(times) {
+      const out = [];
+      for (const t of times) {
+        if (t < 0 || t >= 6) continue;
+        const i = Math.floor(t / D + 1e-9);
+        if (bad.has(i)) continue;
+        out.push({ actualTime: Number((i * D).toFixed(6)) });
+      }
+      return out;
+    },
+  });
+
+  // A grid with the finish mark stranded: covered, but with no frame that has a
+  // measured successor at that position.
+  const stranded = { frames: [], windows: [{ from: 0, to: 0.4 }, { from: 3.0, to: 3.4 }] };
+  for (let i = 0; i * D <= 0.4 + 1e-9; i += 1) stranded.frames.push(Number((i * D).toFixed(6)));
+  stranded.frames.push(3.0);
+  const startPos = stranded.frames[2];
+  const finishPos = 3.0;
+
+  truthy('the mark under the finger resolves', !!markAt(stranded, startPos));
+  check('the OTHER mark does not', markAt(stranded, finishPos), null);
+
+  // What the old one-mark settle did. probeToResolve is still exported and still
+  // right for what it does; the point is what it leaves behind.
+  const oneMark = await probeToResolve(holeAt(new Set()), stranded, startPos, D);
+  check('a one-mark settle calls it resolved', oneMark.resolved, true);
+  check('while the other mark is still unresolvable', markAt(oneMark.grid, finishPos), null);
+  // Which is the lie exactly: a settle that reports success and leaves the screen
+  // unable to time the clip.
+
+  const both = await resolveMarks(holeAt(new Set()), stranded, startPos, finishPos, D);
+  check('resolveMarks resolves the moved mark', both.movedResolved, true);
+  check('AND the one nobody touched', both.otherResolved, true);
+  // AND SAYS THAT IT WENT AND LOOKED. On device, "the mark is still NULL" was
+  // indistinguishable from "the rescue never ran", and the only way to tell was to
+  // count calls and reason about it. The answer is reported instead.
+  check('reporting that it actually probed the other mark', both.probedOther, true);
+  truthy('the stranded mark now reads back', !!markAt(both.grid, finishPos));
+  truthy('and the moved mark still does', !!markAt(both.grid, startPos));
+
+  // NEITHER MARK MOVED. Repairing by relocating a handle would hide the gap rather
+  // than fill it, and would change the time the coach recorded without saying so.
+  check('the finish mark is at the timestamp it was already on', markAt(both.grid, finishPos).pts, finishPos);
+  truthy('with a MEASURED duration', Math.abs(markAt(both.grid, finishPos).frameDurSec - D) < 1e-6);
+
+  // FREE WHEN THERE IS NOTHING TO REPAIR. The second probe must cost no extractions
+  // on the happy path, or every settle in an ordinary session pays for a rescue that
+  // is not needed. markAt is a pure array scan; that is the whole reason this is
+  // affordable.
+  //
+  // Stated as a COMPARISON against the one-mark probe on the same grid, not as an
+  // absolute call count. An absolute count silently folds in whatever the moved
+  // mark's own probe cost, and the first version of this assertion did exactly that
+  // and failed at 12 — a number that was entirely the moved mark's, and said nothing
+  // about the second one.
+  const healthy = { frames: [], windows: [{ from: 0, to: 1.0 }] };
+  for (let i = 0; i * D <= 1.0 + 1e-9; i += 1) healthy.frames.push(Number((i * D).toFixed(6)));
+  //
+  // The other mark is deliberately placed where a probe WOULD cost extractions if one
+  // ran — resolvable, but close enough to the window edge that spanCovered is false.
+  // The first version of this put it in the middle of the window, where a probe
+  // early-exits at zero calls anyway, so "costs nothing" was true whether the skip
+  // worked or not. A mutation that removed the skip entirely passed it.
+  const movedAt = healthy.frames[8];
+  const otherAt = healthy.frames[28];
+  const wouldCost = await probeToResolve(holeAt(new Set()), healthy, otherAt, D);
+  truthy('probing the other mark would not be free', wouldCost.calls > 0);
+  const alone = await probeToResolve(holeAt(new Set()), healthy, movedAt, D);
+  truthy('a healthy pair needs no probing at all', alone.calls === 0);
+  const cheap = await resolveMarks(holeAt(new Set()), healthy, movedAt, otherAt, D);
+  check('and resolving BOTH costs exactly what resolving one did', cheap.calls, alone.calls);
+  check('because it never probed the other mark', cheap.probedOther, false);
+  check('and both are reported resolved', cheap.movedResolved && cheap.otherResolved, true);
+
+  // HONEST WHEN IT CANNOT. A frame the decoder will not hand back stays unreadable,
+  // and the answer is to SAY so — this is what puts UNRESOLVED on the perf line and
+  // the "will not read back" message on screen, instead of a silent SNAPPING.
+  const dead = { duration: 6, async generateThumbnailsAsync() { return []; } };
+  const cannot = await resolveMarks(dead, stranded, startPos, finishPos, D);
+  check('an unreadable region is reported, not hidden', cannot.otherResolved, false);
+  truthy('after a bounded number of calls', cannot.calls > 0 && cannot.calls <= 8);
+}
+
+console.log('\n20. THE HANDLE STOPS WHERE THE FRAMES DO, NOT WHERE A FORMULA SAYS');
+{
+  // Reported from device: a 0.17s 120fps recording whose right handle stopped at
+  // about 0.16, leaving a visible band at the end that refused to be entered.
+  //
+  // lastMarkableTime backs off a fixed 1.5 frames from the clip's DURATION. That is a
+  // guess made before any frame is known, and it is the wrong kind of rule rather than
+  // the wrong constant: the grid already holds the clip's final frame, because
+  // alignedProbes fetches it on purpose with its tail rescue. Every position below
+  // that frame resolves with a measured duration, and the formula was refusing them.
+  const shortPlayer = (fps, durationSec) => {
+    const fd = 1 / fps;
+    const pts = [];
+    for (let i = 0; i * fd < durationSec; i += 1) pts.push(Number((i * fd).toFixed(9)));
+    return {
+      duration: durationSec,
+      pts,
+      async generateThumbnailsAsync(times) {
+        const t = times[0];
+        if (t < 0 || t >= durationSec) return [];
+        let i = 0;
+        for (let k = pts.length - 1; k >= 0; k -= 1) if (pts[k] <= t + 1e-12) { i = k; break; }
+        return [{ actualTime: pts[i] }];
+      },
+    };
+  };
+
+  // The real load sequence: probe the head, then probe the formula's end.
+  const loadGrid = async (p, fd) => {
+    let g = emptyGrid();
+    g = (await probeGridAround(p, g, 0, fd)).grid;
+    g = (await probeGridAround(p, g, lastMarkableTime(p.duration, fd), fd)).grid;
+    return g;
+  };
+
+  const fd120 = 1 / 120;
+  const p = shortPlayer(120, 0.17);
+  const g = await loadGrid(p, fd120);
+  const formula = lastMarkableTime(0.17, fd120);
+  const measured = markableEnd(g, 0.17, fd120);
+
+  // THE PROPERTY THAT MATTERS: the position the handle stops at must be markable.
+  // Everything else here is about how much is recovered; this is about not trading
+  // the band for a handle that lands somewhere unresolvable.
+  truthy('a mark at the new limit resolves', !!markAt(g, measured));
+  truthy('with a MEASURED duration, not an assumed one',
+    Math.abs(markAt(g, measured).frameDurSec - fd120) < 1e-6);
+  truthy('and the limit is later than the formula allowed', measured > formula);
+  truthy('recovering most of the band — over 8ms of a 0.17s clip',
+    (measured - formula) * 1000 > 8);
+
+  // The final frame itself stays unmarkable, and that is not a bug to be fixed later:
+  // nothing follows it, so its duration cannot be measured and markAt refuses rather
+  // than inventing an error bar. The limit must sit BELOW it.
+  const lastFrame = p.pts[p.pts.length - 1];
+  check('the clip final frame is in the grid at all', g.frames.includes(lastFrame), true);
+  check('but is itself unmarkable', markAt(g, lastFrame), null);
+  truthy('so the limit stops short of it', measured < lastFrame);
+
+  // COARSE RATES LOSE MORE, which is why a constant in frames cannot be right.
+  const fd30 = 1 / 30;
+  const p30 = shortPlayer(30, 0.17);
+  const g30 = await loadGrid(p30, fd30);
+  truthy('at 30fps the same clip recovers far more',
+    (markableEnd(g30, 0.17, fd30) - lastMarkableTime(0.17, fd30)) * 1000 > 40);
+  truthy('and that limit is markable too', !!markAt(g30, markableEnd(g30, 0.17, fd30)));
+
+  // THE FORMULA IS A FLOOR, and that is what makes this safe. A grid whose highest
+  // frame is mid-clip — sparse, or a load whose tail probe failed — must not clamp the
+  // handle into the middle of the clip and put the finish mark out of reach.
+  const sparse = { frames: [0.5, 0.5 + fd120], windows: [{ from: 0.4, to: 0.6 }] };
+  check('a mid-clip grid falls back to the formula',
+    markableEnd(sparse, 3.0, fd120), lastMarkableTime(3.0, fd120));
+  check('and an empty grid does too',
+    markableEnd(emptyGrid(), 3.0, fd120), lastMarkableTime(3.0, fd120));
+  truthy('the result is never earlier than the formula',
+    markableEnd(g, 0.17, fd120) >= formula && markableEnd(sparse, 3.0, fd120) >= lastMarkableTime(3.0, fd120));
+}
+
+
+console.log('\n21. THE STRIP AND THE CLIP AGREE, IN BOTH DIRECTIONS');
+{
+  // The strip spans the MARKABLE range rather than the clip's duration, so the handle
+  // reaches the end of the strip instead of stopping at a visible wall it will not
+  // cross. That means a pixel and a second are no longer the same coordinate, and the
+  // moment two places convert between them independently they are free to disagree —
+  // which this screen has already been bitten by twice. One mapping, both directions,
+  // and the round trip asserted rather than assumed.
+  const s = stripScale(320, 22, 0, 0.16567);
+  check('the travel is the strip less one handle', s.travelPx, 298);
+
+  // ROUND TRIP, TIME -> PIXEL -> TIME, across the whole range.
+  let worstT = 0;
+  for (let i = 0; i <= 200; i += 1) {
+    const t = (i / 200) * s.endSec;
+    worstT = Math.max(worstT, Math.abs(xToTime(timeToX(t, s), s) - t));
+  }
+  truthy(`a time survives the round trip (worst ${(worstT * 1e6).toFixed(2)}us)`, worstT < 1e-9);
+
+  // AND PIXEL -> TIME -> PIXEL, which is the direction a drag actually uses.
+  let worstX = 0;
+  for (let px = 0; px <= s.travelPx; px += 1) {
+    worstX = Math.max(worstX, Math.abs(timeToX(xToTime(px, s), s) - px));
+  }
+  truthy(`a pixel survives it too (worst ${worstX.toExponential(1)}px)`, worstX < 1e-9);
+
+  // THE ENDS ARE THE ENDS. The whole complaint was a handle that could not reach the
+  // end of the strip, so this is the assertion that the fix actually landed.
+  check('time zero is the left edge', timeToX(0, s), 0);
+  check('the markable end is the right edge', timeToX(s.endSec, s), s.travelPx);
+  check('and the right edge means the markable end', xToTime(s.travelPx, s), s.endSec);
+
+  // NOTHING ESCAPES THE RANGE, in either direction, so a stale mark cannot render off
+  // its own track and a fast drag cannot ask for a time the clip does not have.
+  check('a time past the end clamps', timeToX(99, s), s.travelPx);
+  check('a negative time clamps', timeToX(-5, s), 0);
+  check('a pixel past the end clamps', xToTime(9999, s), s.endSec);
+  check('a degenerate strip is not a division by zero', timeToX(0.1, stripScale(0, 22, 0, 1)), 0);
+  check('nor is a clip with no markable range', xToTime(10, stripScale(320, 22, 0, 0)), 0);
+
+  // THE CLAIM THAT MATTERS, and it is the composed one rather than either half: a
+  // mark placed at a display position must resolve to the timestamp that position
+  // claims. Run against a real probed grid, not against arithmetic.
+  const fps = 120;
+  const fd = 1 / fps;
+  const dur = 0.17;
+  const pts = [];
+  for (let i = 0; i * fd < dur; i += 1) pts.push(Number((i * fd).toFixed(9)));
+  const p = {
+    duration: dur,
+    async generateThumbnailsAsync(times) {
+      const t = times[0];
+      if (t < 0 || t >= dur) return [];
+      let i = 0;
+      for (let k = pts.length - 1; k >= 0; k -= 1) if (pts[k] <= t + 1e-12) { i = k; break; }
+      return [{ actualTime: pts[i] }];
+    },
+  };
+  let g = emptyGrid();
+  g = (await probeGridAround(p, g, 0, fd)).grid;
+  g = (await probeGridAround(p, g, lastMarkableTime(dur, fd), fd)).grid;
+  // A short clip, so probe the middle too — the coach would, by dragging.
+  g = (await probeGridAround(p, g, dur / 2, fd)).grid;
+  const live = stripScale(320, 22, markableStart(g), markableEnd(g, dur, fd));
+
+  let unresolvable = 0;
+  let worstBack = 0;
+  for (let px = 0; px <= live.travelPx; px += 1) {
+    const t = xToTime(px, live);
+    const m = markAt(g, t);
+    if (!m) { unresolvable += 1; continue; }
+    // The mark resolves to a FRAME, so its pixel is the frame's pixel — which must be
+    // within one frame's width of where the finger was. More than that would mean the
+    // handle jumps somewhere the coach did not point at.
+    worstBack = Math.max(worstBack, Math.abs(timeToX(m.pts, live) - px));
+  }
+  const framePx = (fd / live.endSec) * live.travelPx;
+  check('every position on the strip is markable', unresolvable, 0);
+  truthy(`and resolves within one frame of where it was placed` +
+    ` (worst ${worstBack.toFixed(1)}px, a frame is ${framePx.toFixed(1)}px)`, worstBack <= framePx + 1e-9);
+
+  // AND THE TIMESTAMP IS THE CLIP'S, not a rescaled one. The rescale lives between a
+  // pixel and a second; nothing stored changes.
+
+  // ===================================================== THE NEAR END, TOO
+  //
+  // Reported after the far end was fixed: a sliver at the START that the handle did
+  // not begin in, but which accepted a mark once dragged into. Two separate causes
+  // wearing one symptom, and both are the same mistake as the end clamp was —
+  // a position computed from an assumption rather than from the grid.
+  //
+  // ONE: the strip began at time zero by construction, whether or not time zero was
+  // markable. A clip whose first frame has a presentation timestamp above zero — an
+  // edit list, a track that does not start at the origin — rendered a leading region
+  // no mark can resolve into.
+  const offset = 0.25;
+  const offPts = [];
+  for (let i = 0; offset + i * fd < dur + offset; i += 1) offPts.push(Number((offset + i * fd).toFixed(9)));
+  const offPlayer = {
+    duration: offset + dur,
+    async generateThumbnailsAsync(times) {
+      const t = times[0];
+      if (t < 0 || t >= offset + dur) return [];
+      // Before the first frame the decoder clamps to it, which is what makes the
+      // leading region look probed while holding nothing markable.
+      let i = 0;
+      for (let k = offPts.length - 1; k >= 0; k -= 1) if (offPts[k] <= t + 1e-12) { i = k; break; }
+      return [{ actualTime: offPts[i] }];
+    },
+  };
+  let og = emptyGrid();
+  og = (await probeGridAround(offPlayer, og, 0, fd)).grid;
+  og = (await probeGridAround(offPlayer, og, lastMarkableTime(offset + dur, fd), fd)).grid;
+  og = (await probeGridAround(offPlayer, og, offset + dur / 2, fd)).grid;
+
+  truthy('the clip does not start at zero', markableStart(og) > 0);
+  check('and time zero is not markable', markAt(og, 0), null);
+  check('so the strip does not start there either', markableStart(og), og.frames[0]);
+
+  const offScale = stripScale(320, 22, markableStart(og), markableEnd(og, offset + dur, fd));
+  let offBad = 0;
+  for (let px = 0; px <= offScale.travelPx; px += 1) {
+    if (!markAt(og, xToTime(px, offScale))) offBad += 1;
+  }
+  check('every pixel of an offset clip is markable too', offBad, 0);
+  check('the left edge IS the first markable time', xToTime(0, offScale), markableStart(og));
+  truthy('and a mark there resolves', !!markAt(og, xToTime(0, offScale)));
+
+  // The round trip has to survive a non-zero origin, which the first version could
+  // not have caught: it only ever tested a scale starting at zero, where the offset
+  // term is invisible.
+  let worstOff = 0;
+  for (let i = 0; i <= 200; i += 1) {
+    const t = offScale.startSec + (i / 200) * (offScale.endSec - offScale.startSec);
+    worstOff = Math.max(worstOff, Math.abs(xToTime(timeToX(t, offScale), offScale) - t));
+  }
+  truthy(`a time survives it with an offset origin (worst ${(worstOff * 1e6).toFixed(2)}us)`, worstOff < 1e-9);
+
+  // TWO: the handles initialised from their own arithmetic rather than from the
+  // strip, so each could start somewhere the strip does not begin or end. They are
+  // the ends of the markable range now, which is what the strip draws.
+  check('the start handle initialises at the left edge', markableStart(og), xToTime(0, offScale));
+  check('the finish handle initialises at the right edge',
+    markableEnd(og, offset + dur, fd), xToTime(offScale.travelPx, offScale));
+  truthy('and both of those are markable',
+    !!markAt(og, markableStart(og)) && !!markAt(og, markableEnd(og, offset + dur, fd)));
+
+  // THE STRIP CANNOT RUN BACKWARDS. Asserted with a range that really is inverted:
+  // the first version used an empty grid, where start and end are both zero and the
+  // claim holds whether the guard exists or not. A mutation removing the guard passed
+  // it. A grid can be probed in the middle and nowhere else, which is exactly when a
+  // measured start can sit past a formula-floored end.
+  const inverted = stripScale(320, 22, 5, 1);
+  truthy('an inverted range is collapsed, not flipped', inverted.endSec >= inverted.startSec);
+  check('and maps to a single point rather than a negative span', timeToX(3, inverted), 0);
+  check('with no time outside it', xToTime(999, inverted), inverted.startSec);
+  const empty = stripScale(320, 22, markableStart(emptyGrid()), 0);
+  truthy('an empty grid gives a strip that does not run backwards', empty.endSec >= empty.startSec);
+
+  const atEnd = markAt(g, xToTime(live.travelPx, live));
+  truthy('the mark at the far end is a real frame of the clip', pts.includes(atEnd.pts));
+  truthy('and sits inside the clip, not at the rescaled end', atEnd.pts < dur);
+}
+
 
 console.log(
   failures === 0

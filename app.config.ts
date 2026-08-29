@@ -9,6 +9,9 @@ const PHOTOS_REASON =
 const SAVE_PHOTOS_REASON =
   'EqualSplit saves a run video back to your camera roll when you export it.';
 
+const CAMERA_REASON =
+  'EqualSplit records a rep at high frame rate so you can mark the start and finish frames and time it.';
+
 const config: ExpoConfig = {
   name: 'EqualSplit',
   slug: 'equalsplit-app',
@@ -58,16 +61,23 @@ const config: ExpoConfig = {
     // is right: we frame-step a local clip and never play media in the background.
     'expo-video',
     'expo-image',
-    // Camera and microphone are refused. Stage 1 has no in-app capture — clips come
-    // from the system camera via the library. NOTE for Stage 2: cameraPermission
-    // must become a string here, NOT be set in ios.infoPlist. This plugin owns
-    // NSCameraUsageDescription and its createPermissionsPlugin DELETES the key when
-    // passed false, overwriting anything infoPlist sets.
+    // THE CAMERA KEY LIVES HERE, and it is not obvious why.
+    //
+    // VisionCamera v5 ships NO config plugin, so it declares no Info.plist keys of
+    // its own — but it cannot open a camera without NSCameraUsageDescription. This
+    // plugin owns that key, and its createPermissionsPlugin DELETES it when passed
+    // `false`, overwriting anything ios.infoPlist sets. So the string has to be
+    // here: setting it in infoPlist and leaving `false` here strips it again and
+    // the camera fails silently at runtime, which is the worst way to find out.
+    //
+    // Microphone stays refused. Recording is enableAudio false — a sprint is timed
+    // from frames, and a microphone permission nobody uses is one the coach has to
+    // decline for no reason.
     [
       'expo-image-picker',
       {
         photosPermission: PHOTOS_REASON,
-        cameraPermission: false,
+        cameraPermission: CAMERA_REASON,
         microphonePermission: false,
       },
     ],
@@ -90,6 +100,10 @@ const config: ExpoConfig = {
     // Ordering is irrelevant here for the same reason — it touches nothing the
     // photo plugins above are arguing over.
     '@react-native-community/datetimepicker',
+    // react-native-vision-camera is deliberately ABSENT from this list. v5 ships no
+    // config plugin at all — it is autolinked from package.json, and its one
+    // Info.plist requirement is the camera string declared on expo-image-picker
+    // above. Adding a name here that does not resolve to a plugin fails prebuild.
   ],
   extra: {
     eas: {

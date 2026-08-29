@@ -19,10 +19,16 @@
 //               probed SPAN including the gaps. It read low and rose as more of
 //               the clip was probed. Descriptive only — nothing computes from it.
 //
-//   quantSdMs   came from a mark whose frame duration could be measured across an
+//   the error   came from a mark whose frame duration could be measured across an
 //               unprobed gap: 9466ms instead of 33.3ms in the reproduction, giving
 //               a +/-2733ms error bar. This one is a claim about accuracy, and a
 //               wrong one is worse than none.
+//
+//               TWO KEYS AND TWO UNITS. Rows written before the figure changed hold
+//               `quantSdMs`, a standard deviation; newer rows hold `errorMs`, one
+//               whole frame period — about sqrt(12) times larger for the same clip.
+//               Old rows are deliberately NOT recomputed, so this script reads both
+//               and scales its threshold to whichever it found.
 //
 // NOT AFFECTED: total_ms, startPts and endPts. The elapsed time is the difference
 // of two real presentation timestamps and was never touched by any of this. No
@@ -86,13 +92,29 @@ for (const r of rows) {
   }
   if (!v || v.engine !== 'video') continue;
 
-  const sd = Number.isFinite(v.quantSdMs) ? v.quantSdMs : null;
+  // BOTH KEYS, and the units differ between them.
+  //
+  // Rows written before the error figure changed carry `quantSdMs`, a standard
+  // deviation. Rows written after carry `errorMs`, a whole frame period. Reading
+  // only the old key would have made every NEW row look like it had no error bar at
+  // all, and this script's whole job is to notice rows whose error bar is wrong.
+  const isLegacy = !Number.isFinite(v.errorMs) && Number.isFinite(v.quantSdMs);
+  const err = Number.isFinite(v.errorMs)
+    ? v.errorMs
+    : Number.isFinite(v.quantSdMs)
+      ? v.quantSdMs
+      : null;
   const fps = Number.isFinite(v.fps) ? v.fps : null;
 
-  if (sd !== null && sd > MAX_PLAUSIBLE_SD_MS) {
-    // Reconstruct what frame length that sigma implies, so the number is legible
-    // rather than just "too big". With one frame dominating, sd ~ d/sqrt(12).
-    suspect.push({ ...r, sd, fps, impliedFrameMs: sd * Math.sqrt(12) });
+  // A whole frame is sqrt(12) times a sigma for the same clip, so the threshold has
+  // to scale with which figure the row actually holds or every new row trips it.
+  const limit = isLegacy ? MAX_PLAUSIBLE_SD_MS : MAX_PLAUSIBLE_SD_MS * Math.sqrt(12);
+
+  if (err !== null && err > limit) {
+    // Reconstruct the frame length the figure implies, so the number is legible
+    // rather than just "too big". A legacy sigma implies d ~ sd*sqrt(12); a modern
+    // errorMs IS the frame length.
+    suspect.push({ ...r, sd: err, fps, impliedFrameMs: isLegacy ? err * Math.sqrt(12) : err });
   }
   // A rate outside this range is not a camera, it is the count-over-span artifact.
   if (fps !== null && (fps < FLOOR_FPS || fps > 1000)) oddFps.push({ ...r, fps });

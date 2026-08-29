@@ -4,7 +4,9 @@
 // does not, the FINISH *notification* is being dropped (delivery, not parsing).
 
 import { useEffect, useRef, useState } from 'react';
-import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Platform, Pressable, Share, StyleSheet, Text, View } from 'react-native';
+
+import { readLog } from '../diag/crashlog';
 
 import { useGate } from '../ble/GateProvider';
 import { useV2 } from '../ble/V2Provider';
@@ -21,6 +23,26 @@ import {
 
 type LogLine = { id: string; text: string; kind: 'evt' | 'status' };
 let logSeq = 0;
+
+/**
+ * Hand the event log to the share sheet, or say there is nothing in it.
+ *
+ * Shared as TEXT rather than written to a file first: it is a few kilobytes, and a
+ * second copy on disk is one more thing to clean up on a phone whose storage this
+ * app already guards.
+ */
+async function shareEventLog(): Promise<void> {
+  const text = readLog();
+  if (!text.trim()) {
+    Alert.alert('Nothing logged', 'The event log is empty. It fills as the app runs.');
+    return;
+  }
+  try {
+    await Share.share({ message: text });
+  } catch (e) {
+    Alert.alert('Could not share the log', String(e));
+  }
+}
 
 export default function DebugScreen({ onBack }: { onBack?: () => void }) {
   const gate = useGate();
@@ -80,6 +102,17 @@ export default function DebugScreen({ onBack }: { onBack?: () => void }) {
         </View>
         {/* One-time maintenance, dev-mode only. Not a "clear history" button —
             it shows the distribution, then a count, before it can delete. */}
+        {/* GETTING THE LOG OFF THE PHONE. The events that explain a crash are
+            written to a file that outlives the process; this is the only way to
+            read them without a Mac and a cable, which is the situation the last
+            crash was diagnosed in — badly, from three guesses and no evidence. */}
+        <Pressable
+          onPress={() => void shareEventLog()}
+          hitSlop={8}
+          style={({ pressed }) => [styles.pruneBtn, pressed && { opacity: 0.5 }]}
+        >
+          <Text style={styles.pruneBtnText}>Share log</Text>
+        </Pressable>
         <Pressable
           onPress={() => setPruneOpen(true)}
           hitSlop={8}

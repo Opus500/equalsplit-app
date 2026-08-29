@@ -103,23 +103,49 @@ export const VIDEO_DECIMALS = 2;
 
 export type VideoTiming = {
   elapsedMs: number;
-  /** 1 sigma, from the two frames' ACTUAL durations */
-  quantSdMs: number;
-  /** the largest single-sided quantization error possible */
-  quantWorstMs: number;
+  /**
+   * The +/- to show, in ms: one whole frame at the coarser end, rounded up.
+   *
+   * NOT a standard deviation any more, and not named like one. See timeFromMarks.
+   */
+  errorMs: number;
 };
 
 /**
- * Elapsed time between two marked frames, with its quantization error.
+ * Round UP to a tenth of a millisecond.
+ *
+ * Up, not to nearest, because the whole point of this figure is that it must never
+ * understate. A number that rounds down is a smaller claim than the evidence
+ * supports, which is the failure this change exists to remove.
+ */
+export function ceilTenth(ms: number): number {
+  return Math.ceil(ms * 10) / 10;
+}
+
+/**
+ * Elapsed time between two marked frames, with the error it carries.
  *
  * MARKING CONVENTION: the coach marks the first frame in which the athlete HAS
  * crossed. So the true crossing lies within the one frame before each mark, and
- * each mark is biased late by up to one frame duration.
+ * each mark is biased late by up to one frame duration. Both ends are biased in the
+ * SAME direction, so the bias very nearly cancels in the difference.
  *
- * The important consequence: both ends are biased in the SAME direction, so the
- * bias very nearly cancels in the difference and the expected error is ~0 rather
- * than one frame. What is left is spread, not offset — which is why the figure
- * below is a standard deviation and not "half a frame".
+ * THE FIGURE IS A WHOLE FRAME PERIOD, AND IT USED TO BE A STANDARD DEVIATION.
+ *
+ * The old number was sqrt((da^2 + db^2)/12) — the statistical spread from landing
+ * anywhere within a frame at each end. That is correct in isolation and it was the
+ * wrong number to show, for a reason arithmetic cannot see: it sits on screen beside
+ * two LARGER errors that are not in it at all. Camera parallax is not modelled, and
+ * the body-part bias is an estimate at roughly 37ms. Printing +/-1.7ms next to those
+ * claims a precision the method does not have, and a coach reading it would be right
+ * to believe the video was tighter than it is.
+ *
+ * So it is now the worst case: one full frame, at whichever end has the longer one,
+ * rounded UP. 240fps reads 4.2ms rather than 1.7. It is a number that can be
+ * defended without a footnote, which the tighter one could not be.
+ *
+ * SAVED ROWS ARE NOT RECOMPUTED. Old rows keep the figure they were written with,
+ * under the old `quantSdMs` key; new rows carry `errorMs`. See parseVideoRunJson.
  *
  * Returns null for marks that are not in order. A negative elapsed time is not a
  * measurement to be shown with a warning; it is an input error.
@@ -131,12 +157,11 @@ export function timeFromMarks(a: VideoMark, b: VideoMark): VideoTiming | null {
   const elapsedMs = (b.pts - a.pts) * 1000;
   const da = Math.max(0, a.frameDurSec) * 1000;
   const db = Math.max(0, b.frameDurSec) * 1000;
-  // Each mark's error is ~uniform over one frame, so variance is d^2/12 apiece
-  // and the two ends add in quadrature.
-  const quantSdMs = Math.sqrt((da * da + db * db) / 12);
-  const quantWorstMs = Math.max(da, db);
+  // The LONGER of the two frames, whole. A mixed-rate pair is only as good as its
+  // coarser end, and averaging them would hide that.
+  const errorMs = ceilTenth(Math.max(da, db));
 
-  return { elapsedMs, quantSdMs, quantWorstMs };
+  return { elapsedMs, errorMs };
 }
 
 export function formatVideoSeconds(elapsedMs: number, decimals = VIDEO_DECIMALS): string {
@@ -151,7 +176,10 @@ export function formatVideoSeconds(elapsedMs: number, decimals = VIDEO_DECIMALS)
  * dropping it.
  */
 export function formatVideoTime(t: VideoTiming): string {
-  return `${formatVideoSeconds(t.elapsedMs)}s ± ${Math.round(t.quantSdMs)}ms`;
+  // One decimal, because the figures now differ by a tenth where it matters —
+  // 4.2 against 8.3 is the whole 240-vs-120 argument, and Math.round flattened
+  // both to single digits.
+  return `${formatVideoSeconds(t.elapsedMs)}s ± ${t.errorMs.toFixed(1)}ms`;
 }
 
 // -------------------------------------------------------------- accuracy
@@ -268,17 +296,140 @@ export function lastMarkableTime(durationSec: number, frameDurSec: number): numb
 }
 
 /**
+ * How far short of the last known frame a handle must stop.
+ *
+ * A MILLISECOND, for the same reason alignedProbes aims its tail rescue a millisecond
+ * inside the clip end rather than half a frame back: the final frame of a clip is
+ * usually a PARTIAL one, so any epsilon expressed as a fraction of a frame is wrong
+ * exactly when the remainder is short. Any frame long enough to mark is longer than a
+ * millisecond, and this only has to clear frameIndexAt's 1e-9 tolerance.
+ */
+const MARK_EDGE_EPS_SEC = 0.001;
+
+/**
+ * The furthest a handle may go, MEASURED rather than assumed.
+ *
+ * lastMarkableTime backs off a fixed 1.5 frames from the clip's duration, which is a
+ * guess made before any frame is known — and it is the wrong KIND of rule, not merely
+ * the wrong constant. What it should back off to is the last frame that actually has a
+ * measured successor, and after the load probe the grid already knows: alignedProbes
+ * fetches the clip's final frame deliberately with its tail rescue, so every position
+ * below that frame resolves with a real duration. The formula was refusing marks that
+ * work.
+ *
+ * Measured on a 0.17s 120fps recording: the formula stopped the handle at 0.1575 while
+ * positions resolved up to 0.1666 — 9.1ms, 5.4% of the whole clip, showing as a band
+ * at the end that the handle would not enter. At 30fps the same clip loses 46.6ms, a
+ * quarter of it. On a 3s clip it is 0.1%, which is why this survived so long.
+ *
+ * THE LATER OF THE TWO, which is what makes it safe. A grid whose highest frame is
+ * mid-clip — a sparse grid, or a load whose tail probe failed — would otherwise clamp
+ * the handle to the middle of the clip and put the finish mark out of reach. Taking
+ * the max means the formula is a floor that can only ever be improved on.
+ *
+ * WHAT STAYS UNREACHABLE is the final frame's own display interval, and no amount of
+ * probing can change that: nothing follows the last frame, so its duration cannot be
+ * measured, and markAt refuses it rather than inventing an error bar. That is about
+ * 2% of a short clip's strip.
+ */
+export function markableStart(grid: FrameGrid): number {
+  return grid.frames[0] ?? 0;
+}
+
+export function markableEnd(grid: FrameGrid, durationSec: number, frameDurSec: number): number {
+  const seed = lastMarkableTime(durationSec, frameDurSec);
+  const last = grid.frames[grid.frames.length - 1];
+  if (last === undefined) return seed;
+  return Math.max(seed, last - MARK_EDGE_EPS_SEC);
+}
+
+/**
+ * The strip's coordinate system: pixels on screen against seconds in the clip.
+ *
+ * ONE MAPPING, BOTH DIRECTIONS, and that is the point rather than a tidiness. The
+ * strip no longer spans the clip's DURATION — it spans the markable range, so the
+ * handle reaches the end of the strip and there is no band at the end that visibly
+ * refuses a mark. The moment a screen displays one range and stores another, every
+ * place that converts is free to disagree with every other, and this screen has
+ * already been bitten twice by exactly that: `x()` divided by the clip duration while
+ * the drag divided by a different width, so the handle quietly lagged the finger.
+ *
+ * MARKS ARE STILL REAL CLIP TIMESTAMPS. Nothing stored changes. `xToTime` returns a
+ * time in the clip, `markAt` resolves it against the real frame grid, and what is
+ * written to a run is `markAt(...).pts` exactly as before. The rescale lives entirely
+ * between a pixel and a second.
+ *
+ * `travelPx` is the span a handle's LEFT edge moves across, so at the far end the
+ * handle's right edge sits on the end of the strip rather than hanging past it. That
+ * is the ordinary slider convention and it is why the handle appears to reach the end.
+ */
+export type StripScale = {
+  /** pixels the handle's left edge may travel */
+  travelPx: number;
+  /** the clip time, in seconds, at the left end of that travel */
+  startSec: number;
+  /** the clip time, in seconds, at the right end of it */
+  endSec: number;
+};
+
+/**
+ * BOTH ENDS, and the near end was missed the first time round.
+ *
+ * The strip used to begin at time zero by construction, whether or not time zero
+ * could be marked. A clip whose first frame has a presentation timestamp above zero
+ * therefore rendered a leading region that no mark can resolve into — the same wall
+ * as the one at the far end, arrived at from the other side and left in place because
+ * only one end had been looked at.
+ *
+ * A range, not an end, so there is one rule rather than a rule and an exception.
+ */
+export function stripScale(
+  stripW: number,
+  handleW: number,
+  startSec: number,
+  endSec: number,
+): StripScale {
+  const lo = Math.max(0, startSec);
+  return {
+    travelPx: Math.max(0, stripW - handleW),
+    startSec: lo,
+    // Never inverted. A grid too small to have a markable range at all collapses to a
+    // point rather than to a strip that runs backwards.
+    endSec: Math.max(lo, endSec),
+  };
+}
+
+/** The span of clip the strip covers. Zero when nothing is markable yet. */
+function stripSpan(s: StripScale): number {
+  return s.endSec - s.startSec;
+}
+
+/** Where on the strip a clip time sits. Clamped, so an out-of-range mark cannot
+ *  render off the end of its own track. */
+export function timeToX(t: number, s: StripScale): number {
+  const span = stripSpan(s);
+  if (!(span > 0) || !(s.travelPx > 0) || !Number.isFinite(t)) return 0;
+  return ((Math.max(s.startSec, Math.min(s.endSec, t)) - s.startSec) / span) * s.travelPx;
+}
+
+/** What clip time a position on the strip means. The exact inverse of timeToX
+ *  within the clamped range — asserted, not assumed. */
+export function xToTime(x: number, s: StripScale): number {
+  const span = stripSpan(s);
+  if (!(span > 0) || !(s.travelPx > 0) || !Number.isFinite(x)) return s.startSec;
+  return s.startSec + (Math.max(0, Math.min(s.travelPx, x)) / s.travelPx) * span;
+}
+
+/**
  * The +/- a clip can support before any frame has actually been measured.
  *
- * Same arithmetic as `timeFromMarks` for two frames of equal length — variance
- * d^2/12 at each end, added in quadrature — so a provisional figure and the final
- * one are the same claim computed from the same rule, not a placeholder that
- * happens to look similar. Used while a handle is moving, when the grid around it
- * has not been probed yet and there is no measured pair to work from.
+ * Same rule as `timeFromMarks` for two frames of equal length, so a provisional
+ * figure and the final one are the same claim computed the same way rather than a
+ * placeholder that happens to look similar. Used while a handle is moving, when the
+ * grid around it has not been probed and there is no measured pair to work from.
  */
-export function nominalSdMs(frameDurSec: number): number {
-  const d = Math.max(0, frameDurSec) * 1000;
-  return Math.sqrt((d * d + d * d) / 12);
+export function nominalErrorMs(frameDurSec: number): number {
+  return ceilTenth(Math.max(0, frameDurSec) * 1000);
 }
 
 /**
@@ -423,6 +574,50 @@ function mergeWindows(windows: FrameWindow[]): FrameWindow[] {
   return out;
 }
 
+/**
+ * The window a probe may honestly claim, given what came back.
+ *
+ * THE ROOT OF THE SNAPPING LOCK, arrived at from the third direction. ingestFrames
+ * recorded the range that was ASKED about, not the range actually covered by
+ * frames. Every failed extraction therefore left a HOLE under a claimed span, and a
+ * claimed span with no frames in it is the exact condition that made a mark
+ * covered-but-unresolvable — permanently, because probeGridAround then declined to
+ * look again.
+ *
+ * spanCovered fixed the version of this caused by two windows and a gap between
+ * them. It could not fix this one, because here there is only ONE window and the
+ * hole is inside it. And probeToResolve only reaches a mark within about sixteen
+ * frames of the last known one, which is why the fix before this was intermittent:
+ * it depended on how far into the hole the mark had landed.
+ *
+ * So a window now claims only as far as its frames reach. A region with no frames
+ * reads as uncovered, which is what it is, and the ordinary probe fills it.
+ *
+ * THE ONE EXCEPTION IS THE TAIL, and it is deliberate. Probes past the clip's end
+ * return nothing because there is nothing there — not because extraction failed —
+ * and treating that as uncovered would make every step near the finish re-probe a
+ * region already known to be empty. So when the ask ran past the end, the claim is
+ * kept. lastMarkableTime is what keeps a mark out of it.
+ */
+export function coveredWindow(
+  asked: FrameWindow,
+  found: number[],
+  durationSec?: number,
+): FrameWindow {
+  if (!found.length) {
+    // Nothing came back, so nothing is known. An empty window claims no coverage
+    // rather than claiming the whole ask.
+    return { from: asked.from, to: asked.from };
+  }
+  const lo = Math.min(...found);
+  const hi = Math.max(...found);
+  const end = durationSec && durationSec > 0 ? durationSec : Infinity;
+  return {
+    from: Math.max(asked.from, lo),
+    to: asked.to >= end ? Math.max(asked.to, hi) : Math.min(asked.to, hi),
+  };
+}
+
 /** Fold newly discovered frame timestamps into the grid. */
 export function ingestFrames(grid: FrameGrid, window: FrameWindow, actualTimes: number[]): FrameGrid {
   const set = new Set(grid.frames);
@@ -435,6 +630,40 @@ export function ingestFrames(grid: FrameGrid, window: FrameWindow, actualTimes: 
 
 export function isCovered(grid: FrameGrid, t: number): boolean {
   return grid.windows.some((w) => t >= w.from - 1e-9 && t <= w.to + 1e-9);
+}
+
+/**
+ * Is the WHOLE span probed, as one continuous window?
+ *
+ * THE BUG THIS EXISTS FOR, and it locked the marking screen permanently.
+ *
+ * probeGridAround decided whether to re-probe by asking isCovered about the two
+ * EDGES of the region it needed — centre-margin and centre+margin — and took two
+ * yeses as meaning everything between them was covered. Windows are merged and
+ * non-overlapping, so that holds right up until the mark lands in a GAP narrower
+ * than 2*margin. Then both edges sit in the windows either side, the middle sits in
+ * the hole, and the early exit fires on a point the grid cannot resolve.
+ *
+ * Reproduced offline on a 15s clip: windows [0, 14.5667] and [14.6667, 15.2333],
+ * a 0.1000s gap against a 0.2000s span. Both edges covered, the centre not. markAt
+ * returns null because frameIndexAt refuses an uncovered point, the readout sits on
+ * SNAPPING, and every later release repeats the same test and skips the same probe.
+ * Not slow — permanently stuck, until the clip is reloaded.
+ *
+ * CLIP LENGTH IS WHY IT WAS INTERMITTENT, and it is geometry rather than cost. A
+ * probe window is a fixed number of FRAMES, so its width in seconds is fixed too.
+ * Releases on a long clip are spread over more seconds, so consecutive windows need
+ * not overlap and a residual gap can survive between them and the window made at
+ * load near the end. On a short clip every release overlaps its neighbours, the
+ * windows merge into one, and there is no gap to land in.
+ *
+ * Sampling two points can never answer a question about an interval. Asking which
+ * window contains the span can, because merging guarantees at most one does.
+ */
+export function spanCovered(grid: FrameGrid, from: number, to: number): boolean {
+  const lo = Math.min(from, to);
+  const hi = Math.max(from, to);
+  return grid.windows.some((w) => lo >= w.from - 1e-9 && hi <= w.to + 1e-9);
 }
 
 /**
@@ -524,6 +753,43 @@ export function frameIndexAt(grid: FrameGrid, t: number): number | null {
     if (frames[i]! <= t + 1e-9) return frameDurAt(grid, i) === null ? null : i;
   }
   return null;
+}
+
+/**
+ * Why a clip cannot be timed yet, in the coach's words, or null when it can.
+ *
+ * A DISABLED CONTROL THAT SAYS NOTHING IS A BROKEN ONE. Keep was gated on `timing`,
+ * which is null whenever either mark fails to resolve — and the screen said nothing
+ * at all, so a permanently stuck grid and a mark parked one frame past the end
+ * looked identical: a button that did not respond. It cost a device session and two
+ * wrong diagnoses to find out which.
+ *
+ * The distinctions are the ones that name different causes. Nothing read at all is a
+ * decode or permission problem; one mark unresolved is a position problem and the
+ * coach can fix it by moving that handle.
+ */
+export function whyNotTimeable(o: {
+  frameCount: number;
+  startResolved: boolean;
+  finishResolved: boolean;
+}): string | null {
+  if (o.startResolved && o.finishResolved) return null;
+  if (o.frameCount === 0) {
+    return 'No frames could be read from this clip, so there is nothing to time. Try loading it again.';
+  }
+  if (!o.startResolved && !o.finishResolved) {
+    return 'Neither mark is on a readable frame yet. Move a handle to probe that part of the clip.';
+  }
+  // WORDED FOR AFTER THE RETRY. The screen only reaches these once probeToResolve
+  // has probed around the mark AND once past it, so "not readable yet" is no longer
+  // one of the possibilities — extraction is failing in that region. Saying "move it
+  // slightly" as the first response was wrong twice over: it fired during every
+  // ordinary drag, when the answer was simply "not yet", and it asked the coach to
+  // do by hand what the app should have done by probing.
+  if (!o.startResolved) {
+    return 'The start mark is on a frame this clip will not read back, even after looking again. Move it a little, or pick a different moment.';
+  }
+  return 'The finish mark is on a frame this clip will not read back, even after looking again. Move it a little, or pick a different moment.';
 }
 
 /** The mark for the frame displayed at `t`, ready for `timeFromMarks`. */
@@ -622,8 +888,16 @@ export function isVariableRate(grid: FrameGrid, toleranceSec = 0.0005): boolean 
  * 'unknown' is a real answer, not a failure: a clip from Files has no photo-library
  * asset behind it to ask, and neither refusing every such clip nor pretending it
  * is normal would be honest.
+ *
+ * 'recorded' is the opposite of 'unknown' and that is the whole reason it exists.
+ * A clip this app recorded has no photo-library asset either — but it needs no
+ * asking, because we set the capture rate and wrote the file. There is no rendered
+ * version to be handed instead of the original, because there is no edit and no
+ * Photos round trip. Folding it into 'unknown' would attach "this cannot be checked
+ * for slow motion" to the one kind of clip whose rate is not in doubt, on the happy
+ * path, every time.
  */
-export type TimeScale = 'normal' | 'slow-motion' | 'time-lapse' | 'unknown';
+export type TimeScale = 'normal' | 'slow-motion' | 'time-lapse' | 'unknown' | 'recorded';
 
 export type ClipVerdict =
   /** Mark it. `warn` is shown but does not block. */
@@ -674,6 +948,9 @@ export function acceptForTiming(scale: TimeScale): ClipVerdict {
         'If it was recorded in slo-mo, the time will be wrong.',
     };
   }
+  // 'recorded' and 'normal' both fall through to silence. Deliberately no warning
+  // for a clip we recorded: we chose the rate, and a caveat on the path the coach
+  // takes forty times a session is a caveat they stop reading.
   return { accept: true, warn: null };
 }
 
@@ -718,7 +995,8 @@ export type VideoRunFacts = {
   endPts: number;
   /** measured, never nominal */
   fps: number;
-  quantSdMs: number;
+  /** One whole frame at the coarser end, in ms. See timeFromMarks. */
+  errorMs: number;
 };
 
 /** What a video run writes into raw_json. The accuracy fact travels with the ROW,
@@ -731,7 +1009,7 @@ export function videoRunRawJson(f: VideoRunFacts): string {
     fps: f.fps,
     startPts: f.startPts,
     endPts: f.endPts,
-    quantSdMs: f.quantSdMs,
+    errorMs: f.errorMs,
     bodyPartBiasMs: BODY_PART_BIAS_MS,
   });
 }
@@ -747,7 +1025,15 @@ export function parseVideoRunJson(raw: string | null | undefined): VideoRunFacts
       startPts: v.startPts,
       endPts: v.endPts,
       fps: Number.isFinite(v.fps) ? v.fps : 0,
-      quantSdMs: Number.isFinite(v.quantSdMs) ? v.quantSdMs : 0,
+      // errorMs FIRST, quantSdMs as the fallback. Rows written before the figure
+      // changed keep the statistical spread they were saved with — they are not
+      // recomputed, and reading them under the new name would silently relabel a
+      // standard deviation as a frame period.
+      errorMs: Number.isFinite(v.errorMs)
+        ? v.errorMs
+        : Number.isFinite(v.quantSdMs)
+          ? v.quantSdMs
+          : 0,
     };
   } catch {
     return null;

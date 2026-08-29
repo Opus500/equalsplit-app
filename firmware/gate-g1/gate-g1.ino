@@ -85,7 +85,7 @@ static uint8_t setToChannel(uint8_t s) { return s == 2 ? 6 : (s == 3 ? 11 : 1); 
 // ===================== hardware pins ========================================
 #define LUNA_RX     16
 #define LUNA_TX     17
-#define BUTTON1_PIN 15            // standalone arm / cancel / re-arm
+#define BUTTON1_PIN 32   // v2 board: moved off strapping pin IO15
 #define BUTTON2_PIN 4             // reserved (still emits BUTTON_PRESS)
 #define BUZZER_PIN  25            // declared now, wired at PCB respin (§15)
 #define OLED_I2C_ADDR 0x3C

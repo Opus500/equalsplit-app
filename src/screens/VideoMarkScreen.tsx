@@ -37,12 +37,13 @@ import { Image } from 'expo-image';
 
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
+import { VideoRecordModal, type Recorded } from './VideoRecordModal';
 import { saveRun, type Drill } from '../db/database';
 import { effectiveRunDate, isBackdated, sameLocalDay } from '../runs/rundate';
 import { RunDateModal, confirmRunDate } from '../runs/RunDateEditor';
 import { useRoster } from '../roster/RosterProvider';
 import {
-  formatBytes,
+  deleteClip,
   importClip,
   NotEnoughSpaceError,
   PHOTO_ACCESS_MESSAGE,
@@ -50,7 +51,9 @@ import {
   pickVideo,
   type Clip,
 } from '../video/clips';
-import { filmstrip, nominalFrameDur, probeGridAround, type Tile } from '../video/frames';
+import { acceptRecording } from '../video/capture';
+import { describeClip } from '../video/storage';
+import { filmstrip, loadClipInto, probeGridAround, resolveMarks, type Tile } from '../video/frames';
 import {
   acceptForTiming,
   BODY_PART_BIAS_MS,
@@ -59,18 +62,26 @@ import {
   formatVideoTime,
   isVariableRate,
   lastMarkableTime,
+  markableEnd,
+  markableStart,
+  stripScale,
+  timeToX,
+  xToTime,
   markAt,
   measuredFps,
-  nominalSdMs,
+  nominalErrorMs,
   seekTimeFor,
   stepFrames,
   timeFromMarks,
   videoRunRawJson,
+  whyNotTimeable,
   VIDEO_MODE,
   type FrameGrid,
+  type TimeScale,
   type VideoMark,
 } from '../video/timing';
 import {
+  CAUTION,
   FAINT,
   INTERACTIVE,
   INTERACTIVE_SOFT,
@@ -97,21 +108,33 @@ const DURATION_TIMEOUT_MS = 8000;
 type Which = 'start' | 'finish';
 
 /**
- * Poll until the player reports a duration, or give up.
+ * Longest a single probe may take before the screen stops waiting for it, in ms.
  *
- * expo-video's duration is a property of a mutable native object, not a React
- * value — nothing re-renders when tracks finish loading — so the load has to be
- * awaited here, once, before anything derives a mark from it. Returns 0 if the
- * clip never reports one, which the caller treats as a failed import rather than
- * a zero-length video.
+ * Generous — a settle on a cold decoder measured ~900ms at its worst — and it is a
+ * DEADLOCK bound, not a performance one. Nothing here should ever reach it.
  */
-async function waitForDuration(player: { duration: number }): Promise<number> {
-  const deadline = Date.now() + DURATION_TIMEOUT_MS;
-  for (;;) {
-    const d = player.duration || 0;
-    if (d > 0) return d;
-    if (Date.now() >= deadline) return 0;
-    await new Promise((r) => setTimeout(r, 50));
+const PROBE_TIMEOUT_MS = 6000;
+
+/**
+ * Race a probe against a deadline, and IGNORE a late answer rather than applying it.
+ *
+ * The late result is the part that matters. A probe that comes back after the screen
+ * has given up carries a grid built from a position the coach has since left, and
+ * writing it would move the mark under them. Dropping it is the only safe answer.
+ *
+ * This did not cause the SNAPPING lock — that probe returned in zero milliseconds,
+ * having decided it had nothing to do. This is for the other failure: a decoder that
+ * genuinely never answers, which nothing in this screen previously bounded.
+ */
+async function withDeadline<T>(p: Promise<T>, ms: number): Promise<{ ok: true; value: T } | { ok: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<{ ok: false }>((resolve) => {
+    timer = setTimeout(() => resolve({ ok: false }), ms);
+  });
+  try {
+    return await Promise.race([p.then((value) => ({ ok: true as const, value })), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -210,55 +233,92 @@ export default function VideoMarkScreen({
     if (!isVisible) player.pause();
   }, [isVisible, player]);
 
-  // ------------------------------------------------------------- import
+  // ------------------------------------------------ getting a clip in
 
   /**
-   * True while an import is in flight.
+   * True while a clip is being loaded, from either source.
    *
    * A ref rather than reading `busy`, because a handler reads state from the
-   * closure it was made in. Two imports racing is not a cosmetic problem: the
+   * closure it was made in. Two clips racing is not a cosmetic problem: the
    * second replaces the player's source while the first is still probing, and the
    * probe writes ITS frames into `live.current.grid`, which the second clip's
    * marks are then resolved against. The recorded time would be computed from
    * another video's frame timestamps.
+   *
+   * It covers recording as well as importing now, and it has to: the two buttons
+   * sit beside each other, and a recording arriving while an import is still
+   * probing is the same collision by a different route.
    */
-  const importing = useRef(false);
+  const loadingClip = useRef(false);
 
-  const pick = useCallback(async () => {
-    if (importing.current) return;
-    importing.current = true;
-    setBusy('Importing…');
-    try {
-      // The picker's options live in clips.ts, not here. Two of them are what stop
-      // PHPhotosError 3164 and a silent re-encode, and they were previously a
-      // verbatim copy in the attach path with the reasoning only in this one.
-      const picked = await pickVideo();
-      if (picked.status === 'denied') {
-        Alert.alert(PHOTO_ACCESS_TITLE, PHOTO_ACCESS_MESSAGE);
-        return;
-      }
-      if (picked.status !== 'picked') return;
+  /**
+   * ONE LOCK OVER EVERYTHING THAT TOUCHES THE PLAYER.
+   *
+   * Written after reading a crash report. The faulting thread was destroying an Expo
+   * Modules promise — `destroy for JavaScriptPromise`, null dereference, on a Swift
+   * concurrency executor — with the main thread idle and no camera frame anywhere in
+   * the process. Whatever the precise trigger inside Expo, this screen was handing it
+   * the worst possible conditions: up to eighteen concurrent generateThumbnailsAsync
+   * promises per probe, two probe rounds per settle, and a replaceAsync that could
+   * swap the player's source while all of them were still outstanding.
+   *
+   * `loadingClip` guarded load-against-load. Nothing guarded load-against-settle or
+   * settle-against-step, and those share both the player and the grid.
+   *
+   * This is NOT presented as the proven cause — the report cannot show that. It is a
+   * real race, it is cheap to close, and closing it makes the next crash report mean
+   * something instead of arriving with three things in flight at once.
+   */
+  const playerLock = useRef<Promise<unknown>>(Promise.resolve());
+  const withPlayer = useCallback(<T,>(fn: () => Promise<T>): Promise<T> => {
+    const run = playerLock.current.then(fn, fn);
+    // The chain must never reject, or every later caller inherits the rejection.
+    playerLock.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }, []);
 
-      // REFUSED BEFORE THE COPY, not after. A clip that can never be timed should
-      // not first cost tens of megabytes and a filmstrip build, and it should not
-      // land in the library for the coach to wonder about later.
-      const verdict = acceptForTiming(picked.timeScale);
-      if (!verdict.accept) {
-        Alert.alert('This clip cannot be timed', verdict.reason);
-        return;
-      }
+  /**
+   * Why this clip's TIME is refused, or null.
+   *
+   * LAYER 3, and this screen is the only place it can live. capture.ts checks what
+   * the device claims and what the session resolved to, both before recording and
+   * neither able to see a frame — and the frames are the only evidence. They exist
+   * here, after the grid is probed, which is a minute after the camera screen has
+   * gone. That is why a recording carries its two claimed rates along with it: so
+   * they can be settled against the file, here, by the thing that overrules them.
+   *
+   * The clip is KEPT when this is set. What is refused is the time, not the footage.
+   */
+  const [refused, setRefused] = useState<string | null>(null);
 
-      // Derived, not typed. A date read off the footage is right by construction;
-      // the editor below exists for the cases where it is absent or wrong.
-      setPerformedAt(picked.capturedAt);
-      const imported = await importClip(picked.uri);
-      // A warning, not a gate. Shown after the import so it does not sit between
-      // the coach and a clip that is probably fine.
-      if (verdict.warn) Alert.alert('Check this clip', verdict.warn);
-      setClip(imported);
+  /** Back to an empty screen. Shared by the save path and by clearing a clip whose
+   *  time was refused, so the two cannot drift into forgetting different things. */
+  const reset = useCallback(() => {
+    setClip(null);
+    setTiles([]);
+    setGrid(emptyGrid());
+    setPerformedAt(null);
+    setRefused(null);
+  }, []);
+
+  /**
+   * Put a clip on the screen: source, duration, frame grid, two marks.
+   *
+   * Shared by both ways in, and the reason recording cost so little to add — the
+   * filmstrip, the handles, the stepping and the save path never learn where a clip
+   * came from. `capture` is present only for a recording, and only so layer 3 can
+   * run: an imported clip has no requested rate to hold the file against.
+   */
+  const loadClip = useCallback(
+    (c: Clip, capture?: { requestedFps: number; selectedFps: number | null; timeScale: TimeScale }) =>
+      withPlayer(async () => {
+      setClip(c);
       setGrid(emptyGrid());
       setTiles([]);
-      await player.replaceAsync(imported.uri);
+      setRefused(null);
       setBusy('Reading the clip…');
       // WAIT for the tracks, do not assume a duration.
       //
@@ -268,9 +328,16 @@ export default function VideoMarkScreen({
       // `duration` and never fires, and Keep stays disabled. Nothing re-reads
       // duration afterwards, because it is a property of a mutable player object
       // that React has no reason to re-render for, so the screen stays dead until
-      // the clip is imported again.
-      const d = await waitForDuration(player);
-      const dur = nominalFrameDur(player);
+      // the clip is loaded again.
+      // ITS length and ITS rate, not the previous clip's. loadClipInto clears the
+      // source and confirms the clear before reading anything, because replaceAsync
+      // resolves before duration and videoTrack catch up — which is what put a 7
+      // second duration on a 0.7s recording and seeded the probe one rate low.
+      const { durationSec: d, frameDurSec: dur, tracked } = await loadClipInto(
+        player,
+        c.uri,
+        DURATION_TIMEOUT_MS,
+      );
       setFrameDur(dur);
       setActive('start');
       if (!d) {
@@ -278,7 +345,7 @@ export default function VideoMarkScreen({
         // would go on to compute marks from a duration that does not exist.
         Alert.alert(
           'Could not read that clip',
-          'The video imported but its length could not be read, so it cannot be marked. Try importing it again.',
+          'The video is stored but its length could not be read, so it cannot be marked. It is in Videos if you want to try again.',
         );
         return;
       }
@@ -294,9 +361,88 @@ export default function VideoMarkScreen({
       g = (await probeGridAround(player, g, 0, dur)).grid;
       g = (await probeGridAround(player, g, endAt, dur)).grid;
       setGrid(g);
-      setStartAt(markAt(g, 0)?.pts ?? 0);
-      setFinishAt(markAt(g, endAt)?.pts ?? endAt);
+      // AT THE ENDS OF THE STRIP, which is now the same thing as the ends of the
+      // markable range. Both of these used to be computed separately from the strip
+      // they are drawn on, and both were wrong in the same way once the strip was
+      // rescaled: the start from `markAt(g, 0)`, which is time zero whether or not the
+      // clip's first frame is there, and the finish from lastMarkableTime, the formula
+      // the strip stopped using. A handle that initialises anywhere but the end of its
+      // own track leaves a sliver the coach can see, cannot start in, and can drag
+      // into — which is exactly how both were reported.
+      setStartAt(markableStart(g));
+      setFinishAt(markableEnd(g, d, dur));
       player.currentTime = dur / 2;
+
+      // LAYER 3, against the frames that were just probed rather than against
+      // anything the camera said about itself. A session can report 240 and hold it,
+      // and it can report 240 and write 30; only this tells them apart, and a time
+      // taken from the second would be eight times too fast, charted as a personal
+      // best, and indistinguishable afterwards from a real one.
+      if (capture) {
+        // THE SAME TIMESCALE GATE THE IMPORT PATH RUNS, on the value a recording
+        // carries. It accepts silently, which is the whole point: 'recorded' is not
+        // 'unknown', and routing the recording through the gate is what keeps that
+        // true rather than merely true today.
+        const scale = acceptForTiming(capture.timeScale);
+        if (!scale.accept) {
+          setRefused(scale.reason);
+          Alert.alert('This clip cannot be timed', scale.reason);
+          return;
+        }
+        if (scale.warn) Alert.alert('Check this clip', scale.warn);
+
+        // A MEASUREMENT ON A GUESSED GRID IS NOT EVIDENCE. If the frame rate never
+        // became readable, the probe aimed at 30fps centres and can only report a
+        // submultiple — so measuredFps would be measuring the guess, and layer 3
+        // would refuse a good recording and blame the camera. Passing null instead
+        // makes acceptRecording say what is actually true: the file could not be
+        // read back, so no time can be taken from it, and the video is kept.
+        const measured = tracked ? measuredFps(g) : null;
+        const v = acceptRecording(capture.requestedFps, capture.selectedFps, measured);
+        if (!v.ok) {
+          setRefused(v.reason);
+          Alert.alert('This recording cannot be timed', v.reason);
+        }
+      }
+      }),
+    [player, withPlayer],
+  );
+
+  const pick = useCallback(async () => {
+    if (loadingClip.current) return;
+    loadingClip.current = true;
+    setBusy('Importing…');
+    try {
+      // The picker's options live in clips.ts, not here. Two of them are what stop
+      // PHPhotosError 3164 and a silent re-encode, and they were previously a
+      // verbatim copy in the attach path with the reasoning only in this one.
+      const picked = await pickVideo();
+      if (picked.status === 'denied') {
+        Alert.alert(PHOTO_ACCESS_TITLE, PHOTO_ACCESS_MESSAGE);
+        return;
+      }
+      if (picked.status !== 'picked') return;
+
+      // REFUSED BEFORE THE COPY, not after. A clip that can never be timed should
+      // not first cost tens of megabytes and a filmstrip build, and it should not
+      // land in the library for the coach to wonder about later.
+      //
+      // The import path's equivalent of the session check a recording gets before
+      // the rep is run: in both cases this is the last moment refusing is free.
+      const verdict = acceptForTiming(picked.timeScale);
+      if (!verdict.accept) {
+        Alert.alert('This clip cannot be timed', verdict.reason);
+        return;
+      }
+
+      // Derived, not typed. A date read off the footage is right by construction;
+      // the editor below exists for the cases where it is absent or wrong.
+      setPerformedAt(picked.capturedAt);
+      const imported = await importClip(picked.uri);
+      // A warning, not a gate. Shown after the import so it does not sit between
+      // the coach and a clip that is probably fine.
+      if (verdict.warn) Alert.alert('Check this clip', verdict.warn);
+      await loadClip(imported);
     } catch (e) {
       // NotEnoughSpaceError already reads as a sentence; anything else does not,
       // so it keeps its own title rather than being flattened into one message.
@@ -305,51 +451,271 @@ export default function VideoMarkScreen({
         e instanceof NotEnoughSpaceError ? e.message : String(e),
       );
     } finally {
-      importing.current = false;
+      loadingClip.current = false;
       setBusy(null);
     }
-  }, [player]);
+  }, [loadClip]);
+
+  /** Whether the camera sheet is UP. Not whether it is recording — the sheet owns
+   *  that, and conflating the two is how a Stop button ends up wired to a Cancel. */
+  const [recordOpen, setRecordOpen] = useState(false);
+
+  /**
+   * A rep filmed in the app, arriving exactly where an imported one does.
+   *
+   * The clip is already written and already in Videos by the time this runs — the
+   * recorder wrote straight into the clip directory — so there is nothing to copy
+   * and nothing to lose if this screen happens to be busy. Which is what lets the
+   * collision case below say something true instead of dropping a rep.
+   */
+  const onRecorded = useCallback(
+    async (r: Recorded) => {
+      setRecordOpen(false);
+      if (loadingClip.current) {
+        Alert.alert(
+          'One clip at a time',
+          'Another clip is still loading, so this recording was not opened. It is saved in ' +
+            'Videos and can be attached to a run from there.',
+        );
+        return;
+      }
+      loadingClip.current = true;
+      setBusy('Reading the recording…');
+      try {
+        // Filmed now. Nothing to derive from a photo library and nothing to
+        // backdate — see isBackdated, which compares local days for this reason.
+        setPerformedAt(null);
+        if (r.note) Alert.alert('Recording finished', r.note);
+        await loadClip(r.clip, {
+          requestedFps: r.requestedFps,
+          selectedFps: r.selectedFps,
+          timeScale: r.timeScale,
+        });
+      } catch (e) {
+        Alert.alert('Could not read that recording', String(e));
+      } finally {
+        loadingClip.current = false;
+        setBusy(null);
+      }
+    },
+    [loadClip],
+  );
+
+  /**
+   * Let go of a clip whose time was refused.
+   *
+   * It needs an exit, and the exit is a QUESTION rather than a delete. Layer 3
+   * refuses the time; it says nothing about the footage, which is often still worth
+   * watching — a rep filmed at the wrong rate is still a rep. So the choice is the
+   * coach's, and both answers clear the screen.
+   */
+  const clearClip = useCallback(() => {
+    const c = clip;
+    if (!c) return;
+    Alert.alert(
+      'Keep the video?',
+      'Its time was refused, but the footage itself is fine to watch and is already in Videos.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Keep it', onPress: reset },
+        {
+          text: 'Delete it',
+          style: 'destructive',
+          onPress: () => {
+            deleteClip(c.id);
+            reset();
+          },
+        },
+      ],
+    );
+  }, [clip, reset]);
 
   // ------------------------------------------------------- strip + grid
+
+  /**
+   * The clip range the strip actually shows — the MARKABLE range, not the duration.
+   *
+   * The last frame of a clip has no successor, so its duration cannot be measured and
+   * markAt refuses it. Rendering it anyway put a band at the end of the strip that the
+   * handle would not enter: a wall you can see and cannot cross, which reads as broken.
+   * Spanning the strip over what can be marked means the strip simply ends where the
+   * marks do.
+   */
+  const markStart = useMemo(() => markableStart(grid), [grid]);
+  const markEnd = useMemo(
+    () => markableEnd(grid, duration, frameDur),
+    [grid, duration, frameDur],
+  );
+  const scale = useMemo(
+    () => stripScale(stripW, HANDLE_W, markStart, markEnd),
+    [stripW, markStart, markEnd],
+  );
+
 
   // Tiles for the whole clip. Cheap at this count, and rebuilt rather than cached:
   // ~14 tiles at ~24ms with a fan of 8 is a couple of hundred ms, against megabytes
   // per clip to store — and keeping storage to the clip alone is what makes the
   // size shown at the delete point exactly what deleting reclaims.
   useEffect(() => {
-    if (!clip || !duration) return;
+    // WAIT FOR THE GRID, not just for a duration. The strip spans the markable range,
+    // and before the load probes land that range is only the formula's guess — so
+    // building here would draw a strip at one scale and redraw it at another a moment
+    // later, paying for two filmstrips to show the first one being wrong. A clip whose
+    // frames never arrive shows no strip, which is consistent with the screen already
+    // saying that nothing could be read from it.
+    if (!clip || !duration || !grid.frames.length) return;
     let alive = true;
     setBusy('Building filmstrip…');
-    filmstrip(player, 0, duration, TILE_COUNT)
+    filmstrip(player, markStart, markEnd, TILE_COUNT)
       .then((t) => alive && setTiles(t))
       .catch(() => alive && setTiles([]))
       .finally(() => alive && setBusy(null));
     return () => {
       alive = false;
     };
-  }, [clip, duration, player]);
+    // markEnd, not duration: it is what the tiles are spread across. It is a number,
+    // so a grid that grows without moving the clip's last frame leaves it untouched
+    // and this does not re-run — which is every probe after the load.
+  }, [clip, duration, markStart, markEnd, grid.frames.length, player]);
 
   /** Probe the frame grid around a position, then seek to the frame it resolves to. */
+  /**
+   * Set when a settle failed rather than merely found nothing.
+   *
+   * Distinct from whyNotTimeable, which describes the STATE of the marks. This
+   * describes the last ATTEMPT, and the two want different words: "the finish mark
+   * is not on a readable frame" tells the coach to move it, "the clip stopped
+   * responding" tells them it is not their fault.
+   */
+  const [settleNote, setSettleNote] = useState<string | null>(null);
+  /**
+   * True while a settle is in flight.
+   *
+   * The screen has to be able to say "not resolved YET" apart from "cannot be
+   * resolved", and without this it could not: whyNotTimeable reads the marks, the
+   * marks are recomputed on every drag frame, and the grid is not probed until the
+   * finger lifts. So the honest message fired continuously during every ordinary
+   * drag and told the coach to fix something that was about to fix itself.
+   */
+  const [settling, setSettling] = useState(false);
+
   const settleAt = useCallback(
-    async (seconds: number) => {
+    async (which: Which, seconds: number) => {
       if (!clip) return;
-      // From the ref, not the closure: a drag can release while a previous settle
-      // is still resolving, and the closure's grid would be the pre-drag one.
-      const r = await probeGridAround(player, live.current.grid, seconds, live.current.frameDur);
-      setGrid(r.grid);
-      live.current.grid = r.grid;
-      const m = markAt(r.grid, seconds);
-      const t0 = Date.now();
-      // Seek to the frame's MIDDLE — a request on a boundary is decided by float
-      // representation and can show the frame before.
-      player.currentTime = m ? seekTimeFor(m) : seconds;
-      const d = dragSeeks.current;
-      setPerf(
-        `probe ${r.ms}ms/${r.calls} · seek ${Date.now() - t0}ms` +
-          (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
-      );
+      setSettling(true);
+      try {
+        return await withPlayer(async () => {
+        // From the ref, not the closure: a drag can release while a previous settle
+        // is still resolving, and the closure's grid would be the pre-drag one.
+        //
+        // BOUNDED. Nothing here used to be, so a probe that never came back left the
+        // readout on SNAPPING with no way out but reloading the clip — and no way to
+        // tell that from a mark that simply had not resolved.
+        // BOTH MARKS, not just the one that moved. A settle used to probe only the
+        // handle the coach let go of, so a mark stranded by an earlier settle was
+        // never looked at again — and every settle after it reported resolved:true
+        // while Keep stayed disabled. See resolveMarks. The other mark costs nothing
+        // unless it is actually unresolvable.
+        //
+        // resolveMarks calls probeToResolve rather than probeGridAround: if a mark
+        // lands on the last frame of its window it has no measured successor, and the
+        // answer is to go and measure one rather than to ask the coach to nudge the
+        // handle. See the note there on why this widens instead of snapping.
+        const other =
+          which === 'start' ? live.current.finishAt : live.current.startAt;
+        const out = await withDeadline(
+          resolveMarks(player, live.current.grid, seconds, other, live.current.frameDur),
+          PROBE_TIMEOUT_MS,
+        );
+        if (!out.ok) {
+          setSettleNote(
+            'Reading that part of the clip took too long and was given up on. Move the handle ' +
+              'again to retry.',
+          );
+          setPerf(`settle timed out after ${PROBE_TIMEOUT_MS}ms`);
+          return;
+        }
+        const r = out.value;
+        setGrid(r.grid);
+        live.current.grid = r.grid;
+        const m = markAt(r.grid, seconds);
+        const t0 = Date.now();
+        // Seek to the frame's MIDDLE — a request on a boundary is decided by float
+        // representation and can show the frame before.
+        player.currentTime = m ? seekTimeFor(m) : seconds;
+        const d = dragSeeks.current;
+
+        // WHAT THE HANDLE SHOWS versus WHAT WAS PROBED. A settle aims at the position
+        // it was handed; the screen times the position in state. Those are the same
+        // number only if the ref was current when the finger lifted, and when they
+        // are not, everything downstream looks like a decode failure: a full probe, a
+        // resolved answer, and a mark on screen that will not read back. Printed so
+        // that stops being invisible — if `aim` ever shows a drift, it is this and
+        // not the clip.
+        const showing = which === 'start' ? live.current.startAt : live.current.finishAt;
+        const driftMs = Math.abs(showing - seconds) * 1000;
+        const aim =
+          driftMs < 0.5
+            ? `aim ${which} ${seconds.toFixed(3)}`
+            : `aim ${which} ${seconds.toFixed(3)} · SHOWING ${showing.toFixed(3)} · DRIFT ${driftMs.toFixed(0)}ms`;
+
+        // DID THE RESCUE RUN, AND WHAT DID IT DO. "Probed the other mark and it is
+        // still unreadable" and "never probed the other mark" are different bugs
+        // wearing the same symptom, and the line could not tell them apart.
+        const rescue = !r.probedOther
+          ? 'rescue:not needed'
+          : r.otherResolved
+            ? 'rescue:probed, fixed'
+            : 'rescue:probed, STILL NULL';
+
+        // SAY IT WHEN THE SETTLE ENDS, not only once every state settles down.
+        //
+        // whyNotTimeable is suppressed while dragging or settling, because mid-drag a
+        // mark is un-resolved rather than unresolvable. But a settle that has just
+        // FINISHED with a mark still unreadable is no longer "not yet" — it is a fact
+        // about the attempt, which is what settleNote carries and why settleNote is
+        // not suppressed. Without this the screen sat on a silent SNAPPING: the state
+        // message was waiting for a quiet moment that a repeatedly-nudged handle
+        // never gives it.
+        const why = whyNotTimeable({
+          frameCount: r.grid.frames.length,
+          startResolved: !!markAt(r.grid, live.current.startAt),
+          finishResolved: !!markAt(r.grid, live.current.finishAt),
+        });
+        setSettleNote(why);
+        // BOTH MARKS, because a single flag only ever described the handle just let
+        // go of — and that one is almost always fine. This is what "N=18 and no
+        // UNRESOLVED" turned out to mean on device: the probe ran in full, the
+        // dragged handle resolved, and the readout still would not clear because the
+        // OTHER mark was the broken one. Kept now that resolveMarks probes both, so
+        // the next report of this says which mark survived a probe aimed at it.
+        const both =
+          `start:${markAt(r.grid, live.current.startAt) ? 'ok' : 'NULL'}` +
+          ` finish:${markAt(r.grid, live.current.finishAt) ? 'ok' : 'NULL'}`;
+        // "ISSUED", not "seek". Assigning currentTime hands a request to
+        // AVFoundation and returns; the frame arrives later. Timing the assignment
+        // measures the setter, not the seek, and this line called it "seek Xms" for
+        // months — a number that looked like decode cost and was not. Measuring the
+        // real thing means polling for the readback, which costs more than the
+        // figure is worth, so it is labelled honestly instead of measured badly.
+        setPerf(
+          `probe ${r.ms}ms/${r.calls}${r.movedResolved && r.otherResolved ? '' : ' · UNRESOLVED'} · ${both}` +
+            ` · moved:${r.movedResolved ? 'ok' : 'NULL'} · ${aim} · ${rescue}` +
+            ` · seek issued ${Date.now() - t0}ms` +
+            (d.n ? ` · drag ${d.n} seeks, ${(d.ms / d.n).toFixed(1)}ms each` : ''),
+        );
+        });
+      } catch (e) {
+        // SAID, NOT SWALLOWED. This had no catch at all, so a throwing probe became
+        // an unhandled rejection: the grid stayed as it was, the readout stayed on
+        // SNAPPING, and nothing on screen or in the log recorded that anything had
+        // gone wrong.
+        setSettleNote(`Could not read that part of the clip: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setSettling(false);
+      }
     },
-    [clip, player],
+    [clip, player, withPlayer],
   );
 
   const startMark: VideoMark | null = useMemo(() => markAt(grid, startAt), [grid, startAt]);
@@ -364,6 +730,38 @@ export default function VideoMarkScreen({
   // every move, which is what "see it change as they scrub" needs; the moment the
   // finger lifts it is replaced by the frame-accurate one.
   const liveMs = timing ? timing.elapsedMs : (finishAt - startAt) * 1000;
+
+  /**
+   * Why Keep is unavailable, or null when it is not.
+   *
+   * ORDERED BY WHOSE PROBLEM IT IS. A refused time is the app's verdict and outranks
+   * everything; a failed settle is the clip misbehaving; an unresolved mark is a
+   * position the coach can fix by moving a handle. Keep used to be gated on `timing`
+   * alone and said none of this — it simply did not respond, which is what sent two
+   * diagnoses down the wrong path before the real one was reproduced offline.
+   */
+  const keepBlocked = useMemo(
+    () =>
+      refused ??
+      settleNote ??
+      // "NOT YET" IS NOT "CANNOT". A mark under a moving finger, or one whose settle
+      // has not landed, is mid-resolution — and whyNotTimeable describes a state, so
+      // it cannot tell those from a dead end. Suppressing it here is what makes the
+      // message mean something when it does appear: by then the probe has run,
+      // widened once past the window edge, and still failed.
+      //
+      // refused and settleNote are NOT suppressed. A layer 3 refusal is a verdict
+      // that survives any amount of dragging, and a timed-out settle is a fact about
+      // the last attempt rather than about the marks.
+      (dragging || settling
+        ? null
+        : whyNotTimeable({
+            frameCount: grid.frames.length,
+            startResolved: !!startMark,
+            finishResolved: !!finishMark,
+          })),
+    [refused, settleNote, dragging, settling, grid.frames.length, startMark, finishMark],
+  );
 
   // ------------------------------------------------------------ drag
 
@@ -386,6 +784,11 @@ export default function VideoMarkScreen({
         // compounds, and is why a 20pt drag crossed most of the strip.
         dragBase.current = which === 'start' ? live.current.startAt : live.current.finishAt;
         dragSeeks.current = { n: 0, ms: 0, lastAt: 0, lastT: -1 };
+        // A note describes the LAST attempt, and touching a handle starts a new one.
+        // It is deliberately not suppressed while dragging — see keepBlocked — so it
+        // has to be cleared here or a resolved mark would keep wearing the failure
+        // that preceded it.
+        setSettleNote(null);
         // Touching a handle also makes it the one the arrows drive — otherwise the
         // coach drags one mark and then nudges the other.
         setActive(which);
@@ -399,9 +802,21 @@ export default function VideoMarkScreen({
         setDragging(which);
       },
       onPanResponderMove: (_e, g) => {
-        const { stripW: w, duration: d } = live.current;
+        const { stripW: w, duration: d, grid: liveGrid } = live.current;
         if (!w || !d) return;
-        let next = dragBase.current + (g.dx / w) * d;
+        // THROUGH THE SAME MAPPING THE RENDER USES, in both directions: the base time
+        // becomes a pixel, the finger's displacement is added in pixels, and the
+        // result becomes a time again. Converting one way here and the other way in
+        // `x()` is what let the two drift — the old drag divided by the full strip
+        // width while `x()` divided by the handle's travel, so the handle lagged the
+        // finger by the width of the handle.
+        const liveScale = stripScale(
+          w,
+          HANDLE_W,
+          markableStart(liveGrid),
+          markableEnd(liveGrid, d, frameDur),
+        );
+        let next = xToTime(timeToX(dragBase.current, liveScale) + g.dx, liveScale);
         // NOT Math.min(d, …). The last frame of a clip has no measured successor,
         // so its duration is unknown and markAt/stepFrames both refuse it — by
         // design, because an error bar computed from a frame length nobody
@@ -415,15 +830,46 @@ export default function VideoMarkScreen({
         // something you do by accident, and it surfaced on a slow-motion clip
         // because the stretched duration makes the drag many times more sensitive
         // in seconds per point — you hit the edge without meaning to.
-        next = Math.max(0, Math.min(lastMarkableTime(d, frameDur), next));
+        // No separate clamp at either end: the scale's own range IS the markable
+        // range, and xToTime cannot return a time outside it. That is the second
+        // reason to route the drag through the mapping rather than alongside it —
+        // there is no longer a clamp that can disagree with the strip being dragged
+        // on. `Math.max(0, next)` lived here and was the near-end version of the same
+        // assumption, clamping to zero rather than to the first markable frame.
         // The handles cannot cross. A finish before a start is not a measurement
         // to warn about later, it is a state to prevent now.
         const clamped =
           which === 'start'
             ? Math.min(next, live.current.finishAt - frameDur)
             : Math.max(next, live.current.startAt + frameDur);
-        if (which === 'start') setStartAt(clamped);
-        else setFinishAt(clamped);
+        // BOTH the state AND the ref, and the ref is the part that was missing.
+        //
+        // `live.current` is rebuilt during RENDER, so it holds the last value React
+        // committed — not the last value this handler produced. A move runs at
+        // continuous priority and its render is scheduled, not immediate; the release
+        // that follows is a discrete event and runs its handler first. So
+        // onPanResponderRelease could read a position one or more moves behind the
+        // finger, and settleAt then probed THAT position while the screen displayed,
+        // and timed, the one in state. The probe lands in the right shape at the
+        // wrong place: `resolved: true` for a point nobody is looking at, and the
+        // mark the coach can actually see sits in unprobed clip and reads NULL.
+        //
+        // drainSteps has written the ref alongside the state since it was written,
+        // with a comment giving this exact reason. The drag path has the same hazard
+        // and never did — the two ways of moving a mark disagreed about whether the
+        // ref is load-bearing, and only one of them was right.
+        //
+        // Why it went unseen until the seed was fixed: a probe window is a fixed
+        // number of FRAMES, so at the old too-coarse seed it spanned 500-950ms of
+        // clip and comfortably contained both positions. At a correct 240fps seed it
+        // spans about 33ms, which one frame of fast finger travel clears easily.
+        if (which === 'start') {
+          setStartAt(clamped);
+          live.current.startAt = clamped;
+        } else {
+          setFinishAt(clamped);
+          live.current.finishAt = clamped;
+        }
 
         // Two gates before seeking. Time-based so the decoder is never asked for
         // more than ~16 seeks a second, and frame-based so a move that has not
@@ -445,7 +891,7 @@ export default function VideoMarkScreen({
         // would silently make every later seek land on the wrong frame.
         player.scrubbingModeOptions = { scrubbingModeEnabled: false };
         player.seekTolerance = { toleranceBefore: 0, toleranceAfter: 0 };
-        void settleAt(which === 'start' ? live.current.startAt : live.current.finishAt);
+        void settleAt(which, which === 'start' ? live.current.startAt : live.current.finishAt);
       },
       // A terminate still has to restore the player, or a gesture stolen by the
       // system would leave loose tolerances behind for good.
@@ -487,7 +933,23 @@ export default function VideoMarkScreen({
 
         const { active: which, startAt: s, finishAt: f, grid: g, frameDur: fd } = live.current;
         const at = which === 'start' ? s : f;
-        const r = await probeGridAround(player, g, at, fd);
+        // Bounded for the same reason as settleAt, and it matters more here: this
+        // loop holds `stepping.current`, so a probe that never returns would leave
+        // the arrows dead for the life of the screen as well as the readout stuck.
+        // Both marks here too, for the same reason as settleAt: stepping one handle
+        // must not leave the other stranded and unexamined for the life of the
+        // screen. The arrows are how a coach makes the final one-frame adjustment,
+        // so this is precisely when the readout needs to be able to clear.
+        const otherAt = which === 'start' ? f : s;
+        const out = await withDeadline(
+          withPlayer(() => resolveMarks(player, g, at, otherAt, fd)),
+          PROBE_TIMEOUT_MS,
+        );
+        if (!out.ok) {
+          setPerf(`step ${delta > 0 ? '+' : ''}${delta} · timed out after ${PROBE_TIMEOUT_MS}ms`);
+          continue;
+        }
+        const r = out.value;
         if (r.calls) setGrid(r.grid);
 
         const m = stepFrames(r.grid, at, delta);
@@ -517,12 +979,13 @@ export default function VideoMarkScreen({
 
         const t0 = Date.now();
         player.currentTime = seekTimeFor(m);
-        setPerf(`step ${delta > 0 ? '+' : ''}${delta} · probe ${r.ms}ms/${r.calls} · seek ${Date.now() - t0}ms`);
+        // See settleAt: this times the assignment returning, not the seek landing.
+        setPerf(`step ${delta > 0 ? '+' : ''}${delta} · probe ${r.ms}ms/${r.calls} · seek issued ${Date.now() - t0}ms`);
       }
     } finally {
       stepping.current = false;
     }
-  }, [player]);
+  }, [player, withPlayer]);
 
   const step = useCallback(
     (delta: number) => {
@@ -566,7 +1029,7 @@ export default function VideoMarkScreen({
             // is telling you it is variable, and the row should record what was
             // actually observed between the marks.
             fps: measuredFps(grid) ?? 1 / frameDur,
-            quantSdMs: timing.quantSdMs,
+            errorMs: timing.errorMs,
           }),
           // The clip is a COLUMN, not part of raw_json. raw_json says how the run
           // was timed; clip_id says whether there is footage. Keeping them apart is
@@ -587,10 +1050,7 @@ export default function VideoMarkScreen({
           `${formatVideoTime(timing)}${drill ? ` · ${drill.name}` : ''}\n\n` +
             (drill ? 'Video kept with the run.' : 'No drill yet — assign one in History to chart it.'),
         );
-        setClip(null);
-        setTiles([]);
-        setGrid(emptyGrid());
-        setPerformedAt(null);
+        reset();
       } catch (e) {
         Alert.alert('Could not save', String(e));
       } finally {
@@ -600,7 +1060,7 @@ export default function VideoMarkScreen({
     // athleteId, not just roster: it is derived from athleteOverride too, and
     // leaving it out would let a stale closure attribute the run to whoever was
     // selected before the coach changed it.
-    [timing, clip, startMark, finishMark, grid, frameDur, drill, athleteId, performedAt, roster, onSaved],
+    [timing, clip, startMark, finishMark, grid, frameDur, drill, athleteId, performedAt, roster, onSaved, reset],
   );
 
   /**
@@ -630,7 +1090,7 @@ export default function VideoMarkScreen({
 
   // ------------------------------------------------------------ render
 
-  const x = (t: number) => (duration ? (t / duration) * Math.max(0, stripW - HANDLE_W) : 0);
+  const x = (t: number) => timeToX(t, scale);
 
   return (
     // Column, not a ScrollView: the preview must TAKE the leftover space rather
@@ -664,12 +1124,12 @@ export default function VideoMarkScreen({
 
                 The precision STATE now has its own slot to the right, at a fixed
                 width, so it changes without moving or replacing anything else. And
-                the provisional ± is not a placeholder: nominalSdMs is the same
+                the provisional ± is not a placeholder: nominalErrorMs is the same
                 arithmetic timeFromMarks uses for two frames of equal length, so
                 the number only tightens when the real frame durations arrive. */}
             <View style={styles.pmRow}>
               <Text style={styles.pm}>
-                ± {Math.round(timing ? timing.quantSdMs : nominalSdMs(frameDur))}ms frame timing
+                ± {(timing ? timing.errorMs : nominalErrorMs(frameDur)).toFixed(1)}ms frame timing
               </Text>
               <Text style={[styles.snap, timing ? styles.snapOn : styles.snapOff]}>
                 {timing ? 'ON FRAME' : 'SNAPPING'}
@@ -681,9 +1141,22 @@ export default function VideoMarkScreen({
 
       {!clip ? (
         <View style={styles.controls}>
-          <Pressable style={styles.primary} onPress={pick}>
-            <Text style={styles.primaryText}>Import a clip</Text>
+          {/* RECORD IS THE PRIMARY ONE, and that is an argument rather than a
+              layout. A rep filmed here is filmed at a rate the app asked for and
+              can check three ways; an imported clip arrives with whatever rate the
+              Camera app chose, possibly slowed by iOS without saying so, and the
+              most the app can do is refuse it afterwards. Import stays because a
+              clip filmed last September is a real thing to want to mark. */}
+          <Pressable style={styles.primary} onPress={() => setRecordOpen(true)}>
+            <Text style={styles.primaryText}>Record a rep</Text>
           </Pressable>
+          <Pressable style={styles.secondary} onPress={pick}>
+            <Text style={styles.secondaryText}>Import a clip</Text>
+          </Pressable>
+          <Text style={styles.emptyNote}>
+            Filming here records at a chosen frame rate and checks the file afterwards. Importing
+            works from any clip you already have, at whatever rate it was filmed.
+          </Text>
         </View>
       ) : (
         <ScrollView
@@ -759,7 +1232,11 @@ export default function VideoMarkScreen({
             {[
               measuredFps(grid) ? `${measuredFps(grid)!.toFixed(1)}fps measured` : null,
               isVariableRate(grid) ? 'variable frame rate' : null,
-              formatBytes(clip.bytes),
+              // MEASURED, both halves: bytes off the file, seconds off the player.
+              // There is no per-minute figure here and there is not going to be one
+              // — see storage.ts, and the structural guard in verify-storage that
+              // fails if one ever appears in src/.
+              describeClip(clip.bytes, duration),
               perf,
             ]
               .filter(Boolean)
@@ -770,9 +1247,10 @@ export default function VideoMarkScreen({
               is the SMALL term; camera angle and which body part you judge are
               larger and are not measurable from the file. */}
           <Text style={styles.caveat}>
-            Video timing is not gate-accurate. Beyond the ±{timing ? timing.quantSdMs.toFixed(0) : '—'}ms
-            above, a camera that is not square to the finish line and the body part you judge add more
-            — around {BODY_PART_BIAS_MS}ms for the latter, in one direction rather than either. Video
+            Video timing is not gate-accurate. Beyond the ±{timing ? timing.errorMs.toFixed(1) : '—'}ms
+            above — which is a WHOLE FRAME, the worst case, not a statistical spread — a camera that
+            is not square to the finish line and the body part you judge add more, around{' '}
+            {BODY_PART_BIAS_MS}ms for the latter, in one direction rather than either. Video
             runs share a chart with gate runs and are marked on it, so that difference stays visible
             without splitting the drill in two.
           </Text>
@@ -815,10 +1293,24 @@ export default function VideoMarkScreen({
             </Text>
           </Pressable>
 
+          {/* WHY KEEP IS OFF, always, whatever the reason. Layer 3 refusing the
+              time is one case and it gets the Clear action, because that clip is
+              finished with. The others are recoverable and must not offer it. */}
+          {keepBlocked ? (
+            <View style={styles.refusalBox}>
+              <Text style={styles.refusalText}>{keepBlocked}</Text>
+              {refused ? (
+                <Pressable style={styles.secondary} onPress={clearClip}>
+                  <Text style={styles.secondaryText}>Clear this clip</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
+
           <Pressable
-            style={[styles.primary, !timing && styles.disabled]}
+            style={[styles.primary, (!timing || !!keepBlocked) && styles.disabled]}
             onPress={() => void save()}
-            disabled={!timing}
+            disabled={!timing || !!keepBlocked}
           >
             <Text style={styles.primaryText}>Keep</Text>
           </Pressable>
@@ -859,11 +1351,26 @@ export default function VideoMarkScreen({
             }}
           />
 
-          <Pressable style={styles.tertiary} onPress={pick}>
-            <Text style={styles.tertiaryText}>Import a different clip</Text>
-          </Pressable>
+          <View style={styles.swapRow}>
+            <Pressable style={styles.tertiary} onPress={() => setRecordOpen(true)}>
+              <Text style={styles.tertiaryText}>Record another rep</Text>
+            </Pressable>
+            <Pressable style={styles.tertiary} onPress={pick}>
+              <Text style={styles.tertiaryText}>Import a different clip</Text>
+            </Pressable>
+          </View>
         </ScrollView>
       )}
+
+      {/* OUTSIDE the clip conditional, deliberately. Opened from the empty state,
+          it would unmount the instant a recording lands and setClip flips the
+          branch — taking the sheet down mid-dismissal. Here it closes because it
+          was told to. */}
+      <VideoRecordModal
+        visible={recordOpen}
+        onCancel={() => setRecordOpen(false)}
+        onRecorded={(r) => void onRecorded(r)}
+      />
     </View>
   );
 }
@@ -968,6 +1475,28 @@ const styles = StyleSheet.create({
   caveat: { color: '#64748b', fontSize: 11, lineHeight: 16 },
   primary: { backgroundColor: '#1d4ed8', borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  secondary: {
+    borderRadius: 10,
+    paddingVertical: 13,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#243042',
+    backgroundColor: '#0b0e13',
+  },
+  secondaryText: { color: '#cbd5e1', fontSize: 15, fontWeight: '700' },
+  emptyNote: { color: '#64748b', fontSize: 11.5, lineHeight: 16, textAlign: 'center' },
+  // CAUTION, not DESTRUCTIVE: nothing has been destroyed. A refused time is a
+  // measurement you should not rely on, which is exactly the one job that colour has.
+  refusalBox: {
+    gap: 10,
+    padding: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#3a2a17',
+    backgroundColor: '#1a1409',
+  },
+  refusalText: { color: CAUTION, fontSize: 12.5, lineHeight: 18 },
+  swapRow: { flexDirection: 'row', justifyContent: 'space-between' },
   tertiary: { alignItems: 'center', paddingVertical: 10 },
   tertiaryText: { color: INTERACTIVE, fontSize: 13, fontWeight: '600' },
   disabled: { opacity: 0.4 },
