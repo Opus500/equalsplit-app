@@ -296,6 +296,50 @@ export function lastMarkableTime(durationSec: number, frameDurSec: number): numb
 }
 
 /**
+ * How far short of the last known frame a handle must stop.
+ *
+ * A MILLISECOND, for the same reason alignedProbes aims its tail rescue a millisecond
+ * inside the clip end rather than half a frame back: the final frame of a clip is
+ * usually a PARTIAL one, so any epsilon expressed as a fraction of a frame is wrong
+ * exactly when the remainder is short. Any frame long enough to mark is longer than a
+ * millisecond, and this only has to clear frameIndexAt's 1e-9 tolerance.
+ */
+const MARK_EDGE_EPS_SEC = 0.001;
+
+/**
+ * The furthest a handle may go, MEASURED rather than assumed.
+ *
+ * lastMarkableTime backs off a fixed 1.5 frames from the clip's duration, which is a
+ * guess made before any frame is known — and it is the wrong KIND of rule, not merely
+ * the wrong constant. What it should back off to is the last frame that actually has a
+ * measured successor, and after the load probe the grid already knows: alignedProbes
+ * fetches the clip's final frame deliberately with its tail rescue, so every position
+ * below that frame resolves with a real duration. The formula was refusing marks that
+ * work.
+ *
+ * Measured on a 0.17s 120fps recording: the formula stopped the handle at 0.1575 while
+ * positions resolved up to 0.1666 — 9.1ms, 5.4% of the whole clip, showing as a band
+ * at the end that the handle would not enter. At 30fps the same clip loses 46.6ms, a
+ * quarter of it. On a 3s clip it is 0.1%, which is why this survived so long.
+ *
+ * THE LATER OF THE TWO, which is what makes it safe. A grid whose highest frame is
+ * mid-clip — a sparse grid, or a load whose tail probe failed — would otherwise clamp
+ * the handle to the middle of the clip and put the finish mark out of reach. Taking
+ * the max means the formula is a floor that can only ever be improved on.
+ *
+ * WHAT STAYS UNREACHABLE is the final frame's own display interval, and no amount of
+ * probing can change that: nothing follows the last frame, so its duration cannot be
+ * measured, and markAt refuses it rather than inventing an error bar. That is about
+ * 2% of a short clip's strip.
+ */
+export function markableEnd(grid: FrameGrid, durationSec: number, frameDurSec: number): number {
+  const seed = lastMarkableTime(durationSec, frameDurSec);
+  const last = grid.frames[grid.frames.length - 1];
+  if (last === undefined) return seed;
+  return Math.max(seed, last - MARK_EDGE_EPS_SEC);
+}
+
+/**
  * The +/- a clip can support before any frame has actually been measured.
  *
  * Same rule as `timeFromMarks` for two frames of equal length, so a provisional

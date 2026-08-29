@@ -151,6 +151,43 @@ export function endedBecause(reason: RecordingEnd): string | null {
 }
 
 /**
+ * Below this, a press of record and a press of stop was a TAP, not a rep.
+ *
+ * Half a second. Nothing anyone films deliberately fits in it — the shortest thing a
+ * coach would set out to record is a flying 10m at somewhere over a second — and the
+ * gesture that produces one is unmistakable: record and stop in the same movement,
+ * which happens constantly while a camera sheet is being learned.
+ *
+ * Deliberately NOT a general "too short to be useful" threshold. Anything above this
+ * is a judgement about the sport rather than about the file, and a warning that fires
+ * on a legitimate 1.5s clip is one that gets read past — the same argument that keeps
+ * a caveat off the recorded-clip path.
+ */
+export const MIN_CLIP_MS = 500;
+
+/**
+ * Why a recording is being thrown away instead of kept, or null to keep it.
+ *
+ * ONE FUNCTION FOR THE PREDICATE AND THE WORDS, so a clip cannot be discarded without
+ * the coach being told why. A file vanishing silently is the version of this that
+ * would be worth complaining about.
+ *
+ * ONLY WHEN THEY STOPPED IT. A recording that ended on the duration cap or on the
+ * space cap is not a tap — the finger did not end it — and calling it one would be
+ * claiming a cause we know to be wrong. Those keep their clip and get endedBecause's
+ * explanation instead. In practice a cap cannot be reached in half a second anyway;
+ * the distinction is here because the honest rule is cheaper than the accidental one.
+ */
+export function misTapNote(elapsedMs: number, reason: RecordingEnd): string | null {
+  if (reason !== 'stopped') return null;
+  if (!(elapsedMs < MIN_CLIP_MS)) return null;
+  return (
+    'That was a tap rather than a recording, so nothing was kept. Press record, let the rep ' +
+    'run, then press stop.'
+  );
+}
+
+/**
  * A clip's cost, MEASURED — bytes off the file and seconds off the player.
  *
  * There is no per-minute figure here and there is not going to be one. A rate

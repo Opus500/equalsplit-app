@@ -22,6 +22,8 @@ import {
   budgetForRecording,
   describeClip,
   endedBecause,
+  misTapNote,
+  MIN_CLIP_MS,
   formatBytes,
 } from '../src/video/storage.ts';
 import { acceptRecording } from '../src/video/capture.ts';
@@ -234,9 +236,55 @@ console.log('\n9. BOTH BOUNDS REACH THE RECORDER, and no clock is invented');
   truthy('and so is the size', /rec\.recordedFileSize/.test(rec));
   check('nothing on this screen counts time itself', /Date\.now\(\)/.test(rec), false);
 
+  // WHICH THE MIS-TAP GUARD OBEYS TOO, and it is the place where a JS clock would
+  // have been most expensive: this one decides whether a file is deleted, so a timer
+  // disagreeing with the encoder would delete real footage. Read at the press rather
+  // than polled, so it carries no tick lag — a 600ms recording cannot read as 400.
+  truthy('the tap guard reads the recorder, at the press',
+    /stoppedAtSeconds\.current = rec\.recordedDuration;/.test(rec));
+  truthy('and gates on that, not on a clock',
+    /misTapNote\(stoppedAt \* 1000, reason\)/.test(rec));
+  // A LENGTH THAT COULD NOT BE READ KEEPS THE CLIP. The default on a path that
+  // deletes without asking has to be the safe one.
+  truthy('an unreadable length keeps the clip', /stoppedAt === null \? null :/.test(rec));
+  // BEFORE the clip is claimed, or the row exists and the file is only then removed.
+  truthy('and the tap is discarded before anything claims it',
+    /const tap = [\s\S]{0,220}discardRecording\(id\);[\s\S]{0,200}const clip = claimRecording/.test(rec));
+  truthy('saying why, never silently', /Alert\.alert\('Nothing recorded', tap\)/.test(rec));
+
   // The final size comes off the FILE, never off the recorder, which reports 0 once
   // it has stopped.
   truthy('the finished clip is claimed from disk', /claimRecording\(id\)/.test(rec));
+}
+
+console.log('\nA TAP IS NOT A REP');
+{
+  // Reported from device: pressing record and stop in the same movement produces a
+  // clip of a couple of hundred milliseconds. It cannot hold a start crossing and a
+  // finish crossing, so it costs a file, a clip-list row, and a trip to a marking
+  // screen that cannot produce a time from it.
+  truthy('a tap is discarded, with words', !!misTapNote(200, 'stopped'));
+  check('a real rep is kept', misTapNote(1500, 'stopped'), null);
+
+  // THE BOUNDARY, both sides, because a threshold asserted only from far away is a
+  // threshold that can move without failing anything.
+  truthy('just under the floor is a tap', !!misTapNote(MIN_CLIP_MS - 1, 'stopped'));
+  check('exactly at the floor is a recording', misTapNote(MIN_CLIP_MS, 'stopped'), null);
+  check('and the floor is half a second', MIN_CLIP_MS, 500);
+
+  // ONLY WHEN THE FINGER ENDED IT. A recording stopped by the duration cap or the
+  // space cap is not a tap, and calling it one would claim a cause known to be wrong.
+  // Those keep their clip and get endedBecause's explanation instead.
+  check('a duration cap is never a tap', misTapNote(200, 'max-duration-reached'), null);
+  check('nor is a space cap', misTapNote(200, 'max-file-size-reached'), null);
+  truthy('and those still explain themselves', !!endedBecause('max-duration-reached'));
+
+  // THE WORDS MATTER, because this deletes without asking. A file vanishing in
+  // silence is the version of this worth complaining about, so the predicate and the
+  // message are one function and there is no way to discard without saying why.
+  const note = misTapNote(200, 'stopped');
+  truthy('it says nothing was kept', /nothing was kept/.test(note));
+  truthy('and says what to do instead', /press stop/i.test(note));
 }
 
 console.log('\n=============================');

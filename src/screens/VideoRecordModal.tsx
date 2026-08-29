@@ -55,6 +55,7 @@ import {
   MAX_CLIP_MS,
   budgetForRecording,
   endedBecause,
+  misTapNote,
   type RecordingEnd,
 } from '../video/storage';
 import { nominalErrorMs, type TimeScale } from '../video/timing';
@@ -140,6 +141,16 @@ export function VideoRecordModal({
   const [recording, setRecording] = useState(false);
   /** Read from the recorder, never counted in JS. */
   const [live, setLive] = useState({ seconds: 0, bytes: 0 });
+  /**
+   * The recorder's OWN elapsed time at the instant stop was pressed, for the mis-tap
+   * guard in `finish`. Null when it could not be read, which keeps the clip.
+   *
+   * Not a JS clock. A timer here and the encoder disagree the moment the phone is
+   * busy, and this decides whether a file is deleted — the one place that disagreement
+   * would be expensive. It is read at the press rather than polled, so it carries no
+   * tick lag either: a 600ms recording cannot read as 400 and be thrown away.
+   */
+  const stoppedAtSeconds = useRef<number | null>(null);
 
   const recorder = useRef<Recorder | null>(null);
   const clipId = useRef<string | null>(null);
@@ -195,6 +206,8 @@ export function VideoRecordModal({
   const finish = useCallback(
     (reason: RecordingEnd) => {
       const id = clipId.current;
+      const stoppedAt = stoppedAtSeconds.current;
+      stoppedAtSeconds.current = null;
       clipId.current = null;
       recorder.current = null;
       setRecording(false);
@@ -204,6 +217,24 @@ export function VideoRecordModal({
       if (abandoned.current) {
         abandoned.current = false;
         discardRecording(id);
+        return;
+      }
+
+      // A TAP IS NOT A REP. Record and stop in the same movement produces a clip of a
+      // couple of hundred milliseconds, which cannot hold a start crossing and a
+      // finish crossing and is not what anyone meant to film. Keeping it costs a file
+      // on disk, a row in the clip list, and a trip to a marking screen that cannot
+      // produce a time from it.
+      //
+      // THE RECORDER'S OWN ELAPSED TIME, read at the press. A JS clock would have
+      // been easier and is exactly what this screen refuses everywhere else: a timer
+      // and the encoder disagree the moment the phone is busy, and this decides
+      // whether a file is deleted. A length that could not be read keeps the clip —
+      // the default on a destructive path has to be the safe one.
+      const tap = stoppedAt === null ? null : misTapNote(stoppedAt * 1000, reason);
+      if (tap) {
+        discardRecording(id);
+        Alert.alert('Nothing recorded', tap);
         return;
       }
 
@@ -267,6 +298,7 @@ export function VideoRecordModal({
       recorder.current = rec;
       setRecording(true);
       setLive({ seconds: 0, bytes: 0 });
+      stoppedAtSeconds.current = null;
       await rec.startRecording(
         (_filePath, reason) => finish(reason as RecordingEnd),
         (err) => {
@@ -348,6 +380,15 @@ export function VideoRecordModal({
   const stop = useCallback(async () => {
     const rec = recorder.current;
     if (!rec) return;
+    try {
+      // BEFORE stopping, because afterwards the recorder throws rather than reporting.
+      // This is the encoder's own figure at the moment the finger landed.
+      stoppedAtSeconds.current = rec.recordedDuration;
+    } catch {
+      // Unknown length keeps the clip. See misTapNote — the default on this path has
+      // to be the non-destructive one.
+      stoppedAtSeconds.current = null;
+    }
     try {
       await rec.stopRecording();
     } catch (e) {

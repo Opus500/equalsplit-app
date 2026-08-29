@@ -263,6 +263,17 @@ console.log('\n7. THE RULE IS APPLIED WHERE IT HAS TO BE');
   // drainSteps has written the ref alongside the state since it was written, with a
   // comment giving this exact reason. The drag path did not. Asserted for BOTH
   // handles, because writing one and not the other is the same bug half-fixed.
+  // THE CLAMP COMES FROM THE GRID, not from a formula on duration. A fixed 1.5
+  // frames back from the clip end refused marks that resolve perfectly well —
+  // 5.4% of a 0.17s 120fps clip, a quarter of the same clip at 30fps — showing as
+  // a band at the end the handle would not enter. See markableEnd.
+  truthy('the drag clamp is derived from the grid',
+    /Math\.min\(markableEnd\(liveGrid, d, frameDur\), next\)/.test(mark));
+  // And the formula survives ONLY as the pre-grid seed, where there is no grid to
+  // ask yet. Pinned so it cannot quietly come back as the drag rule.
+  truthy('while the formula stays the load seed',
+    /const endAt = lastMarkableTime\(d, dur\);/.test(mark));
+
   truthy('a start drag writes the ref, not just the state',
     /setStartAt\(clamped\);[\s\S]{0,60}live\.current\.startAt = clamped;/.test(mark));
   truthy('and a finish drag does too',

@@ -62,6 +62,7 @@ import {
   formatVideoTime,
   isVariableRate,
   lastMarkableTime,
+  markableEnd,
   markAt,
   measuredFps,
   nominalErrorMs,
@@ -760,7 +761,7 @@ export default function VideoMarkScreen({
         setDragging(which);
       },
       onPanResponderMove: (_e, g) => {
-        const { stripW: w, duration: d } = live.current;
+        const { stripW: w, duration: d, grid: liveGrid } = live.current;
         if (!w || !d) return;
         let next = dragBase.current + (g.dx / w) * d;
         // NOT Math.min(d, …). The last frame of a clip has no measured successor,
@@ -776,7 +777,13 @@ export default function VideoMarkScreen({
         // something you do by accident, and it surfaced on a slow-motion clip
         // because the stretched duration makes the drag many times more sensitive
         // in seconds per point — you hit the edge without meaning to.
-        next = Math.max(0, Math.min(lastMarkableTime(d, frameDur), next));
+        // FROM THE GRID, not from the formula. lastMarkableTime backs off a fixed
+        // 1.5 frames from the duration, which on a 0.17s 120fps clip left a 9.1ms
+        // band — 5.4% of it — that the handle would not enter even though every
+        // position in it resolves. The grid already holds the clip's final frame,
+        // because alignedProbes fetches it on purpose. See markableEnd; the formula
+        // survives there as a floor for when the grid cannot answer.
+        next = Math.max(0, Math.min(markableEnd(liveGrid, d, frameDur), next));
         // The handles cannot cross. A finish before a start is not a measurement
         // to warn about later, it is a state to prevent now.
         const clamped =

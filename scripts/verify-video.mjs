@@ -44,6 +44,7 @@ const {
   seekTimeFor,
   filmstripTimes,
   lastMarkableTime,
+  markableEnd,
   nominalErrorMs,
   adjacentDeltas,
   acceptForTiming,
@@ -1312,6 +1313,86 @@ console.log('\n19. A SETTLE RESOLVES THE MARK NOBODY IS TOUCHING');
   check('an unreadable region is reported, not hidden', cannot.otherResolved, false);
   truthy('after a bounded number of calls', cannot.calls > 0 && cannot.calls <= 8);
 }
+
+console.log('\n20. THE HANDLE STOPS WHERE THE FRAMES DO, NOT WHERE A FORMULA SAYS');
+{
+  // Reported from device: a 0.17s 120fps recording whose right handle stopped at
+  // about 0.16, leaving a visible band at the end that refused to be entered.
+  //
+  // lastMarkableTime backs off a fixed 1.5 frames from the clip's DURATION. That is a
+  // guess made before any frame is known, and it is the wrong kind of rule rather than
+  // the wrong constant: the grid already holds the clip's final frame, because
+  // alignedProbes fetches it on purpose with its tail rescue. Every position below
+  // that frame resolves with a measured duration, and the formula was refusing them.
+  const shortPlayer = (fps, durationSec) => {
+    const fd = 1 / fps;
+    const pts = [];
+    for (let i = 0; i * fd < durationSec; i += 1) pts.push(Number((i * fd).toFixed(9)));
+    return {
+      duration: durationSec,
+      pts,
+      async generateThumbnailsAsync(times) {
+        const t = times[0];
+        if (t < 0 || t >= durationSec) return [];
+        let i = 0;
+        for (let k = pts.length - 1; k >= 0; k -= 1) if (pts[k] <= t + 1e-12) { i = k; break; }
+        return [{ actualTime: pts[i] }];
+      },
+    };
+  };
+
+  // The real load sequence: probe the head, then probe the formula's end.
+  const loadGrid = async (p, fd) => {
+    let g = emptyGrid();
+    g = (await probeGridAround(p, g, 0, fd)).grid;
+    g = (await probeGridAround(p, g, lastMarkableTime(p.duration, fd), fd)).grid;
+    return g;
+  };
+
+  const fd120 = 1 / 120;
+  const p = shortPlayer(120, 0.17);
+  const g = await loadGrid(p, fd120);
+  const formula = lastMarkableTime(0.17, fd120);
+  const measured = markableEnd(g, 0.17, fd120);
+
+  // THE PROPERTY THAT MATTERS: the position the handle stops at must be markable.
+  // Everything else here is about how much is recovered; this is about not trading
+  // the band for a handle that lands somewhere unresolvable.
+  truthy('a mark at the new limit resolves', !!markAt(g, measured));
+  truthy('with a MEASURED duration, not an assumed one',
+    Math.abs(markAt(g, measured).frameDurSec - fd120) < 1e-6);
+  truthy('and the limit is later than the formula allowed', measured > formula);
+  truthy('recovering most of the band — over 8ms of a 0.17s clip',
+    (measured - formula) * 1000 > 8);
+
+  // The final frame itself stays unmarkable, and that is not a bug to be fixed later:
+  // nothing follows it, so its duration cannot be measured and markAt refuses rather
+  // than inventing an error bar. The limit must sit BELOW it.
+  const lastFrame = p.pts[p.pts.length - 1];
+  check('the clip final frame is in the grid at all', g.frames.includes(lastFrame), true);
+  check('but is itself unmarkable', markAt(g, lastFrame), null);
+  truthy('so the limit stops short of it', measured < lastFrame);
+
+  // COARSE RATES LOSE MORE, which is why a constant in frames cannot be right.
+  const fd30 = 1 / 30;
+  const p30 = shortPlayer(30, 0.17);
+  const g30 = await loadGrid(p30, fd30);
+  truthy('at 30fps the same clip recovers far more',
+    (markableEnd(g30, 0.17, fd30) - lastMarkableTime(0.17, fd30)) * 1000 > 40);
+  truthy('and that limit is markable too', !!markAt(g30, markableEnd(g30, 0.17, fd30)));
+
+  // THE FORMULA IS A FLOOR, and that is what makes this safe. A grid whose highest
+  // frame is mid-clip — sparse, or a load whose tail probe failed — must not clamp the
+  // handle into the middle of the clip and put the finish mark out of reach.
+  const sparse = { frames: [0.5, 0.5 + fd120], windows: [{ from: 0.4, to: 0.6 }] };
+  check('a mid-clip grid falls back to the formula',
+    markableEnd(sparse, 3.0, fd120), lastMarkableTime(3.0, fd120));
+  check('and an empty grid does too',
+    markableEnd(emptyGrid(), 3.0, fd120), lastMarkableTime(3.0, fd120));
+  truthy('the result is never earlier than the formula',
+    markableEnd(g, 0.17, fd120) >= formula && markableEnd(sparse, 3.0, fd120) >= lastMarkableTime(3.0, fd120));
+}
+
 
 console.log(
   failures === 0
