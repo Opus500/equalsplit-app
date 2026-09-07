@@ -55,7 +55,14 @@ function stats(values: number[]): Stats | null {
 const pick = (s: LatencySample[], key: 'beepLatency' | 'bleOneway' | 'audioGap'): number[] =>
   s.map((x) => x[key]).filter((v): v is number => v != null);
 
-export default function SettingsScreen({ onOpenDebug }: { onOpenDebug?: () => void }) {
+export default function SettingsScreen({
+  onOpenDebug,
+  onBack,
+}: {
+  onOpenDebug?: () => void;
+  /** Close Settings. Absent when it is not presented over anything. */
+  onBack?: () => void;
+}) {
   const {
     reactionOffsetMs,
     measuredAudioLatencyMs,
@@ -94,6 +101,11 @@ export default function SettingsScreen({ onOpenDebug }: { onOpenDebug?: () => vo
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 32 }}>
+      {onBack ? (
+        <Pressable onPress={onBack} hitSlop={10} style={styles.backRow}>
+          <Text style={styles.backText}>‹  Roster</Text>
+        </Pressable>
+      ) : null}
       <Text style={styles.title}>Settings</Text>
 
       <Section title="Log gate (standalone) runs">
@@ -364,6 +376,8 @@ function StatBlock({ label, values }: { label: string; values: number[] }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  backRow: { marginBottom: 6 },
+  backText: { color: INTERACTIVE, fontSize: 15, fontWeight: '700' },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 12 },
   section: { backgroundColor: '#161b22', borderRadius: 14, padding: 16, marginBottom: 14 },
   sectionTitle: { color: '#e2e8f0', fontSize: 16, fontWeight: '700', marginBottom: 8 },

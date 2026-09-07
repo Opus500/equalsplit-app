@@ -308,6 +308,15 @@ export type SessionRow = {
   created_at: number;
   custom_name: string | null; // user label; display = custom_name || name
   runCount: number;
+  /**
+   * Runs in this session with no athlete, so an orphan can be FOUND.
+   *
+   * A run saved without an athlete belongs to nobody, so it appears under no one in
+   * the roster — which is exactly the run most likely to need attention, and the one
+   * the roster cannot lead you to. Counting it here is what lets History say which
+   * sessions hold them; the in-session Unassigned chip does the rest.
+   */
+  unassignedCount: number;
   // No "best": a session can mix modes and drills (a 10m fly vs a 40yd reaction
   // start aren't comparable), so a single best/avg across the session is
   // misleading. Comparability is decided per-view instead (see HistoryScreen).
@@ -317,12 +326,30 @@ export async function getSessions(): Promise<SessionRow[]> {
   const db = await getDb();
   return db.getAllAsync<SessionRow>(`
     SELECT s.id, s.name, s.created_at, s.custom_name,
-           COUNT(r.id) AS runCount
+           COUNT(r.id) AS runCount,
+           -- SUM over a boolean, not a second query: the join is already here.
+           COALESCE(SUM(CASE WHEN r.id IS NOT NULL AND r.athlete_id IS NULL THEN 1 ELSE 0 END), 0)
+             AS unassignedCount
     FROM sessions s
     LEFT JOIN runs r ON r.session_id = s.id
     GROUP BY s.id
     ORDER BY s.created_at DESC
   `);
+}
+
+/**
+ * How many runs in the whole database have no athlete.
+ *
+ * For the badge on the way IN to History. The roster is organised by athlete, so a
+ * run belonging to nobody is invisible there — the count is what makes it visible,
+ * and it is the only thing on that screen that can point at a run it cannot list.
+ */
+export async function countUnassignedRuns(): Promise<number> {
+  const db = await getDb();
+  const row = await db.getFirstAsync<{ n: number }>(
+    'SELECT COUNT(*) AS n FROM runs WHERE athlete_id IS NULL',
+  );
+  return row?.n ?? 0;
 }
 
 // Rename a session. Empty/blank reverts to the date (stored as NULL).

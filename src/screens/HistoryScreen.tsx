@@ -80,7 +80,21 @@ const parseMeta = (r: RunRow): RawMeta => {
   }
 };
 
-export default function HistoryScreen({ isActive }: { isActive: boolean }) {
+export default function HistoryScreen({
+  isActive,
+  onBack,
+}: {
+  isActive: boolean;
+  /**
+   * Close History. Absent when it is not being presented over something.
+   *
+   * TWO LEVELS OF BACK, and only one of them is this. Inside a session the ‹ returns
+   * to the session list, as it always has; at the list level it closes the screen.
+   * Wiring both to the same handler would make one tap from a session skip the list
+   * entirely — the level a coach is usually trying to get back to.
+   */
+  onBack?: () => void;
+}) {
   const { devMode } = useSettings();
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [selected, setSelected] = useState<SessionRow | null>(null);
@@ -490,7 +504,14 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>History</Text>
+      <View style={styles.listHeader}>
+        {onBack ? (
+          <Pressable onPress={onBack} hitSlop={10}>
+            <Text style={styles.back}>‹</Text>
+          </Pressable>
+        ) : null}
+        <Text style={styles.title}>History</Text>
+      </View>
       <FlatList
         data={sessions}
         keyExtractor={(s) => s.id}
@@ -505,6 +526,16 @@ export default function HistoryScreen({ isActive }: { isActive: boolean }) {
                 {item.custom_name?.trim() ? `${item.name} · ` : ''}
                 {item.runCount} run{item.runCount === 1 ? '' : 's'}
               </Text>
+              {/* WHICH SESSIONS HOLD THE ORPHANS. A run with no athlete belongs to
+                  nobody, so the roster cannot list it — the count on the way in says
+                  how many exist, and this says where. Tapping through lands on the
+                  session, where the Unassigned chip already filters to exactly these.
+                  Without this middle step the badge points at a haystack. */}
+              {item.unassignedCount > 0 ? (
+                <Text style={styles.sessOrphans}>
+                  {item.unassignedCount} without an athlete
+                </Text>
+              ) : null}
             </View>
             <Text style={styles.chev}>›</Text>
           </Pressable>
@@ -726,6 +757,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   sessName: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
+  sessOrphans: { color: CAUTION, fontSize: 12, fontWeight: '700', marginTop: 2 },
+  listHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   sessSub: { color: '#64748b', fontSize: 13, marginTop: 2 },
   chev: { color: '#475569', fontSize: 22 },
   runRow: {

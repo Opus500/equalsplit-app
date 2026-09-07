@@ -22,6 +22,7 @@ import {
   View,
 } from 'react-native';
 
+import { countUnassignedRuns } from '../db/database';
 import { AthleteDetailModal } from '../components/AthleteDetail';
 import { LineupEditorModal } from '../components/LineupEditor';
 import { TemplateManagerModal } from '../components/TemplateManager';
@@ -33,12 +34,30 @@ import {
   CAUTION,
   DESTRUCTIVE,
   DESTRUCTIVE_EDGE,
+  INTERACTIVE,
   INTERACTIVE_ON_BG,
   INTERACTIVE_SOFT,
   INTERACTIVE_STRONG,
 } from '../theme';
 
-export default function RosterScreen() {
+/**
+ * The roster, and the two things that are not tabs.
+ *
+ * WHY BOTH LIVE HERE. Timer, Modes and Video are what a coach DOES; this screen is
+ * what they manage — people, the record of what those people ran, and how the app
+ * behaves. Putting History and Settings in the same corner of the same screen is one
+ * pattern rather than two, which is the whole reason not to scatter them.
+ */
+export default function RosterScreen({
+  onOpenHistory,
+  onOpenSettings,
+  /** True while the History overlay is up, so the orphan count re-reads on close. */
+  openHistoryFlag = false,
+}: {
+  onOpenHistory?: () => void;
+  onOpenSettings?: () => void;
+  openHistoryFlag?: boolean;
+} = {}) {
   // The provider is the single source: the strip and pickers read the same list,
   // so an edit here can't leave them showing a stale roster.
   const roster = useRoster();
@@ -52,6 +71,25 @@ export default function RosterScreen() {
   const [lineupOpen, setLineupOpen] = useState(false);
 
   const load = useCallback(() => roster.refresh(), [roster]);
+
+  /**
+   * How many runs belong to nobody. Re-read whenever History closes.
+   *
+   * `historyOpen` is in the dependency list rather than a one-shot on mount, because
+   * assigning an orphan is precisely what a coach goes to History to do — a count that
+   * only loaded once would keep advertising work already done.
+   */
+  const [orphans, setOrphans] = useState(0);
+  const historyOpen = !!openHistoryFlag;
+  useEffect(() => {
+    let alive = true;
+    countUnassignedRuns()
+      .then((n) => alive && setOrphans(n))
+      .catch(() => alive && setOrphans(0));
+    return () => {
+      alive = false;
+    };
+  }, [historyOpen]);
 
   // Pick up roster changes made elsewhere (e.g. quick-add from a picker).
   useEffect(() => {
@@ -138,7 +176,46 @@ export default function RosterScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Roster</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>Roster</Text>
+        <View style={styles.headerActions}>
+          {/* THE BADGE IS THE POINT, not decoration. A run saved without an athlete
+              belongs to nobody, so it appears under no one in the list below — and it
+              is the run most likely to need fixing. This is the only thing on this
+              screen that can point at a run it cannot show. History names the
+              sessions holding them; the Unassigned chip there does the rest. */}
+          {onOpenHistory ? (
+            <Pressable
+              onPress={onOpenHistory}
+              hitSlop={8}
+              style={({ pressed }) => [styles.headerBtn, pressed && styles.dim]}
+            >
+              <Text style={styles.headerBtnText}>History</Text>
+              {orphans > 0 ? (
+                <View style={styles.orphanBadge}>
+                  <Text style={styles.orphanBadgeText}>{orphans > 99 ? '99+' : orphans}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          ) : null}
+          {onOpenSettings ? (
+            <Pressable
+              onPress={onOpenSettings}
+              hitSlop={8}
+              style={({ pressed }) => [styles.gearBtn, pressed && styles.dim]}
+              accessibilityLabel="Settings"
+            >
+              <Text style={styles.gearText}>⚙</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+      {orphans > 0 ? (
+        <Text style={styles.orphanNote}>
+          {orphans} run{orphans === 1 ? '' : 's'} saved without an athlete. Open History to assign{' '}
+          {orphans === 1 ? 'it' : 'them'}.
+        </Text>
+      ) : null}
 
       <View style={styles.summary}>
         <Text style={styles.summaryText}>
@@ -458,6 +535,24 @@ function AthleteFormModal({
 }
 
 const styles = StyleSheet.create({
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  headerBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  headerBtnText: { color: INTERACTIVE, fontSize: 15, fontWeight: '700' },
+  orphanBadge: {
+    minWidth: 20,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 10,
+    // CAUTION, because an unattributed run is 'a decision the app cannot make' —
+    // the exact role that colour is defined for. Dark text on it, not white.
+    backgroundColor: CAUTION,
+    alignItems: 'center',
+  },
+  orphanBadgeText: { color: '#0e1116', fontSize: 12, fontWeight: '800' },
+  gearBtn: { paddingHorizontal: 2 },
+  gearText: { color: '#94a3b8', fontSize: 20 },
+  orphanNote: { color: CAUTION, fontSize: 13, lineHeight: 18, marginTop: 6 },
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   flex: { flex: 1 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },

@@ -22,7 +22,21 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import DebugScreen from './src/screens/DebugScreen';
 import VideoTab from './src/screens/VideoTab';
 
-type Tab = 'timer' | 'drills' | 'roster' | 'history' | 'settings' | 'debug' | 'video';
+type Tab = 'timer' | 'drills' | 'roster' | 'video';
+
+/**
+ * The screens that are NOT tabs, as one stack rather than three special cases.
+ *
+ * History and Settings both left the tab bar: six tabs is two past what fits, and
+ * neither is something a coach reaches for mid-rep. They are reached from the same
+ * corner of the same screen — Roster's header — because Timer, Drills and Video are
+ * what a coach DOES and Roster is what they manage. One pattern, not two.
+ *
+ * Diagnostics stays a child of Settings and is in the same stack rather than nested
+ * inside it, so there is exactly one place that knows what is on top and what
+ * closing it goes back to. That is what makes the dev-mode fallback a single line.
+ */
+type Overlay = 'history' | 'settings' | 'debug' | null;
 
 export default function App() {
   // BEFORE anything else can fail. Installed in the module body rather than an
@@ -56,11 +70,13 @@ export default function App() {
 function AppShell() {
   const { devMode, useV2Engine } = useSettings();
   const [tab, setTab] = useState<Tab>('timer');
+  const [overlay, setOverlay] = useState<Overlay>(null);
 
-  // If dev mode is turned off while on Debug, fall back to where it's reached from.
+  // If dev mode is turned off while in Diagnostics, fall back to where it's reached
+  // from — which is now the Settings overlay rather than a tab.
   useEffect(() => {
-    if (!devMode && tab === 'debug') setTab('settings');
-  }, [devMode, tab]);
+    if (!devMode && overlay === 'debug') setOverlay('settings');
+  }, [devMode, overlay]);
 
   return (
     <View style={styles.root}>
@@ -78,24 +94,11 @@ function AppShell() {
         </View>
         {tab === 'roster' && (
           <View style={styles.fill}>
-            <RosterScreen />
-          </View>
-        )}
-        {tab === 'history' && (
-          <View style={styles.fill}>
-            <HistoryScreen isActive={tab === 'history'} />
-          </View>
-        )}
-        {tab === 'settings' && (
-          <View style={styles.fill}>
-            <SettingsScreen onOpenDebug={devMode ? () => setTab('debug') : undefined} />
-          </View>
-        )}
-        {/* Debug is a dev tool, not a primary object — reached THROUGH Settings
-            rather than owning a permanent tab slot. */}
-        {tab === 'debug' && devMode && (
-          <View style={styles.fill}>
-            <DebugScreen onBack={() => setTab('settings')} />
+            <RosterScreen
+              onOpenHistory={() => setOverlay('history')}
+              onOpenSettings={() => setOverlay('settings')}
+              openHistoryFlag={overlay === 'history'}
+            />
           </View>
         )}
         {/* Mounts on demand, and is UNMOUNTED on leaving: it holds a video player
@@ -119,14 +122,32 @@ function AppShell() {
         <TabButton label="Timer" active={tab === 'timer'} onPress={() => setTab('timer')} />
         <TabButton label="Drills" active={tab === 'drills'} onPress={() => setTab('drills')} />
         <TabButton label="Roster" active={tab === 'roster'} onPress={() => setTab('roster')} />
-        <TabButton label="History" active={tab === 'history'} onPress={() => setTab('history')} />
         <TabButton label="Video" active={tab === 'video'} onPress={() => setTab('video')} />
-        <TabButton
-          label="Settings"
-          active={tab === 'settings' || tab === 'debug'}
-          onPress={() => setTab('settings')}
-        />
       </View>
+
+      {/* ABOVE THE TAB BAR, not beside it. These are not places you switch between,
+          they are things you open and close — and a tab bar underneath an open
+          History would offer a way out that leaves the overlay behind it. */}
+      {overlay === 'history' && (
+        <View style={styles.overlay}>
+          {/* isActive is what makes History reload its sessions. It used to mean "is
+              the selected tab"; it means "is open" now, which is the same claim. */}
+          <HistoryScreen isActive onBack={() => setOverlay(null)} />
+        </View>
+      )}
+      {overlay === 'settings' && (
+        <View style={styles.overlay}>
+          <SettingsScreen
+            onBack={() => setOverlay(null)}
+            onOpenDebug={devMode ? () => setOverlay('debug') : undefined}
+          />
+        </View>
+      )}
+      {overlay === 'debug' && devMode && (
+        <View style={styles.overlay}>
+          <DebugScreen onBack={() => setOverlay('settings')} />
+        </View>
+      )}
     </View>
   );
 }
@@ -151,6 +172,15 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0e1116' },
   screens: { flex: 1 },
   fill: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
+  // Covers the tab bar too, which is the difference between an overlay and a tab.
+  overlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: '#0e1116',
+  },
   hidden: { display: 'none' },
   tabBar: {
     flexDirection: 'row',

@@ -39,6 +39,22 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const SRC = join(ROOT, 'src');
 
+/**
+ * The file with its COMMENTS REMOVED, for any claim about prose.
+ *
+ * This file has now been bitten three times by guards matching the very comment
+ * that explains the thing they assert: an ordering check that a comment mentioning
+ * createRecorder() failed, an absence check for "BLE protocol", and a mutation that
+ * survived because the phrase it removed from the UI still appeared in the note above
+ * it. A claim about what the app SAYS has to read the code alone.
+ */
+const code = (abs) =>
+  read(abs)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n')
+    .filter((l) => !/^\s*(\/\/|\*)/.test(l))
+    .join('\n');
+
 let failures = 0;
 const check = (label, got, want) => {
   const g = JSON.stringify(got);
@@ -219,6 +235,30 @@ console.log('\n2. EVERY WAY IN IS WHERE A COACH WOULD LOOK');
       control: /onPress=\{pick\}/,
       label: /Import a different clip/,
     },
+    // HISTORY AND SETTINGS LEFT THE TAB BAR. Six tabs was two past what fits, and
+    // neither is reached for mid-rep. Both now live in the same corner of the same
+    // screen, which is what keeps it one pattern instead of two.
+    {
+      what: 'History, from the Roster header',
+      file: 'screens/RosterScreen.tsx',
+      where: ['<View style={styles.titleRow}>', '</View>' + String.fromCharCode(10) + '      </View>'],
+      control: /onPress=\{onOpenHistory\}/,
+      label: /History<\/Text>/,
+    },
+    {
+      what: 'Settings, from the same header',
+      file: 'screens/RosterScreen.tsx',
+      where: ['<View style={styles.titleRow}>', '</View>' + String.fromCharCode(10) + '      </View>'],
+      control: /onPress=\{onOpenSettings\}/,
+      label: /accessibilityLabel="Settings"/,
+    },
+    {
+      what: 'Diagnostics, from Settings',
+      file: 'screens/SettingsScreen.tsx',
+      where: ['{devVisible ? (', '</Section>'],
+      control: /onPress=\{onOpenDebug\}/,
+      label: /Diagnostics/,
+    },
   ];
 
   for (const e of ENTRY_POINTS) {
@@ -333,6 +373,37 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
   }
   truthy('and says what is missing when a gate has not joined',
     /Only one gate — the other has not joined yet/.test(read(join(SRC, 'screens', 'DrillsScreen.tsx'))));
+
+
+  // A RUN THAT BELONGS TO NOBODY. History is the only screen that can change a
+  // run's athlete, and the roster is organised BY athlete — so an unattributed run
+  // appears under no one, which is exactly the run most likely to need fixing. The
+  // chain that leads a coach to it is asserted end to end, because every link is
+  // useless without the others: a count with no route is a nag, and a route with no
+  // count is never taken.
+  const roster = read(join(SRC, 'screens', 'RosterScreen.tsx'));
+  truthy('the roster counts runs that belong to nobody', /countUnassignedRuns\(\)/.test(roster));
+  truthy('and re-counts when History closes, not once on mount',
+    /\}, \[historyOpen\]\);/.test(roster));
+  truthy('the count is on the way in to History', /\{orphans > 0 \? \([\s\S]{0,200}orphanBadge/.test(roster));
+  truthy('and says in words what it wants done',
+    /saved without an athlete/.test(code(join(SRC, 'screens', 'RosterScreen.tsx'))));
+  const hist = read(join(SRC, 'screens', 'HistoryScreen.tsx'));
+  truthy('History says WHICH sessions hold them', /item\.unassignedCount > 0/.test(hist));
+  truthy('and can still filter to them inside a session', /'Unassigned'/.test(hist));
+  truthy('and History is the only screen that can reassign a run',
+    /updateRunAthlete\(editing\.id/.test(hist));
+
+  // FOUR TABS. The two that left must not still be there.
+  const app = read(join(ROOT, 'App.tsx'));
+  check('History is not a tab', /label="History"/.test(app), false);
+  check('Settings is not a tab', /label="Settings"/.test(app), false);
+  truthy('and the overlay stack knows what closing Diagnostics returns to',
+    /onBack=\{\(\) => setOverlay\('settings'\)\}/.test(app));
+  truthy('with the dev-mode fallback following it there',
+    /if \(!devMode && overlay === 'debug'\) setOverlay\('settings'\);/.test(app));
+  truthy('and History reloading because it is OPEN, not because it is selected',
+    /<HistoryScreen isActive onBack=/.test(app));
 
   // A badge that reads `set ?` is indistinguishable from something broken.
   const setctl = read(join(SRC, 'components', 'SetControl.tsx'));
