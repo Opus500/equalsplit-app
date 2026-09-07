@@ -397,6 +397,14 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
   // FOUR TABS. The two that left must not still be there.
   const app = read(join(ROOT, 'App.tsx'));
   check('History is not a tab', /label="History"/.test(app), false);
+  // FOUR LABELS, PINNED. A tab bar is the one place where a name is the whole
+  // interface, and "Drills" collided with the Timer's drill LABEL — two different
+  // things a coach would call the same word.
+  for (const [label, id] of [['Timer', 'timer'], ['Modes', 'drills'], ['Roster', 'roster'], ['Video', 'video']]) {
+    truthy(`the ${label} tab is there and named itself`,
+      new RegExp(`label="${label}"[\\s\\S]{0,60}setTab\\('${id}'\\)`).test(app));
+  }
+  check('no tab is still called Drills', /label="Drills"/.test(app), false);
   check('Settings is not a tab', /label="Settings"/.test(app), false);
   truthy('and the overlay stack knows what closing Diagnostics returns to',
     /onBack=\{\(\) => setOverlay\('settings'\)\}/.test(app));

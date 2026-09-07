@@ -120,7 +120,18 @@ function AppShell() {
 
       <View style={styles.tabBar}>
         <TabButton label="Timer" active={tab === 'timer'} onPress={() => setTab('timer')} />
-        <TabButton label="Drills" active={tab === 'drills'} onPress={() => setTab('drills')} />
+        {/* MODES, not Drills. "Drill" already meant something else on the Timer — a
+            LABEL you attach to an ordinary run, from a trimmed list that deliberately
+            never offers L Drill or Shuttle. What lives here are ways of timing that
+            the app drives and counts for you, and calling both "drill" made the two
+            indistinguishable in conversation.
+
+            Not "preset modes", which was the first instinct: preset only means
+            something against a custom alternative, and there is none — it would
+            promise configurability the app does not have. The tab id and the screens
+            stay `drills`, because that is what they genuinely render; it is the
+            category that needed the name. */}
+        <TabButton label="Modes" active={tab === 'drills'} onPress={() => setTab('drills')} />
         <TabButton label="Roster" active={tab === 'roster'} onPress={() => setTab('roster')} />
         <TabButton label="Video" active={tab === 'video'} onPress={() => setTab('video')} />
       </View>
