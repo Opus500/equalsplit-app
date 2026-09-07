@@ -17,7 +17,6 @@ import Constants from 'expo-constants';
 import { useSettings, type LatencySample } from '../settings/SettingsProvider';
 import { useGate } from '../ble/GateProvider';
 import { DEFAULT_REACTION_OFFSET_MS } from '../db/database';
-import { PROTO_VERSION } from '../ble/constants';
 import {
   INK,
   INTERACTIVE,
@@ -26,10 +25,24 @@ import {
 
 const SAMPLE_RAW_MS = 350; // illustrative raw reaction for the live preview
 
-// TODO: replace with the real donation link before release.
-const DONATE_URL = 'https://example.com/donate';
+const DONATE_URL = 'https://www.zeffy.com/en-US/donation-form/donate-to-equalsplit';
 
 const APP_VERSION = Constants.expoConfig?.version ?? '1.0.0';
+
+/**
+ * Taps on the version row that reveal Developer mode.
+ *
+ * It used to be the FIRST thing on this screen: a labelled switch reading "Show
+ * advanced / diagnostic info", which anyone opening Settings saw before anything
+ * else. Turning it on replaces clean results with raw values and confidence figures
+ * that read as noise to a coach, and it opens Diagnostics — a screen that is exactly
+ * right for a meet and exactly wrong for a first impression of the app.
+ *
+ * Behind a tap count it stays one gesture away for someone who knows, and out of
+ * reach of someone who does not. Seven is the convention, and conventions are worth
+ * following for a gesture nobody can be told about.
+ */
+const DEV_UNLOCK_TAPS = 7;
 
 type Stats = { n: number; mean: number; sd: number; min: number; max: number };
 function stats(values: number[]): Stats | null {
@@ -60,6 +73,11 @@ export default function SettingsScreen({ onOpenDebug }: { onOpenDebug?: () => vo
   const gate = useGate();
   const connected = gate.status === 'connected';
   const [draft, setDraft] = useState(String(reactionOffsetMs));
+  // Reset whenever Settings is left: the tab unmounts this screen, so a half-finished
+  // tap count cannot survive to surprise someone later.
+  const [versionTaps, setVersionTaps] = useState(0);
+  // Already on stays visible, or there would be no way to turn it off again.
+  const devVisible = devMode || versionTaps >= DEV_UNLOCK_TAPS;
 
   useEffect(() => {
     setDraft(String(reactionOffsetMs));
@@ -77,30 +95,6 @@ export default function SettingsScreen({ onOpenDebug }: { onOpenDebug?: () => vo
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 32 }}>
       <Text style={styles.title}>Settings</Text>
-
-      <Section title="Developer mode">
-        <View style={styles.devRow}>
-          <Text style={styles.devLabel}>Show advanced / diagnostic info</Text>
-          <Switch
-            value={devMode}
-            onValueChange={setDevMode}
-            trackColor={{ false: '#243042', true: '#1d4ed8' }}
-            thumbColor="#e2e8f0"
-          />
-        </View>
-        <Text style={styles.note}>
-          Off shows clean results only. On reveals the ±X accuracy, clock-sync detail, raw Mode 2
-          split values, and Diagnostics below. Times are always measured and saved either way.
-        </Text>
-        {devMode && onOpenDebug ? (
-          <Pressable
-            onPress={onOpenDebug}
-            style={({ pressed }) => [styles.debugBtn, pressed && styles.dim]}
-          >
-            <Text style={styles.debugBtnText}>Diagnostics &amp; v2 Lab  ›</Text>
-          </Pressable>
-        ) : null}
-      </Section>
 
       <Section title="Log gate (standalone) runs">
         <View style={styles.devRow}>
@@ -124,7 +118,7 @@ export default function SettingsScreen({ onOpenDebug }: { onOpenDebug?: () => vo
       <>
       <Section title="Timing engine (experimental)">
         <View style={styles.devRow}>
-          <Text style={styles.devLabel}>Use v2 raw-event engine (Mode 1)</Text>
+          <Text style={styles.devLabel}>Use the new gate engine (standard runs only)</Text>
           <Switch
             value={useV2Engine}
             onValueChange={setUseV2Engine}
@@ -133,9 +127,9 @@ export default function SettingsScreen({ onOpenDebug }: { onOpenDebug?: () => vo
           />
         </View>
         <Text style={styles.note}>
-          Runs the main Timer on the new write-once gate pipeline (gates auto-discover, assign, and
-          time-sync; the app computes the split from the raw event stream). Mode 1 only for now. Off
-          uses the proven v1 pipeline. Both save to the same history.
+          Runs the main Timer on the new gate pipeline (gates find each other, assign themselves and
+          sync clocks; the app computes the split from the raw event stream). Standard runs only for
+          now. Off uses the proven original pipeline. Both save to the same history.
         </Text>
       </Section>
 
@@ -260,25 +254,66 @@ export default function SettingsScreen({ onOpenDebug }: { onOpenDebug?: () => vo
       </Section>
 
       <Section title="About">
-        <Row label="App version" value={APP_VERSION} />
-        <Row label="BLE protocol" value={`v${PROTO_VERSION}`} />
+        {/* The version row is also the way in to Developer mode. It carries no hint of
+            that, which is the point — see DEV_UNLOCK_TAPS. The BLE protocol number
+            that used to sit beneath it is gone: a coach will never act on it, and
+            Diagnostics already reports it beside the gate's own. */}
+        <Row label="App version" value={APP_VERSION} onPress={() => setVersionTaps((n) => n + 1)} />
         <Text style={styles.aboutBlurb}>
           EqualSplit pairs your phone with the start gate over Bluetooth; the gate keeps the
           authoritative time and relays the finish gate's result over ESP-NOW. Times are stored
           locally on your device.
         </Text>
       </Section>
+
+      {devVisible ? (
+        <Section title="Developer mode">
+          <View style={styles.devRow}>
+            <Text style={styles.devLabel}>Show advanced / diagnostic info</Text>
+            <Switch
+              value={devMode}
+              onValueChange={setDevMode}
+              trackColor={{ false: '#243042', true: '#1d4ed8' }}
+              thumbColor="#e2e8f0"
+            />
+          </View>
+          <Text style={styles.note}>
+            Off shows clean results only. On reveals accuracy figures, clock-sync detail, reaction
+            timing, and Diagnostics below. Times are always measured and saved either way.
+          </Text>
+          {devMode && onOpenDebug ? (
+            <Pressable
+              onPress={onOpenDebug}
+              style={({ pressed }) => [styles.debugBtn, pressed && styles.dim]}
+            >
+              <Text style={styles.debugBtnText}>Diagnostics &amp; v2 Lab  ›</Text>
+            </Pressable>
+          ) : null}
+        </Section>
+      ) : null}
     </ScrollView>
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
-  return (
+function Row({
+  label,
+  value,
+  onPress,
+}: {
+  label: string;
+  value: string;
+  onPress?: () => void;
+}) {
+  // No pressed style and no hit feedback when it is the unlock row: a row that
+  // visibly responds to a tap invites a second one, which is the opposite of what
+  // this is for.
+  const body = (
     <View style={styles.aboutRow}>
       <Text style={styles.aboutLabel}>{label}</Text>
       <Text style={styles.aboutValue}>{value}</Text>
     </View>
   );
+  return onPress ? <Pressable onPress={onPress}>{body}</Pressable> : body;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

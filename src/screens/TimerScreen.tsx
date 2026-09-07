@@ -96,6 +96,17 @@ export default function TimerScreen() {
   const [result, setResult] = useState<Result | null>(null);
   const [gateState, setGateState] = useState<GateState | null>(null);
   const [dbg, setDbg] = useState('');
+  /**
+   * A save that failed, in the coach's words. Shown to everyone, always.
+   *
+   * This used to be the tail of `dbg` — "finish(ble) · SAVE FAILED: Error: ..." — a
+   * grey 11pt diagnostic line that also carried raw split values and a running
+   * "saving…". The raw part had no business on a coach's screen, but deleting the
+   * line wholesale would have made a failed save SILENT: a rep run, timed, and never
+   * written, with nothing on screen to say so. So the two are separated. The raw
+   * trace goes behind dev mode; this stays.
+   */
+  const [saveError, setSaveError] = useState<string | null>(null);
   // Attribution comes from the roster queue (the strip); only the drill label is
   // still a free-text tag here. finishedTags freezes what was attached to the
   // just-finished run for the result display.
@@ -369,6 +380,7 @@ export default function TimerScreen() {
             `  anchor: ${cs ? `g0Us=${cs.anchor.g0Us} p0Ms=${cs.anchor.p0Ms.toFixed(1)} minRtt=${cs.minRttMs.toFixed(1)} offsetSpread=${cs.offsetSpreadMs.toFixed(1)}` : 'none (fixed offset)'}`,
         );
       }
+      setSaveError(null);
       setDbg(`finish(${src}) raw ${fmt(r.totalMs, 3)}s · −${correction}ms(${source}) · saving…`);
       const rawJson = JSON.stringify({
         source,
@@ -419,6 +431,11 @@ export default function TimerScreen() {
         })
         .catch((e) => {
           console.warn('[saveRun] FAILED', e);
+          // The message a coach can act on, and the trace for whoever has to fix it.
+          setSaveError(
+            'That run was timed but could not be saved to history. The time above is correct — ' +
+              'write it down before running another rep.',
+          );
           setDbg(`finish(${src}) · SAVE FAILED: ${String(e)}`);
         });
     },
@@ -720,23 +737,43 @@ export default function TimerScreen() {
         ) : null}
 
         <Text style={styles.hint}>{hintFor(connected, gateState, runState)}</Text>
-        {dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
+        {saveError ? <Text style={styles.saveError}>{saveError}</Text> : null}
+        {devMode && dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
       </View>
 
       <View style={styles.controls}>
         <Row>
           {/* Arming IS "the next rep starts" on this screen, so it settles the
-              previous run — kept, not deleted. */}
-          <Btn label="Arm Mode 1" onPress={doArm1} disabled={!connected || !isIdleState} />
-          <Btn label="Arm Mode 2" onPress={doArm2} disabled={!connected || !isIdleState} />
+              previous run — kept, not deleted.
+              
+              MODE NUMBERS ARE OURS, NOT A COACH'S. With reaction timing behind dev
+              mode there is only one thing to arm, so it needs no number at all — the
+              hint above already says when to press it. In dev mode both appear and
+              the second says what it does rather than which mode it is. */}
+          <Btn label={devMode ? 'Arm' : 'Arm gate'} onPress={doArm1} disabled={!connected || !isIdleState} />
+          {devMode ? (
+            <Btn label="Arm (reaction)" onPress={doArm2} disabled={!connected || !isIdleState} />
+          ) : null}
         </Row>
         <Row>
-          <Btn
-            label="Start sequence"
-            onPress={() => gate.startSequence()}
-            disabled={!connected || !isM2Armed}
-            kind="go"
-          />
+          {/* REACTION IS SHELVED UNTIL THE BUZZER LANDS at the PCB respin, so both
+              halves of it are gated together. Leaving this live while its calibration
+              sat behind dev mode was the worst of both: a button a reviewer can press
+              for a mode that cannot be set up, which reads as an unfinished app.
+              Start sequence only ever does anything to an M2-armed gate, so it goes
+              with it — a permanently disabled button is its own kind of unfinished.
+
+              THE MATHS AND THE SAVED VALUES ARE UNTOUCHED. reactionOffsetMs is still
+              subtracted at save time and History still re-derives it, so existing
+              Mode 2 rows keep meaning exactly what they meant. */}
+          {devMode ? (
+            <Btn
+              label="Start sequence"
+              onPress={() => gate.startSequence()}
+              disabled={!connected || !isM2Armed}
+              kind="go"
+            />
+          ) : null}
           <Btn label="Reset" onPress={gate.reset} disabled={!connected || isIdleState} kind="warn" />
         </Row>
       </View>
@@ -891,6 +928,16 @@ const styles = StyleSheet.create({
   earlyNote: { color: CAUTION, fontSize: 11, marginTop: 4, textAlign: 'center' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 24, textAlign: 'center' },
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  // Legible, not a diagnostic aside: a run that was not saved is the worst thing
+  // this screen has to report, and it used to be grey 11pt among raw numbers.
+  saveError: {
+    color: '#fca5a5',
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 10,
+    textAlign: 'center',
+    fontWeight: '600',
+  },
   controls: { paddingBottom: 12 },
   row: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   btn: { flex: 1, backgroundColor: '#2563eb', paddingVertical: 14, borderRadius: 12, alignItems: 'center' },

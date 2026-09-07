@@ -10,7 +10,7 @@ import { readLog } from '../diag/crashlog';
 
 import { useGate } from '../ble/GateProvider';
 import { useV2 } from '../ble/V2Provider';
-import { EVT_NAME, STATE_NAME } from '../ble/constants';
+import { EVT_NAME, STATE_NAME, PROTO_VERSION } from '../ble/constants';
 import { describeEvent, toHex } from '../ble/decode';
 import V2Lab from '../components/V2Lab';
 import { PruneTestDataModal } from '../components/PruneTestData';
@@ -97,7 +97,13 @@ export default function DebugScreen({ onBack }: { onBack?: () => void }) {
           <Text style={styles.title}>Diagnostics</Text>
           <Text style={styles.subtitle}>
             adapter {gate.adapterOn ? 'on' : 'off'} · {gate.status}
-            {gate.gateStatus ? ` · proto ${gate.gateStatus.protoVer}` : ''}
+            {/* BOTH SIDES of the protocol number. The gate's came from its status
+                frame; the app's expectation used to sit in Settings > About, where a
+                coach would never act on it and it read as diagnostics. Here the two
+                are next to each other, which is the only form in which either is
+                useful — a mismatch is the thing worth seeing. */}
+            {` · proto app v${PROTO_VERSION}`}
+            {gate.gateStatus ? ` / gate v${gate.gateStatus.protoVer}` : ''}
           </Text>
         </View>
         {/* One-time maintenance, dev-mode only. Not a "clear history" button —

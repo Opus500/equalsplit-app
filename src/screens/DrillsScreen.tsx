@@ -373,6 +373,28 @@ function hintFor(
 // --- shared small components (mirrors the Timer's chrome) -------------------
 
 
+/**
+ * The gate session in a coach's words.
+ *
+ * It read `v2 · ready · 2/2 synced` — three pieces of our vocabulary in a row. "v2" is
+ * an engine version nobody outside this repo has a use for, "phase" is a state-machine
+ * term, and "synced" describes a clock handshake rather than anything a coach can act
+ * on. What they actually need to know is whether both gates are up, and if not, what
+ * is missing.
+ *
+ * The counts survive where they carry information — "1 of 2 ready" says which of the
+ * setup steps is still running — but the numbers are gates, not clocks.
+ */
+function sessionLabel(phase: string, synced: number, total: number): string {
+  if (phase === 'ready') return total ? `Both gates ready` : 'Gates ready';
+  if (phase === 'partial') return 'Only one gate — the other has not joined yet';
+  if (phase === 'error') return 'Gate setup did not finish';
+  if (phase === 'idle') return 'Waiting for gates';
+  // discovering / assigning / syncing are all "still setting up" from the outside,
+  // and which one it is on cannot be acted on differently.
+  return total ? `Setting up gates — ${synced} of ${total} ready` : 'Setting up gates';
+}
+
 function SessionLine() {
   const v2 = useV2();
   const gate = useGate();
@@ -385,8 +407,7 @@ function SessionLine() {
     <View style={styles.sessionRow}>
       <View style={[styles.sdot, ready ? styles.sdotOn : styles.sdotBusy]} />
       <Text style={styles.sessionText}>
-        v2 · {v2.phase === 'partial' ? '1 gate (recovery)' : v2.phase}
-        {total ? ` · ${synced}/${total} synced` : ''}
+        {sessionLabel(v2.phase, synced, total)}
       </Text>
       {!ready ? (
         <Pressable onPress={v2.bringUp} hitSlop={8}>

@@ -97,8 +97,13 @@ export function SetControl({
             <Text style={styles.badgeText}>SET {currentSet}</Text>
           </View>
         ) : (
+          // A REAL STATE, not a shrug. This read `set ?` when connected — lowercase,
+          // terse, and indistinguishable from something being broken. Connected with
+          // no set means the gate did not put a set byte in its advertisement, which
+          // is a fact about that gate and not an error: Choose set still works, and
+          // the picker lists it under "set unknown".
           <View style={[styles.badge, styles.badgeMuted]}>
-            <Text style={styles.badgeMutedText}>{connected ? 'set ?' : 'no set'}</Text>
+            <Text style={styles.badgeMutedText}>{connected ? 'SET UNKNOWN' : 'NO GATE'}</Text>
           </View>
         )
       ) : null}

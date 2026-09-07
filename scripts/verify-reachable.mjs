@@ -276,6 +276,70 @@ console.log('\n4. AND A DESTINATION THAT EXISTS CAN BE DISPLAYED');
   check('no clamp counts series directly any more', /page > series\.length/.test(detail), false);
 }
 
+console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
+{
+  // The mirror of the rest of this file. Everywhere else asks whether a feature has
+  // a way IN; this asks whether things that should be out of the way actually are.
+  // Written for App Store submission, where a live button for a mode that cannot be
+  // set up reads as an unfinished app rather than as a work in progress.
+  const settings = read(join(SRC, 'screens', 'SettingsScreen.tsx'));
+  const timer = read(join(SRC, 'screens', 'TimerScreen.tsx'));
+
+  // DEV MODE IS NOT THE FIRST THING IN SETTINGS ANY MORE. It was a labelled switch
+  // at the top — the most discoverable control on the screen — and turning it on
+  // replaces clean results with raw values and opens Diagnostics.
+  truthy('developer mode renders only once unlocked', /\{devVisible \? \(/.test(settings));
+  truthy('and the unlock is a tap count on the version row',
+    /onPress=\{\(\) => setVersionTaps\(\(n\) => n \+ 1\)\}/.test(settings));
+  truthy('with a count high enough to be deliberate', /const DEV_UNLOCK_TAPS = ([7-9]|1[0-9]);/.test(settings));
+  // Already on must stay visible, or dev mode could never be switched off again.
+  truthy('an already-on dev mode shows its own switch',
+    /const devVisible = devMode \|\| versionTaps >= DEV_UNLOCK_TAPS;/.test(settings));
+
+  // REACTION IS SHELVED until the buzzer lands, so BOTH halves are gated together.
+  // Leaving the button live while its calibration sat behind dev mode was the worst
+  // of both: pressable, and impossible to set up.
+  truthy('arming a reaction run is behind dev mode',
+    /\{devMode \? \([\s\S]{0,200}Arm \(reaction\)/.test(timer));
+  truthy('and so is the control that only a reaction run uses',
+    /\{devMode \? \([\s\S]{0,400}Start sequence/.test(timer));
+  check('no mode number is offered to a coach', /label="Arm Mode [12]"/.test(timer), false);
+
+  // A FAILED SAVE MUST STILL SPEAK. The raw trace goes behind dev mode; the message
+  // saying the run was not written does not, or the failure is silent.
+  truthy('the raw timer trace is dev-only', /\{devMode && dbg \? /.test(timer));
+  truthy('but a failed save is told to everyone', /\{saveError \? <Text/.test(timer));
+  truthy('in words rather than an exception',
+    /could not be saved to history/.test(timer));
+
+  // A PLACEHOLDER URL IS A REJECTION. This shipped as example.com behind a TODO.
+  check('the donate link is not a placeholder', /example\.com/.test(settings), false);
+  truthy('and is a real destination', settings.includes('https://www.zeffy.com/'));
+
+  // VERSION NUMBERS ARE OURS. A coach has no use for a BLE protocol number, and it
+  // read as diagnostics sitting under the app version in About.
+  // AGAINST THE MARKUP, not the file. The comment explaining this removal contains
+  // the words it claims are gone, which is the same trap the ordering guards hit.
+  check('About no longer states the BLE protocol',
+    /label="BLE protocol"/.test(settings), false);
+  truthy('and Diagnostics reports it instead',
+    /proto app v\$\{PROTO_VERSION\}/.test(read(join(SRC, 'screens', 'DebugScreen.tsx'))));
+
+  // The gate session line spoke in engine versions and state-machine phases.
+  for (const f of ['DrillsScreen.tsx', 'TimerV2Screen.tsx']) {
+    const src = read(join(SRC, 'screens', f));
+    check(`${f} does not show an engine version`, /v2 · \{v2\.phase/.test(src), false);
+    truthy(`${f} names the session in plain words`, /sessionLabel\(v2\.phase/.test(src));
+  }
+  truthy('and says what is missing when a gate has not joined',
+    /Only one gate — the other has not joined yet/.test(read(join(SRC, 'screens', 'DrillsScreen.tsx'))));
+
+  // A badge that reads `set ?` is indistinguishable from something broken.
+  const setctl = read(join(SRC, 'components', 'SetControl.tsx'));
+  check('the set badge has no shrug state', /'set \?'/.test(setctl), false);
+  truthy('it names the state instead', /SET UNKNOWN/.test(setctl));
+}
+
 console.log('\n=============================');
 console.log(
   failures === 0
