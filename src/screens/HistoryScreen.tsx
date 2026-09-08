@@ -162,8 +162,17 @@ export default function HistoryScreen({
     setRuns(await getRuns(s.id));
   }, []);
 
+  /**
+   * Reload the session's runs, and HAND THEM BACK.
+   *
+   * The callers need the fresh row, not just the fresh list: patching a field onto the
+   * open editor's snapshot is what left it showing the old athlete after a reassign.
+   */
   const refreshRuns = useCallback(async () => {
-    if (selected) setRuns(await getRuns(selected.id));
+    if (!selected) return null;
+    const rows = await getRuns(selected.id);
+    setRuns(rows);
+    return rows;
   }, [selected]);
 
   // Reassignment goes through the roster by ID — never by name text.
@@ -171,8 +180,13 @@ export default function HistoryScreen({
     async (athleteId: string | null) => {
       if (!editing) return;
       await updateRunAthlete(editing.id, athleteId);
-      await refreshRuns();
-      setEditing((cur) => (cur ? { ...cur, athlete_id: athleteId } : cur));
+      // FROM THE DATABASE, not patched onto the snapshot. `athlete_id` was set on the
+      // open row and nothing else was — but the editor displays the NAME, which
+      // resolvedAthlete reads from athlete_display_name, and that still held the
+      // previous athlete's. The picker returned, the editor re-rendered, and it showed
+      // the old value until the run was closed and reopened.
+      const rows = await refreshRuns();
+      setEditing(rows?.find((r) => r.id === editing.id) ?? null);
     },
     [editing, refreshRuns],
   );
@@ -181,8 +195,10 @@ export default function HistoryScreen({
     async (drillId: string | null) => {
       if (!editing) return;
       await updateRunDrill(editing.id, drillId);
-      await refreshRuns();
-      setEditing((cur) => (cur ? { ...cur, drill_id: drillId } : cur));
+      // Same as reassign: the drill NAME is resolved from the row, so a patched id
+      // leaves the label stale.
+      const rows = await refreshRuns();
+      setEditing(rows?.find((r) => r.id === editing.id) ?? null);
     },
     [editing, refreshRuns],
   );
@@ -732,12 +748,20 @@ function RenameModal({
             />
             <Text style={styles.rmNote}>Leave empty to use the date ({dateName}).</Text>
             <View style={styles.rmActions}>
-              <Pressable onPress={onClose} style={({ pressed }) => [styles.rmBtn, pressed && { opacity: 0.5 }]}>
+              <Pressable
+                onPress={onClose}
+                style={({ pressed }) => [styles.rmBtn, styles.rmBtnFill, pressed && { opacity: 0.5 }]}
+              >
                 <Text style={styles.rmBtnText}>Cancel</Text>
               </Pressable>
               <Pressable
                 onPress={submit}
-                style={({ pressed }) => [styles.rmBtn, styles.rmBtnPrimary, pressed && { opacity: 0.5 }]}
+                style={({ pressed }) => [
+                  styles.rmBtn,
+                  styles.rmBtnFill,
+                  styles.rmBtnPrimary,
+                  pressed && { opacity: 0.5 },
+                ]}
               >
                 <Text style={[styles.rmBtnText, styles.rmBtnPrimaryText]}>Save</Text>
               </Pressable>
@@ -900,7 +924,16 @@ const styles = StyleSheet.create({
   },
   rmNote: { color: '#64748b', fontSize: 11, marginTop: 8 },
   rmActions: { flexDirection: 'row', gap: 10, marginTop: 16 },
-  rmBtn: { flex: 1, backgroundColor: '#243042', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  // NO `flex: 1` IN THE BASE. In a ROW that splits the width; in a COLUMN it means
+  // flexBasis 0 on the main axis, so the button's height collapses to its padding and
+  // the label is clipped out of it — a blue box with no text. This style was written
+  // for the rename footer row (d284d05) and reused for the run editor's Done button
+  // (271b22b), which is a column child. The same shape as 9428397, where a row style
+  // reused in a column made a rename field invisible.
+  //
+  // The row usages ask for the split explicitly now, and the base is safe anywhere.
+  rmBtn: { backgroundColor: '#243042', borderRadius: 10, paddingVertical: 12, alignItems: 'center' },
+  rmBtnFill: { flex: 1 },
   rmBtnText: { color: '#cbd5e1', fontWeight: '700' },
   rmBtnPrimary: { backgroundColor: '#2563eb' },
   rmBtnPrimaryText: { color: '#fff' },

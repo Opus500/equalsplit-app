@@ -548,6 +548,23 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     // was clipped out of the squeezed frame — reported as a button with no text.
     {
       const dp = code(join(SRC, 'components', 'DrillPicker.tsx'));
+      // A ROW STYLE MUST NOT BE REUSED IN A COLUMN. `flex: 1` splits a row; in a
+      // column it is flexBasis 0 on the main axis, so the control's HEIGHT collapses
+      // to its padding and the label is clipped out — a blue box with no text. This
+      // repo has had that bug twice now (9428397, and the run editor's Done button),
+      // so the base style carries no flex and the row usages ask for the split.
+      const histCode = code(join(SRC, 'screens', 'HistoryScreen.tsx'));
+      check('the button base does not assume a row', /rmBtn: \{ flex: 1/.test(histCode), false);
+      truthy('and the row usages ask for the split themselves',
+        (histCode.match(/styles\.rmBtnFill/g) || []).length === 2);
+      // AND THE EDITOR RE-READS THE ROW rather than patching its snapshot: it shows
+      // the athlete NAME, which is resolved from the row, so setting only the id left
+      // the old name on screen until the run was closed and reopened.
+      truthy('a reassign re-reads the run from the database',
+        /const rows = await refreshRuns\(\);[\s\S]{0,120}setEditing\(rows/.test(histCode));
+      truthy('and so does a drill change',
+        (histCode.match(/setEditing\(rows/g) || []).length === 2);
+
       truthy('the rename sheet is outside the card it was opened from',
         dp.indexOf('</KeyboardAvoidingView>') < dp.indexOf('<RenameDrillPrompt'));
     }
