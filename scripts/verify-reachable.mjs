@@ -463,6 +463,92 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     check('no modal is mounted already open', offenders, []);
   }
 
+  // NO SHEET PRESENTS FROM INSIDE ANOTHER PRESENTED SHEET.
+  //
+  // iOS presents one modal at a time. A second request from inside the first is
+  // DROPPED, and what it leaves behind is a modal window with no content: invisible,
+  // swallowing every touch, and undismissable because its backdrop was never laid out.
+  // Reported from device as the run editor's "assign athlete" doing nothing, and then
+  // History being impossible to leave.
+  //
+  // SIX places did this, and a hand-written list of them missed one — which is the
+  // argument for sweeping. Anything rendered inside a presented region must say
+  // `embedded`, which is what tells SheetHost to render into the host already up
+  // rather than ask for another.
+  {
+    // THE EXEMPTION IS A PROPERTY, NOT A LIST OF NAMES. UIKit genuinely stacks PAGE
+    // SHEETS — presenting one from another is the card stack seen all over iOS, and it
+    // works. What does not work is a transparent overlay presented over an existing
+    // presentation, which is what froze History. So a component that presents a page
+    // sheet may nest; everything else must embed.
+    const presentsPageSheet = new Set();
+    for (const abs of walk(SRC)) {
+      if (!/\.tsx$/.test(abs)) continue;
+      const src = code(abs);
+      if (!/presentationStyle="pageSheet"/.test(src)) continue;
+      for (const m of src.matchAll(/export function (\w+)/g)) presentsPageSheet.add(m[1]);
+    }
+    truthy('the page-sheet exemption found something to exempt', presentsPageSheet.size > 0);
+
+    // WHO OWNS A SHEET, read from the files rather than guessed from the NAME. The
+    // first version matched tags ending in "Modal", so RenameDrillPrompt — a sheet
+    // opened from inside the drill picker, which is itself opened from inside the run
+    // editor — was invisible to it, and a mutation removing its guard survived. A
+    // naming convention is not a property.
+    // PER COMPONENT, not per file: a file holding a sheet also holds plain views,
+    // and crediting all of them flagged <Row> and <PreviewLine> as sheets. Each
+    // declaration owns the text up to the next one, which is enough because these
+    // components are top level and sequential.
+    const sheetOwners = new Set();
+    for (const abs of walk(SRC)) {
+      if (!/\.tsx$/.test(abs)) continue;
+      const src = code(abs);
+      const decls = [...src.matchAll(/function (\w+)/g)];
+      for (let k = 0; k < decls.length; k += 1) {
+        const from = decls[k].index;
+        const to = k + 1 < decls.length ? decls[k + 1].index : src.length;
+        if (/<Modal|<SheetHost/.test(src.slice(from, to))) sheetOwners.add(decls[k][1]);
+      }
+    }
+    truthy('sheet owners were found by reading, not by naming', sheetOwners.size > 3);
+
+    const nested = [];
+    for (const abs of walk(SRC)) {
+      if (!/\.tsx$/.test(abs)) continue;
+      const where = rel(abs);
+      const src = code(abs);
+      for (const [open, closeTag] of [['<Modal', '</Modal>'], ['<SheetHost', '</SheetHost>']]) {
+        let i = src.indexOf(open);
+        while (i !== -1) {
+          // AFTER the opening tag, or a host matches itself and every host reads as
+          // nested inside one.
+          const bodyFrom = src.indexOf('>', i) + 1;
+          const j = src.indexOf(closeTag, bodyFrom);
+          const region = j === -1 ? src.slice(bodyFrom) : src.slice(bodyFrom, j);
+          for (const m of region.matchAll(/<([A-Z]\w*)\b([^>]*)>/g)) {
+            const tag = m[1];
+            const attrs = m[2];
+            if (!sheetOwners.has(tag)) continue;
+            if (/\bembedded\b/.test(attrs)) continue;
+            if (presentsPageSheet.has(tag)) continue;
+            nested.push(where + ': <' + tag + '> inside a presented sheet, without embedded');
+          }
+          i = src.indexOf(open, i + 1);
+        }
+      }
+    }
+    check('no sheet presents from inside another sheet', nested, []);
+  }
+
+  // AND THE ONE HOST THAT DECIDES. If SheetHost stops honouring `embedded`, every call
+  // site above goes back to presenting and nothing else would notice.
+  {
+    const host = read(join(SRC, 'components', 'SheetHost.tsx'));
+    truthy('an embedded sheet renders without presenting',
+      /if \(embedded\) \{[\s\S]{0,220}absoluteFill/.test(host));
+    truthy('and a root one still presents', /<Modal visible=\{visible\}/.test(host));
+  }
+
   // A badge that reads `set ?` is indistinguishable from something broken.
   const setctl = read(join(SRC, 'components', 'SetControl.tsx'));
   check('the set badge has no shrug state', /'set \?'/.test(setctl), false);

@@ -640,10 +640,13 @@ export function AthleteDetailModal({
           )}
         </ScrollView>
 
-        {/* Nested inside this modal, not a sibling — same iOS constraint as the
-            edit form: dismissing one root-level Modal while presenting another in
-            the same frame can drop the second. */}
+        {/* EMBEDDED, not nested. The comment that used to sit here had the constraint
+            right and the conclusion wrong: it avoided dismissing one root Modal while
+            presenting another by NESTING instead, which is the failure that froze
+            History — iOS presents one at a time and drops the second, leaving a dead
+            touch layer. These render into the sheet that is already up. */}
         <RunDateModal
+          embedded
           visible={!!dating}
           value={(() => {
             const r = rows?.find((x) => x.id === dating);
@@ -658,6 +661,7 @@ export function AthleteDetailModal({
         />
 
         <DrillPickerModal
+          embedded
           visible={!!assigning}
           currentId={null}
           kind="all"

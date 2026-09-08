@@ -12,7 +12,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -21,6 +20,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+
+import { SheetHost } from './SheetHost';
 
 import { createAthlete, listAthletes, type Athlete } from '../db/database';
 import { disambiguate, runCountLabel } from '../roster/labels';
@@ -40,6 +41,7 @@ export function AthletePickerModal({
   allowUnassigned = true,
   onClose,
   onPick,
+  embedded = false,
 }: {
   visible: boolean;
   currentId: string | null;
@@ -47,6 +49,13 @@ export function AthletePickerModal({
   allowUnassigned?: boolean;
   onClose: () => void;
   onPick: (athleteId: string | null) => void;
+  /**
+   * True when something up the tree has already presented a modal.
+   *
+   * iOS presents one at a time; a second request from inside the first is dropped and
+   * leaves a dead touch layer behind. See SheetHost.
+   */
+  embedded?: boolean;
 }) {
   const roster = useRoster();
   const [all, setAll] = useState<Athlete[]>([]);
@@ -119,7 +128,7 @@ export function AthletePickerModal({
   }, [newName, adding, onPick, onClose, roster]);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <SheetHost visible={visible} embedded={embedded} onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <Pressable style={styles.backdrop} onPress={onClose}>
           <Pressable style={styles.card} onPress={() => {}}>
@@ -215,7 +224,7 @@ export function AthletePickerModal({
           </Pressable>
         </Pressable>
       </KeyboardAvoidingView>
-    </Modal>
+    </SheetHost>
   );
 }
 

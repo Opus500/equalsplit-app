@@ -19,7 +19,9 @@
 // whole series.
 
 import { useEffect, useState } from 'react';
-import { Alert, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { SheetHost } from '../components/SheetHost';
 import DateTimePicker from '@react-native-community/datetimepicker';
 
 import { getAthleteRuns } from '../db/database';
@@ -144,6 +146,7 @@ export function RunDateModal({
   title,
   onCancel,
   onPick,
+  embedded = false,
 }: {
   visible: boolean;
   /** The date to open on. */
@@ -151,6 +154,8 @@ export function RunDateModal({
   title?: string;
   onCancel: () => void;
   onPick: (at: number) => void;
+  /** True when a modal is already presented up the tree. See SheetHost. */
+  embedded?: boolean;
 }) {
   const [draft, setDraft] = useState(value);
 
@@ -163,7 +168,7 @@ export function RunDateModal({
   const now = Date.now();
 
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onCancel}>
+    <SheetHost visible={visible} embedded={embedded} animationType="slide" onRequestClose={onCancel}>
       <View style={styles.backdrop}>
         <View style={styles.sheet}>
           <Text style={styles.title}>{title ?? 'When did this run happen?'}</Text>
@@ -210,7 +215,7 @@ export function RunDateModal({
           </View>
         </View>
       </View>
-    </Modal>
+    </SheetHost>
   );
 }
 

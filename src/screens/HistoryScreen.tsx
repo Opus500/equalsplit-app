@@ -19,6 +19,8 @@ import {
   View,
 } from 'react-native';
 
+import { SheetHost } from '../components/SheetHost';
+
 import {
   deleteRun,
   getRuns,
@@ -184,6 +186,19 @@ export default function HistoryScreen({
     },
     [editing, refreshRuns],
   );
+
+  /**
+   * Close the editor AND anything it opened.
+   *
+   * One exit, because the host is one thing now: dismissing while a picker is the
+   * visible content would otherwise leave `picking` set, so the next run tapped would
+   * open straight into the athlete list instead of the editor.
+   */
+  const closeEditor = useCallback(() => {
+    setEditing(null);
+    setPicking(false);
+    setPickingDrill(false);
+  }, []);
 
   const confirmDelete = useCallback(
     (run: RunRow) => {
@@ -449,33 +464,52 @@ export default function HistoryScreen({
           }}
         />
 
-        <RunEditModal
-          run={editing}
-          onClose={() => setEditing(null)}
-          onOpenPicker={() => setPicking(true)}
-          onOpenDrillPicker={() => setPickingDrill(true)}
-        />
+        {/* ONE HOST, THREE CONTENTS — the reported freeze, and the reason for it.
+            
+            The editor and the two pickers used to be three separate <Modal>s, and
+            "assign athlete" asked iOS to present the picker while the editor was
+            already presented. iOS presents one at a time: the second request was
+            dropped and left a modal window with no content, invisible and eating
+            every touch, which is why the picker never appeared and History could not
+            be left afterwards.
 
-        {/* Reassignment (a stated requirement, not a follow-up): pick the record,
-            store the id. Rendered above the editor so it stacks over it. */}
-        <AthletePickerModal
-          visible={picking}
-          currentId={editing?.athlete_id ?? null}
-          title={editing ? `Athlete for run #${editing.display_index}` : 'Choose athlete'}
-          onClose={() => setPicking(false)}
-          onPick={reassign}
-        />
-
-        {/* 'all' here, unlike the timers: re-tagging a run may legitimately
-            target an engine drill (L Drill / Shuttle Run). */}
-        <DrillPickerModal
-          visible={pickingDrill}
-          currentId={editing?.drill_id ?? null}
-          kind="all"
-          title={editing ? `Drill for run #${editing.display_index}` : 'Choose drill'}
-          onClose={() => setPickingDrill(false)}
-          onPick={(d) => setDrill(d?.id ?? null)}
-        />
+            Switching the CONTENT of a host that is already up changes no presentation
+            at all. Hiding the editor and showing the picker instead would have been a
+            dismiss racing a present in one commit — an intermittent failure in place
+            of a reliable one, which is worse. `editing` stays set throughout, so the
+            pickers still know which run they are for and closing one returns to the
+            editor rather than to the list. */}
+        <SheetHost visible={!!editing} onRequestClose={closeEditor}>
+          {picking ? (
+            <AthletePickerModal
+              embedded
+              visible
+              currentId={editing?.athlete_id ?? null}
+              title={editing ? `Athlete for run #${editing.display_index}` : 'Choose athlete'}
+              onClose={() => setPicking(false)}
+              onPick={reassign}
+            />
+          ) : pickingDrill ? (
+            /* 'all' here, unlike the timers: re-tagging a run may legitimately
+               target an engine drill (L Drill / Shuttle Run). */
+            <DrillPickerModal
+              embedded
+              visible
+              currentId={editing?.drill_id ?? null}
+              kind="all"
+              title={editing ? `Drill for run #${editing.display_index}` : 'Choose drill'}
+              onClose={() => setPickingDrill(false)}
+              onPick={(d) => setDrill(d?.id ?? null)}
+            />
+          ) : (
+            <RunEditBody
+              run={editing}
+              onClose={closeEditor}
+              onOpenPicker={() => setPicking(true)}
+              onOpenDrillPicker={() => setPickingDrill(true)}
+            />
+          )}
+        </SheetHost>
 
         <RenameModal
           visible={renaming}
@@ -548,7 +582,7 @@ export default function HistoryScreen({
 /** Edit one run: who it belongs to (roster record, via the picker) and its drill
  *  label. Athlete is deliberately NOT a text field any more — free text is what
  *  the roster replaced, and typing a name here would recreate the problem. */
-function RunEditModal({
+function RunEditBody({
   run,
   onClose,
   onOpenPicker,
@@ -580,9 +614,8 @@ function RunEditModal({
    */
   const who = run ? resolvedAthlete(run) : null;
   const drill = run ? resolvedDrill(run) : null;
+  if (!run || !who || !drill) return null;
   return (
-    <Modal visible={!!run} transparent animationType="fade" onRequestClose={onClose}>
-      {run && who && drill ? (
       <Pressable style={styles.rmBackdrop} onPress={onClose}>
         <Pressable style={styles.rmCard} onPress={() => {}}>
           <Text style={styles.rmTitle}>Run #{run.display_index}</Text>
@@ -628,8 +661,6 @@ function RunEditModal({
           </Pressable>
         </Pressable>
       </Pressable>
-      ) : null}
-    </Modal>
   );
 }
 

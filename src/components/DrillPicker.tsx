@@ -13,7 +13,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -22,6 +21,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
+
+import { SheetHost } from './SheetHost';
 
 import {
   deleteDrillIfUnused,
@@ -49,6 +50,7 @@ export function DrillPickerModal({
   title = 'Drill',
   onClose,
   onPick,
+  embedded = false,
 }: {
   visible: boolean;
   currentId: string | null;
@@ -56,6 +58,13 @@ export function DrillPickerModal({
   title?: string;
   onClose: () => void;
   onPick: (drill: Drill | null) => void;
+  /**
+   * True when something up the tree has already presented a modal.
+   *
+   * iOS presents one at a time; a second request from inside the first is dropped and
+   * leaves a dead touch layer behind. See SheetHost.
+   */
+  embedded?: boolean;
 }) {
   const [drills, setDrills] = useState<Drill[]>([]);
   const [expanded, setExpanded] = useState(false);
@@ -172,7 +181,7 @@ export function DrillPickerModal({
   }, [newName, adding, duplicate, onPick, onClose]);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <SheetHost visible={visible} embedded={embedded} onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <Pressable style={styles.backdrop} onPress={onClose}>
           <Pressable style={styles.card} onPress={() => {}}>
@@ -284,6 +293,7 @@ export function DrillPickerModal({
             </View>
 
             <RenameDrillPrompt
+              embedded
               drill={renaming}
               existing={drills}
               onClose={() => setRenaming(null)}
@@ -295,7 +305,7 @@ export function DrillPickerModal({
           </Pressable>
         </Pressable>
       </KeyboardAvoidingView>
-    </Modal>
+    </SheetHost>
   );
 }
 
@@ -312,11 +322,14 @@ function RenameDrillPrompt({
   existing,
   onClose,
   onDone,
+  embedded = false,
 }: {
   drill: Drill | null;
   existing: Drill[];
   onClose: () => void;
   onDone: () => void | Promise<void>;
+  /** Always true: this only renders inside the picker's host. See SheetHost. */
+  embedded?: boolean;
 }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -368,8 +381,12 @@ function RenameDrillPrompt({
     await apply();
   }, [drill, name, target, busy, onClose, onDone]);
 
+  // Declared rather than hardcoded, so the call site states it and the sweep can read
+  // it there. It is always true today — this only ever renders inside the picker's
+  // host, whichever host that is — and it was the deepest nesting found: run editor,
+  // then drill picker, then this.
   return (
-    <Modal visible={drill != null} transparent animationType="fade" onRequestClose={onClose}>
+    <SheetHost visible={drill != null} embedded={embedded} onRequestClose={onClose}>
       <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <Pressable style={styles.backdrop} onPress={onClose}>
           <Pressable style={styles.card} onPress={() => {}}>
@@ -421,7 +438,7 @@ function RenameDrillPrompt({
           </Pressable>
         </Pressable>
       </KeyboardAvoidingView>
-    </Modal>
+    </SheetHost>
   );
 }
 
