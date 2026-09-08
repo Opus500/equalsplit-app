@@ -292,19 +292,31 @@ export function DrillPickerModal({
               ) : null}
             </View>
 
-            <RenameDrillPrompt
-              embedded
-              drill={renaming}
-              existing={drills}
-              onClose={() => setRenaming(null)}
-              onDone={async () => {
-                setRenaming(null);
-                await load();
-              }}
-            />
           </Pressable>
         </Pressable>
       </KeyboardAvoidingView>
+
+      {/* A DIRECT CHILD OF THE HOST, not of the card — and that distinction only
+          started to matter when this stopped presenting its own Modal.
+          
+          A Modal is positioned against the window wherever it sits in the tree. An
+          embedded sheet fills its PARENT, so where it is written is where it appears:
+          buried inside the card, it was laid out against the card's box, and the
+          confirm button's label was clipped out of a sheet squeezed into a smaller
+          frame than it was designed for. Reported as a button with no visible text.
+
+          The rule that follows: an embedded sheet must be a direct child of the host
+          it renders into. */}
+      <RenameDrillPrompt
+        embedded
+        drill={renaming}
+        existing={drills}
+        onClose={() => setRenaming(null)}
+        onDone={async () => {
+          setRenaming(null);
+          await load();
+        }}
+      />
     </SheetHost>
   );
 }

@@ -538,12 +538,27 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
       }
     }
     check('no sheet presents from inside another sheet', nested, []);
+
+    // AND AN EMBEDDED SHEET IS A DIRECT CHILD OF ITS HOST.
+    //
+    // A Modal is positioned against the window wherever it sits in the tree. An
+    // embedded sheet fills its PARENT, so where it is written is where it appears.
+    // The rename prompt was left buried inside the picker's card, was laid out
+    // against the card's box rather than the screen, and its confirm button's label
+    // was clipped out of the squeezed frame — reported as a button with no text.
+    {
+      const dp = code(join(SRC, 'components', 'DrillPicker.tsx'));
+      truthy('the rename sheet is outside the card it was opened from',
+        dp.indexOf('</KeyboardAvoidingView>') < dp.indexOf('<RenameDrillPrompt'));
+    }
   }
 
   // AND THE ONE HOST THAT DECIDES. If SheetHost stops honouring `embedded`, every call
   // site above goes back to presenting and nothing else would notice.
   {
-    const host = read(join(SRC, 'components', 'SheetHost.tsx'));
+    // code(), not read(): a comment explaining the rule sits between the branch and
+    // the line that implements it, and a window measured in characters counted it.
+    const host = code(join(SRC, 'components', 'SheetHost.tsx'));
     truthy('an embedded sheet renders without presenting',
       /if \(embedded\) \{[\s\S]{0,220}absoluteFill/.test(host));
     truthy('and a root one still presents', /<Modal visible=\{visible\}/.test(host));

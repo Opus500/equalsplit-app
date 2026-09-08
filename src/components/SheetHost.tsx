@@ -38,6 +38,14 @@ export function SheetHost({
 }) {
   if (embedded) {
     // Already inside a presented modal: fill it, do not present again.
+    //
+    // AND THE CALLER MUST BE A DIRECT CHILD OF THAT MODAL. This is the one way an
+    // embedded sheet differs from the Modal it replaces, and it is easy to miss: a
+    // Modal is positioned against the WINDOW wherever it sits in the tree, while this
+    // fills its PARENT. Written somewhere deep — inside a card, inside a row — it is
+    // laid out against that box instead of the screen, and the sheet is silently
+    // squeezed into a frame it was never designed for. It cost a confirm button its
+    // label the first time, which is a quiet enough failure to be worth this comment.
     return visible ? <View style={StyleSheet.absoluteFill}>{children}</View> : null;
   }
   return (
