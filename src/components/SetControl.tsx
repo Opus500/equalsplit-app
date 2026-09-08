@@ -122,7 +122,7 @@ export function SetControl({
       <View style={styles.spacer} />
 
       {showSet ? (
-        <Pressable onPress={() => setOpen(true)} hitSlop={8}>
+        <Pressable onPress={() => setOpen(true)} style={styles.tapTarget}>
           <Text style={styles.link}>Choose set</Text>
         </Pressable>
       ) : null}
@@ -131,11 +131,15 @@ export function SetControl({
           back" path a coach reaches for when a gate drops mid-practice, and it
           has no equivalent in the set picker (which always scans and asks). */}
       {showDisconnect ? (
-        <Pressable onPress={gate.disconnect} hitSlop={8}>
+        <Pressable onPress={gate.disconnect} style={styles.tapTarget}>
           <Text style={styles.action}>{s === 'reconnecting' ? 'Cancel' : 'Disconnect'}</Text>
         </Pressable>
       ) : (
-        <Pressable onPress={gate.quickConnect} disabled={busy || !gate.adapterOn} hitSlop={8}>
+        <Pressable
+          onPress={gate.quickConnect}
+          disabled={busy || !gate.adapterOn}
+          style={styles.tapTarget}
+        >
           <Text style={[styles.action, (busy || !gate.adapterOn) && styles.dimText]}>Connect</Text>
         </Pressable>
       )}
@@ -324,6 +328,11 @@ const styles = StyleSheet.create({
   status: { color: '#94a3b8', fontSize: 12, flexShrink: 1 },
   detail: { color: '#64748b', fontSize: 11 },
   spacer: { flex: 1 },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
+  // A BOX RATHER THAN SLOP, for the same reason as History's corner exits: this row
+  // sits at the top of the screen and its slop reached off it. Connect is the control
+  // a coach hits when a gate drops mid-practice, which is the worst moment to miss.
+  tapTarget: { minHeight: 48, justifyContent: 'center', paddingHorizontal: 8 },
   action: { color: INTERACTIVE, fontWeight: '700', fontSize: 13 },
   dimText: { opacity: 0.4 },
   backdrop: {

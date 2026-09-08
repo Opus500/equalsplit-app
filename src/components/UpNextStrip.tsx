@@ -101,7 +101,7 @@ export function UpNextStrip() {
             Skipped {roster.lastSkip.name}
             {roster.lastSkip.wrapped ? ' · lineup restarted' : ''}
           </Text>
-          <Pressable onPress={roster.undoSkip} hitSlop={10}>
+          <Pressable onPress={roster.undoSkip} style={styles.undoBtn}>
             <Text style={styles.undoAction}>Undo</Text>
           </Pressable>
         </View>
@@ -184,6 +184,8 @@ const styles = StyleSheet.create({
     borderColor: '#374151',
   },
   undoText: { color: '#cbd5e1', fontSize: 12, fontWeight: '600', flex: 1 },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
+  undoBtn: { minHeight: 48, justifyContent: 'center', paddingHorizontal: 10 },
   undoAction: { color: INTERACTIVE, fontSize: 13, fontWeight: '800' },
   dim: { opacity: 0.7 },
 });

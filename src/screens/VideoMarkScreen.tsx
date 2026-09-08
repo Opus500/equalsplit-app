@@ -1437,7 +1437,10 @@ const styles = StyleSheet.create({
   handleEnd: { borderTopLeftRadius: 0, borderBottomLeftRadius: 0 },
   handleOn: { backgroundColor: INTERACTIVE_SOFT },
   stepRow: { flexDirection: 'row', gap: 10 },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   markBtn: {
+    minHeight: 48,
+    justifyContent: 'center',
     flex: 1,
     alignItems: 'center',
     backgroundColor: '#131a24',

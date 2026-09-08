@@ -564,6 +564,73 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     truthy('and a root one still presents', /<Modal visible=\{visible\}/.test(host));
   }
 
+  // WHAT A GLOVED THUMB HAS TO HIT, at a track, one-handed.
+  //
+  // Apple's floor is 44pt and these are the controls that get pressed during a
+  // session, so they are held to 48. Sizes drift downward under layout pressure and
+  // nothing else notices, which is what this is for — it reads the style values
+  // rather than trusting a comment next to them.
+  {
+    // No regex for the lookup: the style key is found by string search and the body
+    // taken to its closing brace. A generated pattern was the first attempt and its
+    // escapes did not survive being written, which failed silently as 'not found'.
+    const boxOf = (file, key) => {
+      const src = code(join(SRC, file));
+      const at = src.indexOf(key + ': {');
+      if (at === -1) return null;
+      const close = src.indexOf('}', at);
+      const body = src.slice(at, close);
+      const num = (prop) => {
+        const i = body.indexOf(prop + ':');
+        if (i === -1) return null;
+        const v = parseInt(body.slice(i + prop.length + 1).trim(), 10);
+        return Number.isFinite(v) ? v : null;
+      };
+      const h = num('minHeight') || num('height');
+      if (h) return h;
+      const pv = num('paddingVertical');
+      // ~18pt for the line of label text these all contain.
+      return pv === null ? null : pv * 2 + 18;
+    };
+
+    const MID_REP = [
+      ['screens/TimerScreen.tsx', 'tagBar'],
+      ['screens/TimerV2Screen.tsx', 'tagBar'],
+      ['screens/DrillsScreen.tsx', 'tagBar'],
+      ['screens/VideoMarkScreen.tsx', 'markBtn'],
+      ['screens/VideoRecordModal.tsx', 'rate'],
+      ['screens/RepeatsScreen.tsx', 'ivMerge'],
+      ['screens/RepeatsScreen.tsx', 'ivDrop'],
+      ['components/SetControl.tsx', 'tapTarget'],
+      ['components/UpNextStrip.tsx', 'undoBtn'],
+    ];
+    const small = [];
+    for (const [file, key] of MID_REP) {
+      const box = boxOf(file, key);
+      if (box === null) small.push(`${file}:${key} — style not found`);
+      else if (box < 48) small.push(`${file}:${key} is ${box}pt, under 48`);
+    }
+    check('every mid-rep control is at least 48pt', small, []);
+
+    // The corner exits and the row icons: a BOX, not hitSlop. Slop cannot be seen,
+    // half of it falls off the screen edge where these live, and overlapping slop
+    // makes neighbouring controls steal each other's taps.
+    const hist = code(join(SRC, 'screens', 'HistoryScreen.tsx'));
+    truthy('the exits have a real box', /backBtn: \{ paddingVertical: 1[2-9]/.test(hist));
+    truthy('and both use it', (hist.match(/style=\{styles\.backBtn\}/g) || []).length === 2);
+    check('no exit relies on hitSlop', /hitSlop=\{10\}>\s*<Text style=\{styles\.back\}/.test(hist), false);
+    truthy('the row icons are a real box too', (boxOf('screens/HistoryScreen.tsx', 'rowIcon') || 0) >= 44);
+    check('and no longer overlap each other', /hitSlop=\{8\}[\s\S]{0,40}styles\.rowIcon/.test(hist), false);
+  }
+
+  // The tab bar: the most-pressed control in the app.
+  {
+    const app = code(join(ROOT, 'App.tsx'));
+    truthy('the tab bar target is 48pt', /tab: \{ flex: 1, alignItems: 'center', paddingVertical: 15 \}/.test(app));
+    truthy('with the bar top padding moved into it rather than added on top',
+      /paddingTop: 0,/.test(app));
+  }
+
   // A badge that reads `set ?` is indistinguishable from something broken.
   const setctl = read(join(SRC, 'components', 'SetControl.tsx'));
   check('the set badge has no shrug state', /'set \?'/.test(setctl), false);

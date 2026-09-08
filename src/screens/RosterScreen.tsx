@@ -541,7 +541,7 @@ const styles = StyleSheet.create({
   headerBtnText: { color: INTERACTIVE, fontSize: 15, fontWeight: '700' },
   orphanBadge: {
     minWidth: 20,
-    paddingHorizontal: 6,
+    paddingHorizontal: 14,
     paddingVertical: 1,
     borderRadius: 10,
     // CAUTION, because an unattributed run is 'a decision the app cannot make' —

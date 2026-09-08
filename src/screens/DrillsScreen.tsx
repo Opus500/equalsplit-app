@@ -518,7 +518,9 @@ const styles = StyleSheet.create({
   },
   stepper: { backgroundColor: '#243042', borderRadius: 8, width: 40, paddingVertical: 8, alignItems: 'center' },
   stepperText: { color: '#e2e8f0', fontWeight: '800', fontSize: 18 },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   tagBar: {
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,

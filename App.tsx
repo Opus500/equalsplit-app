@@ -199,9 +199,17 @@ const styles = StyleSheet.create({
     borderTopColor: '#1f2733',
     backgroundColor: '#0b0e13',
     paddingBottom: 24,
-    paddingTop: 8,
+    // THE BAR'S TOP PADDING MOVED INTO THE TAB. It was 8pt of dead space above a
+    // 30pt target; as padding on the tab it is 8pt of target instead, so most of
+    // the growth needed to reach a comfortable size costs no height at all.
+    paddingTop: 0,
   },
-  tab: { flex: 1, alignItems: 'center', paddingVertical: 6 },
+  // 48pt, not Apple's 44pt floor. This is the most-pressed control in the app and
+  // it is pressed one-handed, outdoors, sometimes with a glove. The bar goes from
+  // 62pt to 72pt; both dense screens absorb it in a flexing area — the Timer's
+  // stage is flex:1 and the marking screen's preview takes the leftover space
+  // above a controls pane that was already capped and scrolling.
+  tab: { flex: 1, alignItems: 'center', paddingVertical: 15 },
   tabText: { color: '#64748b', fontSize: 13, fontWeight: '600' },
   tabTextActive: { color: '#60a5fa' },
 });

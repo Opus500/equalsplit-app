@@ -884,7 +884,9 @@ function Btn({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   tagBar: {
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,

@@ -254,7 +254,7 @@ export default function HistoryScreen({
     return (
       <View style={styles.container}>
         <View style={styles.headerRow}>
-          <Pressable onPress={() => setSelected(null)} hitSlop={10}>
+          <Pressable onPress={() => setSelected(null)} style={styles.backBtn}>
             <Text style={styles.back}>‹</Text>
           </Pressable>
           <Pressable style={styles.titleCol} onPress={() => setRenaming(true)} hitSlop={6}>
@@ -390,7 +390,6 @@ export default function HistoryScreen({
                 {item.clip_id ? (
                   <Pressable
                     onPress={() => setPlaying(item)}
-                    hitSlop={8}
                     style={styles.rowIcon}
                     accessibilityLabel="Play this run's video"
                   >
@@ -404,7 +403,6 @@ export default function HistoryScreen({
                 {item.clip_id ? (
                   <Pressable
                     onPress={() => void shareRunVideo(item.clip_id)}
-                    hitSlop={8}
                     style={styles.rowIcon}
                     accessibilityLabel="Share this run's video"
                   >
@@ -414,7 +412,6 @@ export default function HistoryScreen({
                 {item.clip_id ? (
                   <Pressable
                     onPress={() => void exportRunVideo(item.clip_id)}
-                    hitSlop={8}
                     style={styles.rowIcon}
                     accessibilityLabel="Save this run's video to the camera roll"
                   >
@@ -427,12 +424,11 @@ export default function HistoryScreen({
                       runShareLine(resolvedAthlete(item).name, resolvedDrill(item).name, item.total_ms),
                     )
                   }
-                  hitSlop={8}
                   style={styles.rowIcon}
                 >
                   <Text style={styles.shareGlyph}>⤴</Text>
                 </Pressable>
-                <Pressable onPress={() => confirmDelete(item)} hitSlop={10} style={styles.rowIcon}>
+                <Pressable onPress={() => confirmDelete(item)} style={styles.rowIcon}>
                   <Text style={styles.delText}>✕</Text>
                 </Pressable>
               </Pressable>
@@ -540,7 +536,7 @@ export default function HistoryScreen({
     <View style={styles.container}>
       <View style={styles.listHeader}>
         {onBack ? (
-          <Pressable onPress={onBack} hitSlop={10}>
+          <Pressable onPress={onBack} style={styles.backBtn}>
             <Text style={styles.back}>‹</Text>
           </Pressable>
         ) : null}
@@ -769,6 +765,11 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   flex: { flex: 1 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
+  // A REAL BOX, not hitSlop. Slop cannot be seen, and half of it was off-screen:
+  // this control sits in the top corner, so the outward half fell outside the
+  // display entirely and the rest overlapped the system's back-swipe zone. A
+  // padded box is 50pt of actual, on-screen, visible target.
+  backBtn: { paddingVertical: 12, paddingHorizontal: 14, marginLeft: -4 },
   back: { color: INTERACTIVE, fontSize: 26, fontWeight: '700', marginTop: -4 },
   titleCol: { flexShrink: 1, flex: 1 },
   detailTitle: { color: '#fff', fontSize: 20, fontWeight: '800' },
@@ -851,7 +852,13 @@ const styles = StyleSheet.create({
   runConf: { color: ACCURACY, fontSize: 10, fontWeight: '700', marginTop: 1, fontVariant: ['tabular-nums'] },
   runConfDim: { color: '#475569', fontSize: 10, marginTop: 1 },
   runTotal: { color: '#fff', fontSize: 16, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  rowIcon: { paddingHorizontal: 6, paddingVertical: 2 },
+  // THE CLUSTER STOPS STEALING ITS OWN TAPS. Four glyphs sat in a 22pt box with
+  // 8pt of slop each — so every icon's touch area overlapped its neighbours', and
+  // which one you got was decided by the responder order rather than by where the
+  // finger landed. Real padding instead, and the slop is gone from the call sites:
+  // a 45pt box that does not reach into the next control is worth more than a
+  // nominally larger one that does.
+  rowIcon: { paddingHorizontal: 11, paddingVertical: 13 },
   shareGlyph: { color: INTERACTIVE, fontSize: 16, fontWeight: '800' },
   playGlyph: { color: INTERACTIVE, fontSize: 14, fontWeight: '800' },
   clipShareGlyph: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },

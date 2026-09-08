@@ -388,7 +388,9 @@ const styles = StyleSheet.create({
   sdotBusy: { backgroundColor: LIVE_BUSY },
   sessionText: { color: '#8b98a9', fontSize: 12, flex: 1 },
   sessionAction: { color: INTERACTIVE, fontWeight: '700', fontSize: 12 },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   tagBar: {
+    minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,

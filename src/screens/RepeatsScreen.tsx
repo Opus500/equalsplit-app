@@ -624,17 +624,19 @@ const styles = StyleSheet.create({
   ivIndex: { color: '#475569', fontSize: 12, fontWeight: '800', width: 18 },
   ivTime: { color: '#e2e8f0', fontSize: 16, fontWeight: '700', flex: 1, fontVariant: ['tabular-nums'] },
   ivSuspect: { color: CAUTION, fontSize: 10, fontWeight: '800' },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   ivMerge: {
-    paddingHorizontal: 8,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 15,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#243042',
   },
   ivMergeText: { color: INTERACTIVE_SOFT, fontSize: 11, fontWeight: '800' },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   ivDrop: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 15,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#7f1d1d',

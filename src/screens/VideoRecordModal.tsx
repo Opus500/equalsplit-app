@@ -708,7 +708,10 @@ const styles = StyleSheet.create({
 
   controls: { padding: 12, paddingBottom: 30, gap: 10 },
   rates: { flexDirection: 'row', gap: 6 },
+  // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   rate: {
+    minHeight: 48,
+    justifyContent: 'center',
     flex: 1,
     alignItems: 'center',
     paddingVertical: 8,
