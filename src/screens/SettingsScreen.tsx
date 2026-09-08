@@ -126,6 +126,38 @@ export default function SettingsScreen({
         </Text>
       </Section>
 
+      {/* THE WAY OUT COMES FIRST. This section used to sit after About — which is
+          where it is unlocked, and the right place for that — but turning dev mode ON
+          inserts four more sections ABOVE it, so the switch that turns it off ended up
+          below everything it had just revealed. Reported as "I can't find how to turn
+          it off", which is exactly what it was. The toggle now leads the dev content
+          it controls, and the version row that unlocks it still sits above in About. */}
+      {devVisible ? (
+        <Section title="Developer mode">
+          <View style={styles.devRow}>
+            <Text style={styles.devLabel}>Show advanced / diagnostic info</Text>
+            <Switch
+              value={devMode}
+              onValueChange={setDevMode}
+              trackColor={{ false: '#243042', true: '#1d4ed8' }}
+              thumbColor="#e2e8f0"
+            />
+          </View>
+          <Text style={styles.note}>
+            Off shows clean results only. On reveals accuracy figures, clock-sync detail, reaction
+            timing, and Diagnostics below. Times are always measured and saved either way.
+          </Text>
+          {devMode && onOpenDebug ? (
+            <Pressable
+              onPress={onOpenDebug}
+              style={({ pressed }) => [styles.debugBtn, pressed && styles.dim]}
+            >
+              <Text style={styles.debugBtnText}>Diagnostics &amp; v2 Lab  ›</Text>
+            </Pressable>
+          ) : null}
+        </Section>
+      ) : null}
+
       {devMode ? (
       <>
       <Section title="Timing engine (experimental)">
@@ -271,6 +303,13 @@ export default function SettingsScreen({
             that used to sit beneath it is gone: a coach will never act on it, and
             Diagnostics already reports it beside the gate's own. */}
         <Row label="App version" value={APP_VERSION} onPress={() => setVersionTaps((n) => n + 1)} />
+        {/* THE GESTURE NEEDS AN ANSWER. The switch it reveals is at the TOP of this
+            screen — it has to be, or turning dev mode off means scrolling past the
+            four sections turning it on just added — so without a word here the taps
+            appear to do nothing at all. */}
+        {versionTaps >= DEV_UNLOCK_TAPS ? (
+          <Text style={styles.unlockNote}>Developer mode is at the top of Settings.</Text>
+        ) : null}
         <Text style={styles.aboutBlurb}>
           EqualSplit pairs your phone with the start gate over Bluetooth; the gate keeps the
           authoritative time and relays the finish gate's result over ESP-NOW. Times are stored
@@ -278,31 +317,6 @@ export default function SettingsScreen({
         </Text>
       </Section>
 
-      {devVisible ? (
-        <Section title="Developer mode">
-          <View style={styles.devRow}>
-            <Text style={styles.devLabel}>Show advanced / diagnostic info</Text>
-            <Switch
-              value={devMode}
-              onValueChange={setDevMode}
-              trackColor={{ false: '#243042', true: '#1d4ed8' }}
-              thumbColor="#e2e8f0"
-            />
-          </View>
-          <Text style={styles.note}>
-            Off shows clean results only. On reveals accuracy figures, clock-sync detail, reaction
-            timing, and Diagnostics below. Times are always measured and saved either way.
-          </Text>
-          {devMode && onOpenDebug ? (
-            <Pressable
-              onPress={onOpenDebug}
-              style={({ pressed }) => [styles.debugBtn, pressed && styles.dim]}
-            >
-              <Text style={styles.debugBtnText}>Diagnostics &amp; v2 Lab  ›</Text>
-            </Pressable>
-          ) : null}
-        </Section>
-      ) : null}
     </ScrollView>
   );
 }
@@ -463,6 +477,7 @@ const styles = StyleSheet.create({
   },
   aboutLabel: { color: '#94a3b8', fontSize: 14 },
   aboutValue: { color: '#e2e8f0', fontSize: 14, fontWeight: '600' },
+  unlockNote: { color: INTERACTIVE, fontSize: 13, fontWeight: '700', marginTop: 10 },
   aboutBlurb: { color: '#64748b', fontSize: 12, lineHeight: 18, marginTop: 12 },
 });
 

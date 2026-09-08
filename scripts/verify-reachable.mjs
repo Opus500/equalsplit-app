@@ -413,6 +413,32 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
   truthy('and History reloading because it is OPEN, not because it is selected',
     /<HistoryScreen isActive onBack=/.test(app));
 
+  // THE WAY OUT OF DEV MODE COMES BEFORE WHAT IT REVEALS. Turning it on inserts
+  // four sections, and the toggle used to sit after them — so the switch that turns
+  // it off was below everything it had just added. Reported from device as being
+  // unable to turn it off at all. Read from the CODE, since the comment explaining
+  // this names both sections.
+  {
+    const only = code(join(SRC, 'screens', 'SettingsScreen.tsx'));
+    truthy('the dev-mode switch comes before the sections it reveals',
+      only.indexOf('title="Developer mode"') < only.indexOf('title="Timing engine'));
+    // The unlock stays at the bottom, on the version row, so the toggle is now
+    // ABOVE what unlocks it. That is the trade: findable when on, which is what
+    // was reported broken. The version row says where it went.
+    truthy('and the unlock says where the switch appeared',
+      /Developer mode is at the top of Settings/.test(only));
+  }
+
+  // COUNT BEFORE CLAIMING. `Both gates ready` fired whenever the gate list was
+  // non-empty, so a one-gate session claimed two — the opposite of the miscount the
+  // line exists to prevent, and unfalsifiable from the screen.
+  for (const f of ['DrillsScreen.tsx', 'TimerV2Screen.tsx']) {
+    const src = read(join(SRC, 'screens', f));
+    truthy(`${f} counts the gates before saying both`, /if \(total >= 2\) return 'Both gates ready';/.test(src));
+    truthy(`${f} says so when only one joined`, /total === 1/.test(src));
+    check(`${f} leaks no phase name into a hint`, /Setting up gates… \(\$\{phase\}/.test(src), false);
+  }
+
   // A badge that reads `set ?` is indistinguishable from something broken.
   const setctl = read(join(SRC, 'components', 'SetControl.tsx'));
   check('the set badge has no shrug state', /'set \?'/.test(setctl), false);

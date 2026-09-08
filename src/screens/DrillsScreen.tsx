@@ -362,7 +362,8 @@ function hintFor(
   if (!connected) return 'Not connected — tap Connect above.';
   if (phase === 'partial')
     return 'Only one gate found — power both gates of this set (a drill needs the session up).';
-  if (phase !== 'ready') return `Setting up gates… (${phase})`;
+  // The phase name is a state-machine term and leaked straight into a coach's hint.
+  if (phase !== 'ready') return 'Setting up gates…';
   if (state === 'armed') return 'Have the athlete step into the start gate, hold still, then go.';
   if (state === 'set') return 'Timer starts the instant they leave the start gate.';
   if (state === 'running') return d.countN > 1 ? 'Counting passes…' : 'Waiting for the final pass…';
@@ -386,7 +387,17 @@ function hintFor(
  * setup steps is still running — but the numbers are gates, not clocks.
  */
 function sessionLabel(phase: string, synced: number, total: number): string {
-  if (phase === 'ready') return total ? `Both gates ready` : 'Gates ready';
+  // COUNT THE GATES BEFORE SAYING "BOTH". This said "Both gates ready" whenever
+  // total was non-zero, so a session that came up with ONE gate claimed two — the
+  // opposite of the miscount it was meant to prevent, and unfalsifiable from the
+  // screen. `synced` is a count of time-synced gates, which is what makes a gate
+  // usable, so it is fair to call ready; `total` is membership, and only that can
+  // say how many there are.
+  if (phase === 'ready') {
+    if (total >= 2) return 'Both gates ready';
+    if (total === 1) return 'One gate ready — the other has not joined';
+    return 'Gates ready';
+  }
   if (phase === 'partial') return 'Only one gate — the other has not joined yet';
   if (phase === 'error') return 'Gate setup did not finish';
   if (phase === 'idle') return 'Waiting for gates';
