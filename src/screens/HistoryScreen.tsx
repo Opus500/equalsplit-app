@@ -559,11 +559,30 @@ function RunEditModal({
   onOpenPicker: () => void;
   onOpenDrillPicker: () => void;
 }) {
-  if (!run) return null;
-  const who = resolvedAthlete(run);
-  const drill = resolvedDrill(run);
+  /**
+   * MOUNTED ALWAYS, PRESENTED BY `visible` — like every other modal in the app.
+   *
+   * This one used to return null until a run was picked and then mount `<Modal
+   * visible>` already open, which is the only place in src/ that did. A modal host
+   * that mounts in the presented state asks UIKit to present during the same commit
+   * that creates it, before the host view has been laid out — and when that
+   * presentation is dropped you are left with a modal window that has no content,
+   * which is invisible, swallows every touch, and cannot be dismissed by tapping the
+   * backdrop because the backdrop was never laid out either.
+   *
+   * That is exactly what was reported: tap a run, nothing responds, and the screen is
+   * frozen afterwards. It reproduced on a build from before History moved off the tab
+   * bar, so the overlay change was not involved — and the five other modals on this
+   * screen, all of which work, are all `visible={...}` on an always-mounted host.
+   *
+   * The body is guarded instead of the host, so there is nothing to read off a null
+   * run while the modal is closed.
+   */
+  const who = run ? resolvedAthlete(run) : null;
+  const drill = run ? resolvedDrill(run) : null;
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={!!run} transparent animationType="fade" onRequestClose={onClose}>
+      {run && who && drill ? (
       <Pressable style={styles.rmBackdrop} onPress={onClose}>
         <Pressable style={styles.rmCard} onPress={() => {}}>
           <Text style={styles.rmTitle}>Run #{run.display_index}</Text>
@@ -609,6 +628,7 @@ function RunEditModal({
           </Pressable>
         </Pressable>
       </Pressable>
+      ) : null}
     </Modal>
   );
 }

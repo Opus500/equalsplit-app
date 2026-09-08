@@ -439,6 +439,30 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     check(`${f} leaks no phase name into a hint`, /Setting up gates… \(\$\{phase\}/.test(src), false);
   }
 
+  // NO MODAL MOUNTS ALREADY OPEN, anywhere in src/.
+  //
+  // A modal host that mounts in the presented state asks UIKit to present during the
+  // same commit that creates it, before the host has been laid out. When that
+  // presentation is dropped you get a modal window with no content: invisible, eating
+  // every touch, and undismissable because the backdrop was never laid out either.
+  // Reported from device as History freezing when a run was tapped — and the run
+  // editor was the ONLY place in the app doing this, against five modals on the same
+  // screen that toggle `visible` on an always-mounted host and all work.
+  //
+  // Swept rather than pinned to one file, because the next one would look reasonable
+  // in isolation too.
+  {
+    const offenders = [];
+    // walk() returns ABSOLUTE paths — joining SRC again is how this first failed.
+    for (const abs of walk(SRC)) {
+      if (!/\.tsx$/.test(abs)) continue;
+      if (/<Modal\s+visible(?![\w=])/.test(code(abs))) {
+        offenders.push(abs.slice(abs.indexOf('src')));
+      }
+    }
+    check('no modal is mounted already open', offenders, []);
+  }
+
   // A badge that reads `set ?` is indistinguishable from something broken.
   const setctl = read(join(SRC, 'components', 'SetControl.tsx'));
   check('the set badge has no shrug state', /'set \?'/.test(setctl), false);
