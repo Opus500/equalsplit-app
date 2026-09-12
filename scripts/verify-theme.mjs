@@ -172,7 +172,13 @@ console.log('\n5. the jobs the audit reassigned really did move');
 
   const detail = at('components/AthleteDetail.tsx');
   truthy('a personal best is ACHIEVEMENT in the run list', /runTimeBest: \{ color: ACHIEVEMENT/.test(detail));
-  truthy('and BACKDATED is EDITED, not the same gold', /backdated: \{ color: EDITED/.test(detail));
+  // THE ROLE MOVED, IT DID NOT GO. The all-caps BACKDATED word was dropped from the
+  // athlete run list — it read as an accusation sitting beside PB — but an edited
+  // date is still shown in History, as the date itself rather than as a label. That
+  // is the site EDITED has to hold, and the reason it must not be the same gold as
+  // a personal best is unchanged.
+  const hist = at('screens/HistoryScreen.tsx');
+  truthy('an edited date is EDITED, not the same gold', /backdatedTag: \{[\s\S]{0,60}color: EDITED/.test(hist));
   truthy('and the VIDEO tag is METHOD', /videoTimed: \{ color: METHOD/.test(detail));
 
   const chart = at('components/ProgressionChart.tsx');
