@@ -79,6 +79,8 @@ function macStrToBytes(mac: string): Uint8Array {
 // 'partial' = connected with FEWER than two live gates — a legitimate state
 // (single-gate recovery, or waiting for the second gate to power on), NOT an
 // error. Bring-up re-runs automatically when another gate appears.
+import { DEMO, DEMO_GATES } from '../dev/demo';
+
 export type V2Phase = 'idle' | 'discovering' | 'assigning' | 'syncing' | 'ready' | 'partial' | 'error';
 
 export type GateView = {
@@ -1024,7 +1026,14 @@ export function V2Provider({ children }: { children: ReactNode }) {
     restoreDefaults,
   };
 
-  return <V2Context.Provider value={value}>{children}</V2Context.Provider>;
+  // See GateProvider and src/dev/demo.ts. The set badge reads `gates`, and the
+  // session line reads `phase` plus how many are synced, so those three are what a
+  // screenshot of the Modes tab needs.
+  const shown = DEMO
+    ? { ...value, connected: true, ready: true, phase: 'ready' as const, gates: DEMO_GATES }
+    : value;
+
+  return <V2Context.Provider value={shown}>{children}</V2Context.Provider>;
 }
 
 export function useV2(): V2ContextValue {

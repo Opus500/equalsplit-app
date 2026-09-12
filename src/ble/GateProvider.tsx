@@ -52,6 +52,8 @@ let lastAutoSyncedDeviceId: string | null = null;
 // don't contend with run-result notifications (and vice versa).
 let gateBusy = false;
 
+import { DEMO, DEMO_CLOCK_SYNC, DEMO_GATE_STATUS } from '../dev/demo';
+
 export type ConnStatus = 'idle' | 'scanning' | 'connecting' | 'connected' | 'reconnecting';
 // atMs = phone monotonic timestamp when the notification was delivered to JS.
 type EventListener = (raw: Uint8Array, parsed: GateEvent | null, atMs: number) => void;
@@ -563,7 +565,23 @@ export function GateProvider({ children }: { children: ReactNode }) {
     subscribe,
   };
 
-  return <GateContext.Provider value={value}>{children}</GateContext.Provider>;
+  // SCREENSHOTS ONLY, and only in a development bundle launched with the flag —
+  // see src/dev/demo.ts for why this is not behind the dev-mode toggle. The override
+  // is a spread over the finished value rather than a change to how it is built, so
+  // every real code path above is untouched and this whole branch disappears from a
+  // release bundle with `__DEV__`.
+  const shown = DEMO
+    ? {
+        ...value,
+        adapterOn: true,
+        status: 'connected' as const,
+        gateStatus: DEMO_GATE_STATUS,
+        clockSync: DEMO_CLOCK_SYNC,
+        syncing: false,
+      }
+    : value;
+
+  return <GateContext.Provider value={shown}>{children}</GateContext.Provider>;
 }
 
 export function useGate(): GateContextValue {
