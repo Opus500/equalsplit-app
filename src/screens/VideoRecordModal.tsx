@@ -621,12 +621,16 @@ export function VideoRecordModal({
             ))}
           </View>
 
+          {/* ONE LINE, in the coach's words. "The file is checked again after the
+              recording, and it is the file that decides" is true and is still said —
+              in the marking screen's Learn more, and by the refusal itself if the
+              check fails. Under the record button it read as the app narrating its
+              own process. */}
           <Text style={styles.note}>
             {settledFps === null
-              ? 'Waiting for the camera to say what it settled on.'
+              ? 'Waiting for the camera…'
               : Math.abs(settledFps - target) < 1
-                ? `Camera settled on ${Math.round(settledFps)}fps. The file is checked again after ` +
-                  'the recording, and it is the file that decides.'
+                ? `Camera ready at ${Math.round(settledFps)}fps.`
                 : `The camera settled on ${Math.round(settledFps)}fps, not ${target}. Recording is ` +
                   'refused at this rate.'}
           </Text>

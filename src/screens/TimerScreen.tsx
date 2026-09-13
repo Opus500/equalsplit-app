@@ -636,12 +636,18 @@ export default function TimerScreen() {
       {/* Was a local ConnChip. showSet=false: v1 predates sets and has none to
           choose. `detail` carries the gate state / run count / finish-link
           warning that only THIS copy showed — the other two never had it. */}
+      {/* THE STATE IN THE COACH'S WORDS. This printed STATE_NAME — M1_ARMED,
+          M2_TO_GATE2 — which is the protocol's vocabulary, in the status line of
+          the first screen anyone opens. Dev mode keeps the raw name, because it is
+          the one Diagnostics and the firmware log speak. */}
       <SetControl
         showSet={false}
         detail={
           status === 'connected' && gateStatus
-            ? ` · ${STATE_NAME[gateStatus.state] ?? ''} · runs ${gateStatus.runCount}${
-                gateStatus.finishLinkOk ? '' : ' · finish ⚠'
+            ? ` · ${
+                devMode ? STATE_NAME[gateStatus.state] ?? '' : gateStateLabel(gateStatus.state)
+              } · ${gateStatus.runCount} run${gateStatus.runCount === 1 ? '' : 's'}${
+                gateStatus.finishLinkOk ? '' : ' · finish gate ⚠'
               }`
             : null
         }
@@ -679,8 +685,8 @@ export default function TimerScreen() {
           // Clean mode: G1→G2 (exact) + total; reaction shown RAW with a caveat,
           // never the corrected number (it can go sub-floor). See docs/LATENCY.md.
           <View style={styles.splits}>
-            <Split label="Reaction → G1" ms={result.split1Ms} caveat="+ beep latency (uncorrected)" muted />
-            <Split label="G1 → G2" ms={result.split2Ms} />
+            <Split label="Reaction → Gate 1" ms={result.split1Ms} caveat="includes the beep delay" muted />
+            <Split label="Gate 1 → Gate 2" ms={result.split2Ms} />
             <Split label="Total" ms={result.totalMs} strong />
             <Text style={styles.offsetNote}>
               Reaction and total include the GO-beep delay, which can&apos;t be corrected reliably on
@@ -805,7 +811,31 @@ function hintFor(connected: boolean, gs: GateState | null, rs: RunState): string
     case GateState.M2ToGate2:
       return 'Running…';
     default:
-      return 'Pick a mode to arm.';
+      // There is one button to press. "Pick a mode" dated from when there were two,
+      // and it survived the second one going behind dev mode.
+      return 'Tap Arm gate when the athlete is ready.';
+  }
+}
+
+/** The gate's state as a coach would say it. STATE_NAME is the protocol's word for
+ *  the same thing and stays available in dev mode and Diagnostics. */
+function gateStateLabel(state: GateState): string {
+  switch (state) {
+    case GateState.Idle:
+      return 'Ready';
+    case GateState.Result:
+      return 'Finished';
+    case GateState.M1Armed:
+    case GateState.M2Armed:
+      return 'Armed';
+    case GateState.M2Countdown:
+      return 'Countdown';
+    case GateState.M1Running:
+    case GateState.M2ToGate1:
+    case GateState.M2ToGate2:
+      return 'Running';
+    default:
+      return STATE_NAME[state] ?? '';
   }
 }
 

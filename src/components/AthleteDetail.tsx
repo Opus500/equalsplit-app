@@ -70,7 +70,6 @@ import { ProgressionChart } from './ProgressionChart';
 import {
   ACHIEVEMENT,
   DESTRUCTIVE,
-  EDITED,
   FAINT,
   INTERACTIVE,
   METHOD,
@@ -929,10 +928,11 @@ function UnlabeledCard({ count }: { count: number }) {
   return (
     <View style={styles.unlabeledCard}>
       <Text style={styles.unlabeledTitle}>No drill</Text>
+      {/* The fact, not the argument for it. The reasoning above is the developer's
+          and stays in the comment; on screen it read as the app defending itself. */}
       <Text style={styles.unlabeledBody}>
-        {count} run{count === 1 ? '' : 's'} saved without a drill. These are never charted at any
-        count — different distances share nothing but the missing label, and a line across them would
-        mean nothing.
+        {count} run{count === 1 ? '' : 's'} saved without a drill. Runs without a drill are not
+        charted.
       </Text>
       <Text style={styles.unlabeledHint}>Assign a drill to a run and it joins that drill's chart.</Text>
     </View>
@@ -1035,10 +1035,6 @@ function RunList({
               {/* Visible without expanding: which runs have footage is the thing
                   you scan the list for once video exists. */}
               {p.clipId ? <Text style={styles.hasVideo}>▶</Text> : null}
-              {/* A backdated run reshapes the series it joins, so the marker sits
-                  in the list next to the time rather than inside the expanded
-                  row: a strange-looking chart has to be explainable at a glance. */}
-              {p.backdated ? <Text style={styles.backdated}>BACKDATED</Text> : null}
               {/* Which runs on this line came off a phone. In the LIST as well as on
                   the chart, because at a season's density the chart drops ordinary
                   dots and the shape marker goes with them — this is where the
@@ -1262,7 +1258,6 @@ const styles = StyleSheet.create({
   actionDanger: { color: DESTRUCTIVE },
   actionVideo: { color: INTERACTIVE },
   hasVideo: { color: INTERACTIVE, fontSize: 10 },
-  backdated: { color: EDITED, fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
   videoTimed: { color: METHOD, fontSize: 8.5, fontWeight: '800', letterSpacing: 0.4 },
   /** Not a button and not a disabled button — a statement, sized like the labels
    *  beside it so the row does not reflow when a video is removed. */

@@ -248,15 +248,15 @@ export default function VideoLibraryScreen() {
         {body}
         {orphanRuns > 0 ? (
           <Text style={styles.footnote}>
-            {orphanRuns} run{orphanRuns === 1 ? '' : 's'} still point{orphanRuns === 1 ? 's' : ''} at
-            a video that has been deleted. The times are kept — deleting a video never deletes its
-            run — and playing one of those runs says so.
+            {orphanRuns} run{orphanRuns === 1 ? '' : 's'} refer{orphanRuns === 1 ? 's' : ''} to a
+            video that has since been deleted — {orphanRuns === 1 ? 'its time is' : 'their times are'}{' '}
+            kept.
           </Text>
         ) : null}
         {swept > 0 ? (
           <Text style={styles.footnote}>
-            {swept} unfinished import{swept === 1 ? '' : 's'} cleared. These held no playable video —
-            usually a copy interrupted partway.
+            {swept} unfinished import{swept === 1 ? '' : 's'} cleared — cop{swept === 1 ? 'y' : 'ies'}{' '}
+            interrupted partway, with no playable video.
           </Text>
         ) : null}
       </ScrollView>

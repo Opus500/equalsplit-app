@@ -37,11 +37,13 @@ import { Image } from 'expo-image';
 
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
+import { NoteWithMore } from '../components/InfoSheet';
 import { VideoRecordModal, type Recorded } from './VideoRecordModal';
 import { saveRun, type Drill } from '../db/database';
 import { effectiveRunDate, isBackdated, sameLocalDay } from '../runs/rundate';
 import { RunDateModal, confirmRunDate } from '../runs/RunDateEditor';
 import { useRoster } from '../roster/RosterProvider';
+import { useSettings } from '../settings/SettingsProvider';
 import {
   deleteClip,
   importClip,
@@ -192,6 +194,7 @@ export default function VideoMarkScreen({
    */
   const [performedAt, setPerformedAt] = useState<number | null>(null);
   const roster = useRoster();
+  const { devMode } = useSettings();
 
   const athleteId = athleteOverride !== undefined ? athleteOverride : (roster.currentAthlete?.id ?? null);
   const athlete = roster.byId(athleteId);
@@ -1237,23 +1240,33 @@ export default function VideoMarkScreen({
               // — see storage.ts, and the structural guard in verify-storage that
               // fails if one ever appears in src/.
               describeClip(clip.bytes, duration),
-              perf,
             ]
               .filter(Boolean)
               .join(' · ')}
           </Text>
+          {/* THE PROBE TRACE IS AN INSTRUMENT, NOT A CAPTION. It found the stale-ref
+              and rescue bugs and it stays exactly as it is — but it is read by
+              whoever is debugging a settle, and it sat in the main view under every
+              clip a coach marked. Dev mode is where the other traces live. */}
+          {devMode && perf ? <Text style={styles.perf}>{perf}</Text> : null}
 
-          {/* The honest caveat, on screen rather than in a help page. Frame timing
-              is the SMALL term; camera angle and which body part you judge are
-              larger and are not measurable from the file. */}
-          <Text style={styles.caveat}>
-            Video timing is not gate-accurate. Beyond the ±{timing ? timing.errorMs.toFixed(1) : '—'}ms
-            above — which is a WHOLE FRAME, the worst case, not a statistical spread — a camera that
-            is not square to the finish line and the body part you judge add more, around{' '}
-            {BODY_PART_BIAS_MS}ms for the latter, in one direction rather than either. Video
-            runs share a chart with gate runs and are marked on it, so that difference stays visible
-            without splitting the drill in two.
-          </Text>
+          {/* The honest caveat, one line on screen and the reasoning one tap away.
+              Frame timing is the SMALL term; camera angle and which body part you
+              judge are larger and are not measurable from the file. The full
+              explanation used to sit here as a paragraph, and it is all still said
+              — in the sheet, where reading it is a choice. */}
+          <NoteWithMore
+            note="Video timing is not gate-accurate. Camera angle and judgement add more than the ± shown."
+            title="How accurate is a video time?"
+            body={[
+              `The ± beside the time is the frame-timing error — currently ±${
+                timing ? timing.errorMs.toFixed(1) : nominalErrorMs(frameDur).toFixed(1)
+              }ms. That is a whole frame, the worst case, not a statistical spread, and it is the only part that can be measured from the file.`,
+              `Two things add more and cannot be measured: a camera that is not square to the finish line, and which body part you judge the crossing by. The second is worth around ${BODY_PART_BIAS_MS}ms on its own, and it pushes the time in one direction rather than either.`,
+              'A rep filmed in the app is recorded at the frame rate you chose and the file is checked frame by frame afterwards — it is the file that decides. If it does not match, the time is refused and the footage is kept. An imported clip arrives at whatever rate it was filmed, and slow-motion or time-lapse clips are refused because their playback time is not real time.',
+              'Video runs share a chart with gate runs of the same drill and are marked on it, so the difference stays visible without splitting the drill in two.',
+            ]}
+          />
 
           {/* Attribution. A video run is not a different kind of record, so it
               carries the same two facts as any other. */}
@@ -1462,6 +1475,7 @@ const styles = StyleSheet.create({
   },
   stepText: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },
   facts: { color: '#64748b', fontSize: 11, textAlign: 'center' },
+  perf: { color: '#475569', fontSize: 10, textAlign: 'center', fontVariant: ['tabular-nums'] },
   tagRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1475,7 +1489,6 @@ const styles = StyleSheet.create({
   tagValue: { flex: 1, color: '#e2e8f0', fontSize: 15, fontWeight: '600', textAlign: 'right' },
   tagEmpty: { color: '#64748b', fontWeight: '400' },
   tagHint: { color: '#64748b', fontSize: 10, minWidth: 58, textAlign: 'right' },
-  caveat: { color: '#64748b', fontSize: 11, lineHeight: 16 },
   primary: { backgroundColor: '#1d4ed8', borderRadius: 10, paddingVertical: 14, alignItems: 'center' },
   primaryText: { color: '#fff', fontSize: 15, fontWeight: '700' },
   secondary: {

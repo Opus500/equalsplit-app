@@ -97,6 +97,25 @@ check('zero', runCountLabel(0), 'no runs yet');
 check('one', runCountLabel(1), '1 run');
 check('many', runCountLabel(12), '12 runs');
 
+console.log('\n9. a run mode is a word, and the word matches the constant');
+{
+  // modeLabel is numeric on purpose (see format.ts), so this is where its numbers
+  // are held to the engines' constants — renumber a mode and History would name
+  // it wrongly with no compile error.
+  const { modeLabel } = await import('../src/runs/format.ts');
+  const { DRILL_MODE } = await import('../src/ble/drills.ts');
+  const { REPEAT_MODE } = await import('../src/ble/repeats.ts');
+  const { VIDEO_MODE } = await import('../src/video/timing.ts');
+  check('a standard run is the Timer', modeLabel(1), 'Timer');
+  check('a beep-start run is Reaction', modeLabel(2), 'Reaction');
+  check('DRILL_MODE is Drill', modeLabel(DRILL_MODE), 'Drill');
+  check('REPEAT_MODE is Laps', modeLabel(REPEAT_MODE), 'Laps');
+  check('VIDEO_MODE is Video', modeLabel(VIDEO_MODE), 'Video');
+  check('an unknown mode still says its number rather than lying', modeLabel(9), 'M9');
+  const words = [1, 2, DRILL_MODE, REPEAT_MODE, VIDEO_MODE].map(modeLabel);
+  check('and no two modes share a word', new Set(words).size, words.length);
+}
+
 console.log('\n=============================');
 console.log(failures === 0 ? 'RESULT: OK — disambiguation holds.' : `RESULT: ${failures} FAILURE(S)`);
 process.exitCode = failures === 0 ? 0 : 1;

@@ -16,6 +16,7 @@ import Constants from 'expo-constants';
 
 import { useSettings, type LatencySample } from '../settings/SettingsProvider';
 import { useGate } from '../ble/GateProvider';
+import { NoteWithMore } from '../components/InfoSheet';
 import { DEFAULT_REACTION_OFFSET_MS } from '../db/database';
 import {
   INK,
@@ -108,9 +109,13 @@ export default function SettingsScreen({
       ) : null}
       <Text style={styles.title}>Settings</Text>
 
-      <Section title="Log gate (standalone) runs">
+      {/* THE ONE SETTING A COACH SEES, so it speaks their language. "B1", "Mode-1",
+          "reconstructed from the event stream" and "app-armed" are all ours. The
+          full account — including the B1/B2 caveat, which is the reason to leave it
+          off — is in the sheet, unchanged in substance. */}
+      <Section title="Runs started at the gate">
         <View style={styles.devRow}>
-          <Text style={styles.devLabel}>Save runs started with the gate&apos;s B1 button</Text>
+          <Text style={styles.devLabel}>Save runs started with the gate&apos;s button</Text>
           <Switch
             value={logStandalone}
             onValueChange={setLogStandalone}
@@ -118,12 +123,16 @@ export default function SettingsScreen({
             thumbColor="#e2e8f0"
           />
         </View>
-        <Text style={styles.note}>
-          When on, a Mode-1 run you start on the gate itself (B1) is reconstructed from the event
-          stream and saved to history while the phone is connected — it never touches app-armed
-          runs. Leave off unless you want it: the gate can&apos;t tell the app B1 from B2, so a
-          Mode-2 (reaction) standalone run would be logged as its gate-to-gate leg.
-        </Text>
+        <View style={styles.noteRow}>
+          <NoteWithMore
+            note="A run started by pressing the button on the gate is saved to History while the phone is connected. Leave off unless you use it."
+            title="Runs started at the gate"
+            body={[
+              'When this is on, a run you start on the gate itself — by pressing its button rather than tapping Arm in the app — is rebuilt from the gate’s own events and saved to History, as long as the phone is connected at the time. Runs armed from the app are never affected.',
+              'Leave it off unless you use the gate’s button. The gate cannot tell the app which of its two buttons started a run, so a reaction-start run begun at the gate would be saved as its gate-to-gate leg only.',
+            ]}
+          />
+        </View>
       </Section>
 
       {/* THE WAY OUT COMES FIRST. This section used to sit after About — which is
@@ -311,9 +320,9 @@ export default function SettingsScreen({
           <Text style={styles.unlockNote}>Developer mode is at the top of Settings.</Text>
         ) : null}
         <Text style={styles.aboutBlurb}>
-          EqualSplit pairs your phone with the start gate over Bluetooth; the gate keeps the
-          authoritative time and relays the finish gate's result over ESP-NOW. Times are stored
-          locally on your device.
+          EqualSplit pairs your phone with the start gate over Bluetooth. The gate keeps the
+          authoritative time and hears the finish gate over a direct gate-to-gate radio link, so the
+          phone is never in the timing path. Times are stored locally on your device.
         </Text>
       </Section>
 
@@ -436,6 +445,7 @@ const styles = StyleSheet.create({
   },
   debugBtnText: { color: INTERACTIVE, fontWeight: '700', fontSize: 14 },
   note: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 8 },
+  noteRow: { marginTop: 4 },
   dim: { opacity: 0.5 },
   toggleRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
   toggle: {
