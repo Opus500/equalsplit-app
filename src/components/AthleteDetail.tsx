@@ -928,10 +928,11 @@ function UnlabeledCard({ count }: { count: number }) {
   return (
     <View style={styles.unlabeledCard}>
       <Text style={styles.unlabeledTitle}>No drill</Text>
+      {/* The fact, not the argument for it. The reasoning above is the developer's
+          and stays in the comment; on screen it read as the app defending itself. */}
       <Text style={styles.unlabeledBody}>
-        {count} run{count === 1 ? '' : 's'} saved without a drill. These are never charted at any
-        count — different distances share nothing but the missing label, and a line across them would
-        mean nothing.
+        {count} run{count === 1 ? '' : 's'} saved without a drill. Runs without a drill are not
+        charted.
       </Text>
       <Text style={styles.unlabeledHint}>Assign a drill to a run and it joins that drill's chart.</Text>
     </View>
