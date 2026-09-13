@@ -33,6 +33,17 @@ import type { GateStatus } from '../ble/events';
 /** True only in a development bundle launched with the demo flag. */
 export const DEMO = __DEV__ && process.env.EXPO_PUBLIC_DEMO === '1';
 
+// SAY WHAT THE BUNDLE ACTUALLY RECEIVED, once, in the Metro terminal. The flag
+// reaches the app through the running Metro process — its environment, or a .env
+// file Expo CLI loaded when it started — and NOT through the native build. So "I
+// rebuilt and it still is not on" is the expected symptom of the wrong Metro, and
+// this line is how to tell that from a bug in the read.
+if (__DEV__) {
+  console.log(
+    `[demo] EXPO_PUBLIC_DEMO=${JSON.stringify(process.env.EXPO_PUBLIC_DEMO)} → DEMO=${DEMO}`,
+  );
+}
+
 /**
  * A gate sitting idle and ready, with a practice already under way.
  *
