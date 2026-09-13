@@ -34,7 +34,7 @@ import {
   type SessionRow,
 } from '../db/database';
 import { useSettings } from '../settings/SettingsProvider';
-import { formatTags } from '../runs/format';
+import { formatTags, modeLabel } from '../runs/format';
 import { REPEAT_MODE, parseRepSetJson, runStartSource } from '../ble/repeats';
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
@@ -265,7 +265,7 @@ export default function HistoryScreen({
       ? validShown.reduce((a, r) => a + totalOf(r), 0) / validShown.length
       : null;
     const avgDrill = comparable ? resolvedDrill(validShown[0]).name : null;
-    const avgLabel = `Avg${avgDrill ? ` · ${avgDrill}` : ` · M${[...modeSet][0]}`}`;
+    const avgLabel = `Avg${avgDrill ? ` · ${avgDrill}` : ` · ${modeLabel([...modeSet][0])}`}`;
 
     return (
       <View style={styles.container}>
@@ -347,7 +347,7 @@ export default function HistoryScreen({
                 <View style={styles.runLeft}>
                   <View style={styles.runLeftTop}>
                     <Text style={styles.runIdx}>#{item.display_index}</Text>
-                    <Text style={styles.runMode}>M{item.mode}</Text>
+                    <Text style={styles.runMode}>{modeLabel(item.mode)}</Text>
                   </View>
                   <Text
                     style={[
@@ -383,11 +383,11 @@ export default function HistoryScreen({
                         </Text>
                       )
                     ) : (
-                      <Text style={styles.runConfDim}>react raw · G1→G2 exact</Text>
+                      <Text style={styles.runConfDim}>raw reaction · exact split</Text>
                     )}
                   </View>
                 ) : null}
-                {handStarted ? <Text style={styles.handTag}>hand</Text> : null}
+                {handStarted ? <Text style={styles.handTag}>hand-started</Text> : null}
                 {/* FLAGGED, not re-grouped. A session is a record of an afternoon,
                     and moving a run out of the one it was recorded in is a bigger
                     claim than fixing where a point sits on a chart — so the run
