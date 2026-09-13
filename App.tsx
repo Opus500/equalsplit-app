@@ -83,7 +83,13 @@ function AppShell() {
       <StatusBar style="light" />
       <View style={styles.screens}>
         <View style={[styles.fill, tab !== 'timer' && styles.hidden]}>
-          {useV2Engine ? <TimerV2Screen /> : <TimerScreen />}
+          {/* BOTH FLAGS. The engine toggle lives inside the dev-mode section of
+              Settings, so it can only be turned ON with dev mode on — but the value
+              persists, and this read it alone. Turn dev mode off with the toggle
+              still set and the Timer tab stayed on the experimental screen, which
+              speaks in engine versions and mode numbers, with the switch that
+              controls it no longer visible anywhere. */}
+          {devMode && useV2Engine ? <TimerV2Screen /> : <TimerScreen />}
         </View>
         {/* Kept mounted (hidden), like Timer: preserves an in-progress drill run
             or rep set, the selected drill, and — critically — the per-run save
