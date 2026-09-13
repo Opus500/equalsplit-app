@@ -500,6 +500,7 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     // declaration owns the text up to the next one, which is enough because these
     // components are top level and sequential.
     const sheetOwners = new Set();
+    const regions = [];
     for (const abs of walk(SRC)) {
       if (!/\.tsx$/.test(abs)) continue;
       const src = code(abs);
@@ -507,10 +508,30 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
       for (let k = 0; k < decls.length; k += 1) {
         const from = decls[k].index;
         const to = k + 1 < decls.length ? decls[k + 1].index : src.length;
-        if (/<Modal|<SheetHost/.test(src.slice(from, to))) sheetOwners.add(decls[k][1]);
+        const body = src.slice(from, to);
+        regions.push([decls[k][1], body]);
+        if (/<Modal|<SheetHost/.test(body)) sheetOwners.add(decls[k][1]);
       }
     }
     truthy('sheet owners were found by reading, not by naming', sheetOwners.size > 3);
+    // AND OWNERSHIP IS TRANSITIVE. NoteWithMore never writes <SheetHost>; it renders
+    // <LearnMore>, which does. Read literally, a <NoteWithMore> placed inside a
+    // Modal would pass this sweep and present a second sheet on device. So anything
+    // that renders a sheet owner is one, to a fixpoint.
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const [name, body] of regions) {
+        if (sheetOwners.has(name)) continue;
+        for (const m of body.matchAll(/<([A-Z]\w*)\b/g)) {
+          if (sheetOwners.has(m[1])) {
+            sheetOwners.add(name);
+            grew = true;
+            break;
+          }
+        }
+      }
+    }
+    truthy('a wrapper around a sheet counts as a sheet', sheetOwners.has('NoteWithMore'));
 
     const nested = [];
     for (const abs of walk(SRC)) {
@@ -652,6 +673,90 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
   const setctl = read(join(SRC, 'components', 'SetControl.tsx'));
   check('the set badge has no shrug state', /'set \?'/.test(setctl), false);
   truthy('it names the state instead', /SET UNKNOWN/.test(setctl));
+  // THE SCREEN IS NOT THE MANUAL. A copy pass before submission found the app
+  // explaining itself in the main view — a six-line accuracy paragraph under every
+  // clip, the probe trace beside it, protocol state names in the Timer's status
+  // line, M-numbers on History rows, "B1" and "event stream" in the one Settings
+  // section a coach sees. None of it is cut; it moves behind Learn more or dev mode.
+  // Every claim here reads code(), not prose, because each of these words still
+  // appears in the comment that explains its removal.
+  {
+    const mark = code(join(SRC, 'screens', 'VideoMarkScreen.tsx'));
+    truthy('the video accuracy caveat is one line with a Learn more',
+      /<NoteWithMore\s+note="Video timing is not gate-accurate/.test(mark));
+    truthy('and the sheet still carries the body-part figure', /\$\{BODY_PART_BIAS_MS\}ms on its own/.test(mark));
+    truthy('and the whole-frame claim', /whole frame, the worst case, not a statistical spread/.test(mark));
+    check('no accuracy paragraph remains in the main view', /styles\.caveat/.test(mark), false);
+    truthy('the probe trace is dev-only', /\{devMode && perf \? <Text/.test(mark));
+    check('and is no longer joined into the facts line', /describeClip\(clip\.bytes, duration\),\s*perf,/.test(mark), false);
+
+    const record = code(join(SRC, 'screens', 'VideoRecordModal.tsx'));
+    check('the camera note does not narrate the post-check', /it is the file that decides/.test(record), false);
+    truthy('that fact moved to the marking sheet', /it is the file that decides/.test(mark));
+
+    const timerCode = code(join(SRC, 'screens', 'TimerScreen.tsx'));
+    truthy('the Timer status line speaks the coach’s words unless in dev mode',
+      /devMode \? STATE_NAME\[gateStatus\.state\] \?\? '' : gateStateLabel\(gateStatus\.state\)/.test(timerCode));
+    truthy('and that label covers every gate state', /case GateState\.M2ToGate2:\s*return 'Running'/.test(timerCode));
+    check('the idle hint no longer offers a choice of modes', /'Pick a mode to arm\.'/.test(timerCode), false);
+    const cleanBlock = timerCode.slice(
+      timerCode.indexOf("result.mode === 2 && !devMode"),
+      timerCode.indexOf('result.mode === 2 && devMode'),
+    );
+    truthy('the clean reaction block was found', cleanBlock.length > 100);
+    check('and it does not abbreviate the gates', /G1|G2/.test(cleanBlock), false);
+
+    // The same trace/notice split the Timer got, on the other two screens that save.
+    for (const f of ['DrillsScreen.tsx', 'RepeatsScreen.tsx']) {
+      const src = code(join(SRC, 'screens', f));
+      truthy(`${f}: the raw trace is dev-only`, /\{devMode && dbg \? <Text/.test(src));
+      truthy(`${f}: but a failed save is told to everyone`, /\{note \? <Text/.test(src));
+      truthy(`${f}: in words rather than an exception`, /could not be saved to history/.test(src));
+    }
+    truthy('an unsynced drill rep says so in plain words',
+      /The two gates were not in sync for that rep, so its time was not saved\./.test(code(join(SRC, 'screens', 'DrillsScreen.tsx'))));
+    check('the drill hint no longer mentions the session',
+      /a drill needs the session up/.test(code(join(SRC, 'screens', 'DrillsScreen.tsx'))), false);
+
+    const repeats = code(join(SRC, 'screens', 'RepeatsScreen.tsx'));
+    truthy('the rest-rep explanation is one line with a Learn more', /<NoteWithMore\s+note=\{`Tap Start rep;/.test(repeats));
+    truthy('and the sheet keeps the hand-timing figure', /HAND_START_ERROR_MS\}ms of hand-timing error/.test(repeats));
+    truthy('the lap-repair explanation is one line with a Learn more', /<NoteWithMore\s+note="Join merges/.test(repeats));
+    truthy('and the sheet keeps what End here does', /discards the final split and ends the set at the previous crossing/.test(repeats));
+
+    const tab = code(join(SRC, 'screens', 'DrillsTab.tsx'));
+    truthy('the Modes tab header says MODE', /<Text style=\{styles\.kicker\}>MODE<\/Text>/.test(tab));
+    truthy('and so does its picker', /<Text style=\{styles\.cardTitle\}>Mode<\/Text>/.test(tab));
+
+    const hist = code(join(SRC, 'screens', 'HistoryScreen.tsx'));
+    check('History rows do not print a mode number', /<Text style=\{styles\.runMode\}>M\{item\.mode\}/.test(hist), false);
+    truthy('they name the mode', /<Text style=\{styles\.runMode\}>\{modeLabel\(item\.mode\)\}/.test(hist));
+    truthy('and so does the average', /modeLabel\(\[\.\.\.modeSet\]\[0\]\)/.test(hist));
+    check('the reaction caption does not abbreviate the gates', /G1→G2/.test(hist), false);
+    truthy('a hand-started run says so in a word a coach uses', /styles\.handTag\}>hand-started</.test(hist));
+
+    const settingsCode = code(join(SRC, 'screens', 'SettingsScreen.tsx'));
+    const coachSection = settingsCode.slice(
+      settingsCode.indexOf('<Section title="Runs started at the gate">'),
+      settingsCode.indexOf('</Section>', settingsCode.indexOf('<Section title="Runs started at the gate">')),
+    );
+    truthy('the coach-visible Settings section exists', coachSection.length > 100);
+    // WHAT IS ALWAYS ON SCREEN: the switch label and the one-line note. The sheet
+    // body is allowed the full account, so it is excluded — and a first draft of
+    // this guard checked only the text before <NoteWithMore, which is the label and
+    // nothing else, and let a mutation of the note itself through.
+    const visible = [
+      (coachSection.match(/<Text style=\{styles\.devLabel\}>([\s\S]*?)<\/Text>/) || [])[1] || '',
+      (coachSection.match(/note="([^"]*)"/) || [])[1] || '',
+    ].join(' ');
+    truthy('with a label and a note to read', visible.length > 60);
+    for (const ours of ['B1', 'B2', 'Mode-1', 'Mode-2', 'event stream', 'app-armed']) {
+      check(`and neither says "${ours}"`, visible.includes(ours), false);
+    }
+    truthy('while the sheet keeps the two-button caveat', /cannot tell the app which of its two buttons/.test(coachSection));
+    check('About does not name the radio protocol', /ESP-NOW/.test(settingsCode), false);
+    truthy('but still says the phone is out of the timing path', /phone is never in the timing path/.test(settingsCode));
+  }
 }
 
 console.log('\n=============================');
