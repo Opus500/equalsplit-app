@@ -42,7 +42,10 @@ export default function DrillsTab() {
       style={({ pressed }) => [styles.header, pressed && styles.dim]}
     >
       <View style={styles.headerText}>
-        <Text style={styles.kicker}>DRILL</Text>
+        {/* The tab is called Modes, so the thing you pick here is a mode. "Drill"
+            is the word the Timer uses for the optional tag on a run, and the two
+            were sharing it. */}
+        <Text style={styles.kicker}>MODE</Text>
         <Text style={styles.title} numberOfLines={1}>
           {active.title}
         </Text>
@@ -75,7 +78,7 @@ export default function DrillsTab() {
       <Modal visible={picking} transparent animationType="fade" onRequestClose={() => setPicking(false)}>
         <Pressable style={styles.backdrop} onPress={() => setPicking(false)}>
           <Pressable style={styles.card} onPress={() => {}}>
-            <Text style={styles.cardTitle}>Drill</Text>
+            <Text style={styles.cardTitle}>Mode</Text>
             <ScrollView style={styles.list}>
               {DRILL_CATALOG.map((e) => (
                 <Pressable

@@ -43,10 +43,12 @@ import { DRILL_MODE } from '../ble/drills';
 import { resolveKey } from '../ble/catalog';
 import { DiscardBar } from '../components/DiscardBar';
 import { DrillPickerModal } from '../components/DrillPicker';
+import { NoteWithMore } from '../components/InfoSheet';
 import { SetControl } from '../components/SetControl';
 import { UpNextStrip } from '../components/UpNextStrip';
 import { getSetting, saveRun, setSetting, type Drill } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
+import { useSettings } from '../settings/SettingsProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
 import {
   CAUTION,
@@ -85,6 +87,11 @@ export default function RepeatsScreen({
    *  early never reaches the provider (or the database) until Save. */
   const [review, setReview] = useState<RepSet | null>(null);
   const [dbg, setDbg] = useState('');
+  /** What the coach is told about the last save. A continuous set has no
+   *  DiscardBar, so its confirmation lives here; a failure lives here for both.
+   *  The raw trace is separate and dev-only, as on the Timer. */
+  const [note, setNote] = useState<{ text: string; bad: boolean } | null>(null);
+  const { devMode } = useSettings();
   const [saving, setSaving] = useState(false);
   const reviewedRef = useRef<RepSet | null>(null);
   const savedRepRef = useRef<unknown>(null);
@@ -160,7 +167,15 @@ export default function RepeatsScreen({
           savedAt: Date.now(),
         });
       })
-      .catch((e) => setDbg(`SAVE FAILED: ${String(e)}`));
+      .catch((e) => {
+        setDbg(`SAVE FAILED: ${String(e)}`);
+        setNote({
+          text:
+            'That rep was timed but could not be saved to history. Write the time down before ' +
+            'running another.',
+          bad: true,
+        });
+      });
   }, [v2]);
 
   useEffect(() => {
@@ -181,6 +196,7 @@ export default function RepeatsScreen({
   const doArm = useCallback(() => {
     setReview(null);
     setDbg('');
+    setNote(null);
     if (isRest) {
       // A new rep starting settles the previous rep's discard window.
       pending.settleForNextRep();
@@ -219,10 +235,22 @@ export default function RepeatsScreen({
         }),
       });
       setDbg(`saved ${review.intervals.length} lap(s) ✓`);
+      // The review card is gone the moment this saves, so this line is the only
+      // thing that says it happened.
+      setNote({
+        text: `Saved — ${review.intervals.length} lap${review.intervals.length === 1 ? '' : 's'}, ${fmt(
+          review.totalMs,
+        )}s.`,
+        bad: false,
+      });
       setReview(null);
       roster.completeRun();
     } catch (e) {
       setDbg(`SAVE FAILED: ${String(e)}`);
+      setNote({
+        text: 'That set could not be saved to history. It is still on screen — try Save set again.',
+        bad: true,
+      });
     } finally {
       setSaving(false);
     }
@@ -268,11 +296,26 @@ export default function RepeatsScreen({
         </View>
       ) : null}
 
-      <Text style={styles.explain}>
-        {isRest
-          ? `Tap Start rep, athlete goes from standing, the crossing ends it and saves it as its own run. Rest is never timed. Hand-started — about ±${HAND_START_ERROR_MS}ms, not gate-accurate.`
-          : 'First crossing starts the clock. Each crossing after it closes a lap. Gate-timed at both ends.'}
-      </Text>
+      {/* One line each. The rest-rep version was a four-sentence paragraph under
+          the picker; the accuracy caveat and the rest of it are in the sheet. */}
+      {isRest ? (
+        <View style={styles.explainRow}>
+          <NoteWithMore
+            note={`Tap Start rep; the crossing ends it. Hand-started, about ±${HAND_START_ERROR_MS}ms.`}
+            title="Repeats with rest"
+            body={[
+              'Tap Start rep with the athlete standing at the start. The clock runs until they cross the gate, and that crossing ends the rep and saves it as its own run.',
+              'Rest is never timed. Each rep is a separate run, so a bad one can be discarded on its own.',
+              `The start is a tap rather than a beam, so a rep carries about ±${HAND_START_ERROR_MS}ms of hand-timing error and is not gate-accurate. History and the charts mark these runs as hand-started.`,
+            ]}
+          />
+        </View>
+      ) : (
+        <Text style={styles.explain}>
+          First crossing starts the clock. Each crossing after it closes a lap. Gate-timed at both
+          ends.
+        </Text>
+      )}
 
       <Pressable style={styles.tagBar} onPress={() => !live && setDrillOpen(true)} disabled={live}>
         <Text style={[styles.tagBarText, !drill && styles.tagBarPlaceholder]} numberOfLines={1}>
@@ -432,11 +475,17 @@ export default function RepeatsScreen({
             return null;
           })()}
 
-          <Text style={styles.repairHint}>
-            Join removes a stray crossing and merges the split into its neighbour — the total never
-            changes, only where the laps divide. “End here” is the exception: it discards the final
-            split, ending the set at the previous crossing.
-          </Text>
+          <View style={styles.repairRow}>
+            <NoteWithMore
+              note="Join merges a stray crossing into its neighbour. End here drops the final split."
+              title="Fixing a set before saving"
+              body={[
+                'Join removes a stray crossing and merges its split into the lap beside it. The total never changes — only where the laps divide.',
+                '“End here” is the exception: it discards the final split and ends the set at the previous crossing, so the total gets shorter.',
+                'Laps marked SHORT look brief enough to be a walk-back through the beam. Nothing is written until you tap Save set.',
+              ]}
+            />
+          </View>
 
           {shown.intervals.map((it, i) => (
             <View
@@ -499,7 +548,8 @@ export default function RepeatsScreen({
         </View>
       ) : null}
 
-      {dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
+      {note ? <Text style={[styles.note, note.bad && styles.noteBad]}>{note.text}</Text> : null}
+      {devMode && dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
 
       <DrillPickerModal
         visible={drillOpen}
@@ -530,6 +580,7 @@ const styles = StyleSheet.create({
   pickText: { color: '#94a3b8', fontSize: 13, fontWeight: '700' },
   pickTextOn: { color: '#dbeafe' },
   explain: { color: '#64748b', fontSize: 11, lineHeight: 16, marginTop: 8 },
+  explainRow: { marginTop: 2 },
   tagBar: {
     backgroundColor: '#161b22',
     borderRadius: 10,
@@ -599,7 +650,7 @@ const styles = StyleSheet.create({
   },
   reviewTitle: { color: '#cbd5e1', fontSize: 14, fontWeight: '700' },
   reviewNum: { color: '#fff', fontWeight: '800' },
-  repairHint: { color: '#64748b', fontSize: 11, lineHeight: 16, marginBottom: 6 },
+  repairRow: { marginBottom: 2 },
   reviewSub: { color: '#64748b', fontSize: 11, marginTop: 3, marginBottom: 8 },
   flagCard: {
     backgroundColor: '#2a1f10',
@@ -644,5 +695,7 @@ const styles = StyleSheet.create({
   ivDropText: { color: DESTRUCTIVE, fontSize: 12, fontWeight: '700' },
   reviewActions: { flexDirection: 'row', gap: 10, marginTop: 14 },
   dbg: { color: '#64748b', fontSize: 12, marginTop: 12 },
+  note: { color: '#e2e8f0', fontSize: 14, lineHeight: 20, marginTop: 12, fontWeight: '600' },
+  noteBad: { color: '#fca5a5' },
   dim: { opacity: 0.45 },
 });

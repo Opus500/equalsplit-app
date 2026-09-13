@@ -30,6 +30,7 @@ import { UpNextStrip } from '../components/UpNextStrip';
 import { DiscardBar } from '../components/DiscardBar';
 import { resolveKey } from '../ble/catalog';
 import { useRoster } from '../roster/RosterProvider';
+import { useSettings } from '../settings/SettingsProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
 import {
@@ -81,6 +82,12 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
   const roster = useRoster();
   const [liveMs, setLiveMs] = useState(0);
   const [dbg, setDbg] = useState('');
+  /** What a coach has to be told about the last rep — a withheld or unsaved
+   *  result. Separate from the raw trace, which goes behind dev mode; a run that
+   *  was not written must not be silent because the trace is. Same split as the
+   *  Timer's saveError. */
+  const [note, setNote] = useState<string | null>(null);
+  const { devMode } = useSettings();
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
 
   // Attribution comes from the roster queue; ref so the save effect reads
@@ -142,6 +149,7 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
     savedRef.current = run;
     if (!run.synced) {
       setDbg('gates not time-synced — result withheld (not saved)');
+      setNote('The two gates were not in sync for that rep, so its time was not saved.');
       return;
     }
     const who = currentAthleteRef.current;
@@ -184,7 +192,13 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
           savedAt: Date.now(),
         });
       })
-      .catch((e) => setDbg(`SAVE FAILED: ${String(e)}`));
+      .catch((e) => {
+        setDbg(`SAVE FAILED: ${String(e)}`);
+        setNote(
+          'That rep was timed but could not be saved to history. The time above is correct — ' +
+            'write it down before running another.',
+        );
+      });
   }, [v2.lastDrillRun, roster]);
 
   // Keep awake while a drill is armed/set/running.
@@ -203,6 +217,7 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
   const doArm = useCallback(() => {
     setFinishedTags(null);
     setDbg('');
+    setNote(null);
     setLiveMs(0);
     // The next rep is starting, so the previous run settles — kept, not deleted.
     pending.settleForNextRep();
@@ -303,7 +318,11 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
         ) : null}
 
         <Text style={styles.hint}>{hintFor(connected, v2.phase, v2.drillState, !!result, base)}</Text>
-        {dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
+        {note ? <Text style={styles.note}>{note}</Text> : null}
+        {/* "saved 1.234s ✓" was the visible confirmation once. The DiscardBar above
+            now shows the saved rep by name, and the hint says Saved — so this is
+            the trace, and it goes where the Timer's went. */}
+        {devMode && dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
       </View>
 
       <View style={styles.controls}>
@@ -324,9 +343,9 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
 
 function setupLine(d: DrillConfig): string {
   if (d.startGateId === d.countGateId) {
-    return `Gate ${d.startGateId} only · start when it clears · ${d.countN} pass${d.countN === 1 ? '' : 'es'} to stop`;
+    return `Gate ${d.startGateId} only · clock starts when it clears · stops after ${d.countN} pass${d.countN === 1 ? '' : 'es'} back through`;
   }
-  return `Gate ${d.startGateId} start (clear) → Gate ${d.countGateId} stop · ${d.countN} pass${d.countN === 1 ? '' : 'es'}`;
+  return `Clock starts when Gate ${d.startGateId} clears · stops at Gate ${d.countGateId}${d.countN === 1 ? '' : ` after ${d.countN} passes`}`;
 }
 
 function lockoutLabel(d: DrillConfig): string {
@@ -360,8 +379,7 @@ function hintFor(
   d: DrillConfig,
 ): string {
   if (!connected) return 'Not connected — tap Connect above.';
-  if (phase === 'partial')
-    return 'Only one gate found — power both gates of this set (a drill needs the session up).';
+  if (phase === 'partial') return 'Only one gate found — power both gates of this set.';
   // The phase name is a state-machine term and leaked straight into a coach's hint.
   if (phase !== 'ready') return 'Setting up gates…';
   if (state === 'armed') return 'Have the athlete step into the start gate, hold still, then go.';
@@ -552,6 +570,9 @@ const styles = StyleSheet.create({
   shareBtnText: { color: '#e2e8f0', fontSize: 14, fontWeight: '700' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 20, textAlign: 'center', paddingHorizontal: 8 },
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
+  // Legible, like the Timer's saveError: a rep that was not written is the worst
+  // thing this screen has to say.
+  note: { color: '#fca5a5', fontSize: 14, lineHeight: 20, marginTop: 10, textAlign: 'center', fontWeight: '600' },
   controls: { paddingTop: 4 },
   btn: { backgroundColor: '#2563eb', paddingVertical: 16, borderRadius: 12, alignItems: 'center' },
   btnGo: { backgroundColor: LIVE_FILL },
