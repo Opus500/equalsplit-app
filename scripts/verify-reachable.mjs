@@ -756,6 +756,22 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     truthy('while the sheet keeps the two-button caveat', /cannot tell the app which of its two buttons/.test(coachSection));
     check('About does not name the radio protocol', /ESP-NOW/.test(settingsCode), false);
     truthy('but still says the phone is out of the timing path', /phone is never in the timing path/.test(settingsCode));
+
+    // THE EXPERIMENTAL TIMER IS BEHIND DEV MODE, NOT BEHIND ITS OWN TOGGLE. The
+    // toggle is only rendered inside the dev section, but its value persists — so
+    // dev mode off with the toggle still set left the Timer tab on TimerV2Screen,
+    // which says "v2 engine" and "Mode-1", with no visible way back. The tab must
+    // read both flags.
+    const appCode = code(join(ROOT, 'App.tsx'));
+    truthy('the experimental timer needs dev mode as well as its toggle',
+      /\{devMode && useV2Engine \? <TimerV2Screen \/> : <TimerScreen \/>\}/.test(appCode));
+    check('and is never chosen on the toggle alone', /\{useV2Engine \? <TimerV2Screen/.test(appCode), false);
+
+    // The athlete page's "No drill" card states the fact and not the argument.
+    const detail = code(join(SRC, 'components', 'AthleteDetail.tsx'));
+    truthy('the No drill card says runs without a drill are not charted',
+      /Runs without a drill are not\s+charted\./.test(detail));
+    check('without arguing the point', /share nothing but the missing label/.test(detail), false);
   }
 }
 
