@@ -646,6 +646,8 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
       ['screens/RepeatsScreen.tsx', 'ivDrop'],
       ['components/SetControl.tsx', 'tapTarget'],
       ['components/UpNextStrip.tsx', 'undoBtn'],
+      // The lineup a wide screen shows under the readout: tapped from a gate too.
+      ['components/LineupList.tsx', 'row'],
     ];
     const small = [];
     for (const [file, key] of MID_REP) {
@@ -795,6 +797,13 @@ console.log('\n6. THE SCREEN FITS THE DEVICE IT IS ON');
     threshold > 430 && threshold <= 744);
   truthy('the tab bar keeps its phone padding and drops the dead space elsewhere',
     /Math\.min\(insets\.bottom, 24\)/.test(layout));
+  // AIR UNDER THE CLOCK. At 6 the titles crowded the status bar on an iPad in both
+  // orientations (its bar stays up in landscape). A navigation bar's worth.
+  truthy('a title sits well clear of the status bar', /extra = 1[6-9]\): number/.test(layout));
+  // THE NUMBER IS FITTED TO ITS COLUMN, never merely enlarged. A fixed 128pt
+  // centred in a 900pt stage was the phone's number with more air around it.
+  truthy('the readout size is derived from the column width', /Math\.floor\(columnWidth \/ 4\.1\)/.test(layout));
+  truthy('with a floor and a ceiling', /Math\.max\(96, Math\.min\(184,/.test(layout));
 
   // NO INSET IS A NUMBER ANY MORE.
   const screens = [
@@ -814,18 +823,36 @@ console.log('\n6. THE SCREEN FITS THE DEVICE IT IS ON');
   truthy('and the tab bar reads its bottom inset', /paddingBottom: tabBarBottomPad\(insets\)/.test(app));
   check('rather than assuming a home indicator', /paddingBottom: 24,/.test(app), false);
 
-  // THE READOUT SCALES; THE CONTROLS ARE CAPPED. A 76pt number in a 1032pt space
-  // with a 1000pt Arm button under it is the phone layout stretched.
+  // THE SPACE IS USED, NOT CENTRED IN. A wide screen's readout is fitted to its
+  // column, and the full lineup takes what is left — under the number upright,
+  // beside it in landscape. Centring a fixed-size number in the empty height was
+  // the first attempt, and it read as exactly what it was.
   const timer = code(join(SRC, 'screens', 'TimerScreen.tsx'));
-  truthy('the Timer caps its column on wide screens', /wide && styles\.containerWide/.test(timer));
-  truthy('and grows the readout', /timerWide: \{ fontSize: 1[0-9][0-9] \}/.test(timer));
-  truthy('the Modes tab caps its column', /wide && styles\.rootWide/.test(code(join(SRC, 'screens', 'DrillsTab.tsx'))));
+  truthy('the Timer caps its column upright', /wide && !landscape && styles\.containerWide/.test(timer));
+  truthy('and uses the wider cap in landscape', /wide && landscape && styles\.containerLand/.test(timer));
+  truthy('its readout is fitted to the column', /readoutSize\(mainColumnWidth\(layout\)\)/.test(timer));
+  check('rather than set to a number', /timerWide: \{ fontSize/.test(timer), false);
+  truthy('the lineup fills the height under the readout upright',
+    /\{wide && !landscape \? <LineupList style=\{styles\.lineupBelow\} \/> : null\}/.test(timer));
+  truthy('and the column beside it in landscape',
+    /\{wide && landscape \? <LineupList style=\{styles\.sideCol\} \/> : null\}/.test(timer));
+  truthy('with the stage no taller than its number when the lineup is below it',
+    /stageNatural: \{ flex: 0/.test(timer));
+  const tab = code(join(SRC, 'screens', 'DrillsTab.tsx'));
+  truthy('the Modes tab caps its column upright', /wide && !landscape && styles\.rootWide/.test(tab));
+  truthy('and uses the wider cap in landscape', /wide && landscape && styles\.rootLand/.test(tab));
   const drills = code(join(SRC, 'screens', 'DrillsScreen.tsx'));
-  truthy('the drill stage takes the leftover height on wide screens', /wide && styles\.stageFill/.test(drills));
-  truthy('through flexGrow on the scroll content, so it still scrolls', /contentFill: \{ flexGrow: 1 \}/.test(drills));
-  truthy('and keeps its floor, because flex: 1 alone collapses (see 9428397)',
-    /stage: \{[^}]*minHeight: 260/.test(drills));
-  truthy('and grows the readout', /timerWide: \{ fontSize: 1[0-9][0-9] \}/.test(drills));
+  truthy('the drill readout is fitted to the column', /readoutSize\(mainColumnWidth\(layout\)\)/.test(drills));
+  truthy('and the lineup follows the controls, riding the scroll',
+    /<LineupList scroll=\{false\} style=\{landscape \? styles\.sideCol : styles\.lineupBelow\} \/>/.test(drills));
+  check('with no flexGrow trick on the scroll content', /flexGrow: 1/.test(drills), false);
+  truthy('the stage keeps its floor', /stage: \{[^}]*minHeight: 260/.test(drills));
+  // THE LINEUP IS THE STRIP UNFOLDED: the same two calls, the same action.
+  const lineup = code(join(SRC, 'components', 'LineupList.tsx'));
+  truthy('the lineup reads the queue the strip reads',
+    /roster\.currentAthlete/.test(lineup) && /roster\.upNext\(roster\.queue\.athleteIds\.length\)/.test(lineup));
+  truthy('and a tap does what the strip’s picker does', /onPress=\{\(\) => roster\.jumpTo\(a\.id\)\}/.test(lineup));
+  check('and it computes nothing of its own', /saveRun|completeRun|advance|setCursor/.test(lineup), false);
   truthy('Settings is a centred column on wide screens',
     /wide && styles\.bodyWide/.test(code(join(SRC, 'screens', 'SettingsScreen.tsx'))));
   const mark = code(join(SRC, 'screens', 'VideoMarkScreen.tsx'));
@@ -840,6 +867,15 @@ console.log('\n6. THE SCREEN FITS THE DEVICE IT IS ON');
   const detail = code(join(SRC, 'components', 'AthleteDetail.tsx'));
   truthy('the athlete page is full screen on wide screens and a page sheet on a phone',
     /presentationStyle=\{wide \? 'fullScreen' : 'pageSheet'\}/.test(detail));
+  // Full screen starts at the top edge; a page sheet does not. The name overlapped
+  // the clock until the header cleared it itself.
+  truthy('and its header clears the status bar when full screen',
+    /styles\.header, wide && \{ paddingTop: topPad\(insets\) \}/.test(detail));
+  // A "No drill" card matches a chart's height only when there is a chart to match.
+  truthy('the No drill card is text-sized when it has no chart beside it',
+    /<UnlabeledCard count=\{unlabeled\.length\} matchChart=\{series\.length > 0\} \/>/.test(detail));
+  truthy('and only then takes a chart’s height', /matchChart && styles\.unlabeledMatch/.test(detail));
+  check('never unconditionally', /unlabeledCard: \{[^}]*minHeight/.test(detail), false);
   // AND ITS PAGER SURVIVES A ROTATION. pageW re-measures; the offset did not.
   truthy('the chart pager puts its offset back when its width changes',
     /useEffect\(\(\) => \{\s*if \(pageW > 0\) ref\.current\?\.scrollTo\(\{ x: pageRef\.current \* pageW, animated: false \}\);\s*\}, \[pageW\]\);/.test(detail));
