@@ -67,7 +67,7 @@ import {
   type SeriesPoint,
 } from '../roster/progression';
 import { ProgressionChart } from './ProgressionChart';
-import { useLayout } from '../layout';
+import { topPad, useLayout } from '../layout';
 import {
   ACHIEVEMENT,
   DESTRUCTIVE,
@@ -92,7 +92,7 @@ export function AthleteDetailModal({
    *  second, so a modal opened from this one must be nested, not a sibling. */
   children?: React.ReactNode;
 }) {
-  const { wide } = useLayout();
+  const { wide, insets } = useLayout();
   const [rows, setRows] = useState<AthleteRunRow[] | null>(null);
   // Lifted out of the chart so the run list below can drive the highlight and the
   // two can never disagree about which run is selected. Keyed on the run id, not
@@ -557,7 +557,10 @@ export function AthleteDetailModal({
       presentationStyle={wide ? 'fullScreen' : 'pageSheet'}
     >
       <View style={styles.container}>
-        <View style={styles.header}>
+        {/* A page sheet is presented below the status bar and its 18pt is right.
+            Full screen starts at the top edge, so the header has to clear the
+            clock itself — the name overlapped it at first. */}
+        <View style={[styles.header, wide && { paddingTop: topPad(insets) }]}>
           <View style={styles.headerText}>
             <Text style={styles.name} numberOfLines={1}>
               {athlete?.display_name ?? ''}
@@ -899,7 +902,7 @@ function ChartPager({
             ))}
             {hasUnlabeled ? (
               <View key="__unlabeled" style={{ width: pageW }}>
-                <UnlabeledCard count={unlabeled.length} />
+                <UnlabeledCard count={unlabeled.length} matchChart={series.length > 0} />
               </View>
             ) : null}
           </ScrollView>
@@ -953,9 +956,20 @@ function ChartPager({
  * "N more runs and a trend appears" here would be a promise that can never be
  * kept.
  */
-function UnlabeledCard({ count }: { count: number }) {
+function UnlabeledCard({
+  count,
+  matchChart,
+}: {
+  count: number;
+  /** True when chart pages sit beside this one in the pager, so it should be
+   *  about their height and not change size as the pager swipes past it. With
+   *  no chart to match — an athlete whose every run is unlabelled — the padded
+   *  box was a third of the screen holding two lines, so it is as tall as its
+   *  text. */
+  matchChart: boolean;
+}) {
   return (
-    <View style={styles.unlabeledCard}>
+    <View style={[styles.unlabeledCard, matchChart && styles.unlabeledMatch]}>
       <Text style={styles.unlabeledTitle}>No drill</Text>
       {/* The fact, not the argument for it. The reasoning above is the developer's
           and stays in the comment; on screen it read as the app defending itself. */}
@@ -1343,11 +1357,10 @@ const styles = StyleSheet.create({
     gap: 8,
     borderWidth: 1,
     borderColor: '#243042',
-    // Roughly a chart's height, so this page is not a different size from its
-    // neighbours as the pager swipes past it.
-    minHeight: 232,
-    justifyContent: 'center',
   },
+  // Roughly a chart's height, so this page is not a different size from its
+  // neighbours as the pager swipes past it. Only when there are neighbours.
+  unlabeledMatch: { minHeight: 232, justifyContent: 'center' },
   unlabeledTitle: { color: '#e2e8f0', fontSize: 16, fontWeight: '800' },
   unlabeledBody: { color: '#94a3b8', fontSize: 13, lineHeight: 19 },
   unlabeledHint: { color: INTERACTIVE, fontSize: 12, fontWeight: '600' },
