@@ -17,6 +17,7 @@ import Constants from 'expo-constants';
 import { useSettings, type LatencySample } from '../settings/SettingsProvider';
 import { useGate } from '../ble/GateProvider';
 import { NoteWithMore } from '../components/InfoSheet';
+import { COLUMN_MAX_WIDTH, topPad, useLayout } from '../layout';
 import { DEFAULT_REACTION_OFFSET_MS } from '../db/database';
 import {
   INK,
@@ -78,6 +79,7 @@ export default function SettingsScreen({
     logStandalone,
     setLogStandalone,
   } = useSettings();
+  const { insets, wide } = useLayout();
   const gate = useGate();
   const connected = gate.status === 'connected';
   const [draft, setDraft] = useState(String(reactionOffsetMs));
@@ -101,7 +103,12 @@ export default function SettingsScreen({
   const previewMs = Math.max(0, SAMPLE_RAW_MS - reactionOffsetMs);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 32 }}>
+    // WIDE: a centred column. Nothing on this screen benefits from width, and a
+    // 1000pt switch row is the phone layout stretched.
+    <ScrollView
+      style={[styles.container, { paddingTop: topPad(insets) }]}
+      contentContainerStyle={[styles.body, wide && styles.bodyWide]}
+    >
       {onBack ? (
         <Pressable onPress={onBack} hitSlop={10} style={styles.backRow}>
           <Text style={styles.backText}>‹  Roster</Text>
@@ -398,7 +405,9 @@ function StatBlock({ label, values }: { label: string; values: number[] }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
+  body: { paddingBottom: 32 },
+  bodyWide: { width: '100%', maxWidth: COLUMN_MAX_WIDTH, alignSelf: 'center' },
   backRow: { marginBottom: 6 },
   backText: { color: INTERACTIVE, fontSize: 15, fontWeight: '700' },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 12 },

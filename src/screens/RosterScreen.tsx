@@ -30,6 +30,7 @@ import { createAthlete, setAthleteArchived, updateAthlete, type Athlete } from '
 import { foldName } from '../db/migrations';
 import { disambiguate, runCountLabel } from '../roster/labels';
 import { useRoster } from '../roster/RosterProvider';
+import { topPad, useLayout } from '../layout';
 import {
   CAUTION,
   DESTRUCTIVE,
@@ -61,6 +62,7 @@ export default function RosterScreen({
   // The provider is the single source: the strip and pickers read the same list,
   // so an edit here can't leave them showing a stale roster.
   const roster = useRoster();
+  const { insets } = useLayout();
   const all = roster.athletes;
   const [archivedOpen, setArchivedOpen] = useState(false);
   // Tapping a row opens the DETAIL view (progress); editing is a button inside it.
@@ -175,7 +177,7 @@ export default function RosterScreen({
   );
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: topPad(insets) }]}>
       <View style={styles.titleRow}>
         <Text style={styles.title}>Roster</Text>
         <View style={styles.headerActions}>
@@ -183,12 +185,22 @@ export default function RosterScreen({
               belongs to nobody, so it appears under no one in the list below — and it
               is the run most likely to need fixing. This is the only thing on this
               screen that can point at a run it cannot show. History names the
-              sessions holding them; the Unassigned chip there does the rest. */}
+              sessions holding them; the Unassigned chip there does the rest.
+
+              AND IT IS THE WHOLE INDICATOR. An orange sentence used to sit under the
+              title repeating the count and telling the coach to open History — on
+              the thing you tap to open History. The words survive as the button's
+              accessibility label, where a screen reader still gets the full fact. */}
           {onOpenHistory ? (
             <Pressable
               onPress={onOpenHistory}
               hitSlop={8}
               style={({ pressed }) => [styles.headerBtn, pressed && styles.dim]}
+              accessibilityLabel={
+                orphans > 0
+                  ? `History, ${orphans} run${orphans === 1 ? '' : 's'} saved without an athlete`
+                  : 'History'
+              }
             >
               <Text style={styles.headerBtnText}>History</Text>
               {orphans > 0 ? (
@@ -210,13 +222,6 @@ export default function RosterScreen({
           ) : null}
         </View>
       </View>
-      {orphans > 0 ? (
-        <Text style={styles.orphanNote}>
-          {orphans} run{orphans === 1 ? '' : 's'} saved without an athlete. Open History to assign{' '}
-          {orphans === 1 ? 'it' : 'them'}.
-        </Text>
-      ) : null}
-
       <View style={styles.summary}>
         <Text style={styles.summaryText}>
           {active.length} athlete{active.length === 1 ? '' : 's'}
@@ -552,8 +557,7 @@ const styles = StyleSheet.create({
   orphanBadgeText: { color: '#0e1116', fontSize: 12, fontWeight: '800' },
   gearBtn: { paddingHorizontal: 2 },
   gearText: { color: '#94a3b8', fontSize: 20 },
-  orphanNote: { color: CAUTION, fontSize: 13, lineHeight: 18, marginTop: 6 },
-  container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
   flex: { flex: 1 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
   summary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },

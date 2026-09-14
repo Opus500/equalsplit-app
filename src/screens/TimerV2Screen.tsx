@@ -26,6 +26,8 @@ import {
   LIVE,
   LIVE_BUSY,
 } from '../theme';
+import { TimerFrame } from '../components/TimerFrame';
+import { mainColumnWidth, readoutSize, useLayout } from '../layout';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run-v2';
 const nowMs = () =>
@@ -45,6 +47,11 @@ export default function TimerV2Screen() {
   const roster = useRoster();
   const [liveMs, setLiveMs] = useState(0);
   const [dbg, setDbg] = useState('');
+  const layout = useLayout();
+  const { wide } = layout;
+  // FITTED to the column it sits in, the same size the coach's Timer and Modes
+  // use; phones keep the fixed 76.
+  const readout = wide ? { fontSize: readoutSize(mainColumnWidth(layout)) } : null;
   const [drill, setDrill] = useState<Drill | null>(null);
   const [tagOpen, setTagOpen] = useState(false);
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
@@ -185,8 +192,11 @@ export default function TimerV2Screen() {
   const big = result ? fmt(result.splitMs, 3) : fmt(liveMs, isRunning ? 2 : 3);
   const finishedTagStr = finishedTags ? formatTags(finishedTags.name, finishedTags.drill) : '';
 
-  return (
-    <View style={styles.container}>
+  // The arrangement is TimerFrame's, shared with the coach's Timer so the two
+  // cannot drift — this screen had been given the inset and nothing else, and
+  // on a Simulator with the engine toggle on it was the Timer being looked at.
+  const strips = (
+    <>
       <View style={styles.setRow}>
         <SetControl />
       </View>
@@ -212,48 +222,57 @@ export default function TimerV2Screen() {
         )}
       </Pressable>
 
-      <View style={styles.stage}>
-        {armed ? <Text style={styles.phase}>Armed — run through the start gate</Text> : null}
-        {isRunning ? <Text style={styles.phase}>Running…</Text> : null}
-        <Text style={[styles.timer, result ? styles.timerDone : null]}>{big}</Text>
-        <Text style={styles.unit}>seconds</Text>
-        {result && finishedTagStr ? <Text style={styles.resultTags}>{finishedTagStr}</Text> : null}
+    </>
+  );
 
-        {result ? (
-          <View style={styles.splits}>
-            <Split label="Gate 1 → Gate 2" ms={result.splitMs} strong />
-            <Text style={styles.note}>raw gate-clock interval · v2 engine</Text>
-          </View>
-        ) : null}
+  const stage = (
+    <>
+      {armed ? <Text style={styles.phase}>Armed — run through the start gate</Text> : null}
+      {isRunning ? <Text style={styles.phase}>Running…</Text> : null}
+      <Text style={[styles.timer, readout, result ? styles.timerDone : null]}>{big}</Text>
+      <Text style={styles.unit}>seconds</Text>
+      {result && finishedTagStr ? <Text style={styles.resultTags}>{finishedTagStr}</Text> : null}
 
-        {result ? (
-          <Pressable
-            onPress={() =>
-              shareText(runShareLine(finishedTags?.name, finishedTags?.drill, result.splitMs))
-            }
-            style={({ pressed }) => [styles.shareBtn, pressed && styles.dim]}
-          >
-            <Text style={styles.shareBtnText}>⤴  Share</Text>
-          </Pressable>
-        ) : null}
+      {result ? (
+        <View style={styles.splits}>
+          <Split label="Gate 1 → Gate 2" ms={result.splitMs} strong />
+          <Text style={styles.note}>raw gate-clock interval · v2 engine</Text>
+        </View>
+      ) : null}
 
-        <Text style={styles.hint}>{hintFor(connected, v2.phase, v2.engineState, !!result)}</Text>
-        {dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
-      </View>
+      {result ? (
+        <Pressable
+          onPress={() =>
+            shareText(runShareLine(finishedTags?.name, finishedTags?.drill, result.splitMs))
+          }
+          style={({ pressed }) => [styles.shareBtn, pressed && styles.dim]}
+        >
+          <Text style={styles.shareBtnText}>⤴  Share</Text>
+        </Pressable>
+      ) : null}
 
-      <View style={styles.controls}>
-        {!armed && !isRunning ? (
-          <Btn
-            label={result ? 'Run again' : 'Arm (Mode 1)'}
-            onPress={doArm}
-            disabled={!v2.ready}
-            kind="go"
-          />
-        ) : (
-          <Btn label="Cancel" onPress={doCancel} kind="warn" />
-        )}
-      </View>
+      <Text style={styles.hint}>{hintFor(connected, v2.phase, v2.engineState, !!result)}</Text>
+      {dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
+    </>
+  );
 
+  const controls = (
+    <View style={styles.controls}>
+      {!armed && !isRunning ? (
+        <Btn
+          label={result ? 'Run again' : 'Arm (Mode 1)'}
+          onPress={doArm}
+          disabled={!v2.ready}
+          kind="go"
+        />
+      ) : (
+        <Btn label="Cancel" onPress={doCancel} kind="warn" />
+      )}
+    </View>
+  );
+
+  return (
+    <TimerFrame strips={strips} stage={stage} controls={controls}>
       {/* Drill records (kind='manual'): the timer never offers L Drill /
           Shuttle Run, which is what item 5's trim actually means now. */}
       <DrillPickerModal
@@ -262,7 +281,7 @@ export default function TimerV2Screen() {
         onClose={() => setTagOpen(false)}
         onPick={applyDrill}
       />
-    </View>
+    </TimerFrame>
   );
 }
 
@@ -380,7 +399,6 @@ function Btn({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
   setRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 6 },
   sdot: { width: 8, height: 8, borderRadius: 4 },
@@ -405,7 +423,6 @@ const styles = StyleSheet.create({
   tagClear: { color: INTERACTIVE, fontSize: 15, fontWeight: '800' },
   tagSet: { color: INTERACTIVE, fontSize: 13, fontWeight: '700' },
   resultTags: { color: '#94a3b8', fontSize: 15, fontWeight: '600', marginTop: 6 },
-  stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   phase: { color: INK, fontSize: 20, fontWeight: '700', marginBottom: 8 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },
   timerDone: { color: INK },

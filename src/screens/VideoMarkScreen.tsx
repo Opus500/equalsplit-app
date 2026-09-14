@@ -44,6 +44,7 @@ import { effectiveRunDate, isBackdated, sameLocalDay } from '../runs/rundate';
 import { RunDateModal, confirmRunDate } from '../runs/RunDateEditor';
 import { useRoster } from '../roster/RosterProvider';
 import { useSettings } from '../settings/SettingsProvider';
+import { topPad, useLayout } from '../layout';
 import {
   deleteClip,
   importClip,
@@ -195,6 +196,7 @@ export default function VideoMarkScreen({
   const [performedAt, setPerformedAt] = useState<number | null>(null);
   const roster = useRoster();
   const { devMode } = useSettings();
+  const { insets, wide } = useLayout();
 
   const athleteId = athleteOverride !== undefined ? athleteOverride : (roster.currentAthlete?.id ?? null);
   const athlete = roster.byId(athleteId);
@@ -1100,7 +1102,7 @@ export default function VideoMarkScreen({
     // than sit at a fixed height above scrollable content. Judging a foot against
     // a cone is the whole task, and it cannot be done on a thumbnail — so the
     // preview gets everything the controls do not need.
-    <View style={styles.root}>
+    <View style={[styles.root, { paddingTop: topPad(insets, 2) }]}>
       <View style={styles.preview}>
         {clip ? (
           <VideoView player={player} style={styles.video} nativeControls={false} contentFit="contain" />
@@ -1198,135 +1200,141 @@ export default function VideoMarkScreen({
             />
           </View>
 
-          {/* Each mark shows its own timestamp. At full-clip scale one frame is
-              about 1.5pt of strip — invisible — so without a number a step button
-              looks broken even when it worked. The big preview is the real
-              feedback; this is the confirmation. */}
-          <View style={styles.stepRow}>
-            <Pressable
-              style={[styles.markBtn, active === 'start' && styles.markBtnOn]}
-              onPress={() => setActive('start')}
-            >
-              <Text style={styles.markLabel}>Start</Text>
-              <Text style={styles.markAt}>{(startMark?.pts ?? startAt).toFixed(3)}s</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.markBtn, active === 'finish' && styles.markBtnOn]}
-              onPress={() => setActive('finish')}
-            >
-              <Text style={styles.markLabel}>Finish</Text>
-              <Text style={styles.markAt}>{(finishMark?.pts ?? finishAt).toFixed(3)}s</Text>
-            </Pressable>
-          </View>
-
-          {/* One pair of arrows driving whichever mark is selected, rather than a
-              pair each. Two sets of arrows invited stepping the wrong one, and the
-              screen has to stay readable with a thumb over half of it. */}
-          <View style={styles.stepRow}>
-            <Pressable style={styles.stepBtn} onPress={() => step(-1)} hitSlop={8}>
-              <Text style={styles.stepText}>‹ frame</Text>
-            </Pressable>
-            <Pressable style={styles.stepBtn} onPress={() => step(1)} hitSlop={8}>
-              <Text style={styles.stepText}>frame ›</Text>
-            </Pressable>
-          </View>
-
-          <Text style={styles.facts}>
-            {[
-              measuredFps(grid) ? `${measuredFps(grid)!.toFixed(1)}fps measured` : null,
-              isVariableRate(grid) ? 'variable frame rate' : null,
-              // MEASURED, both halves: bytes off the file, seconds off the player.
-              // There is no per-minute figure here and there is not going to be one
-              // — see storage.ts, and the structural guard in verify-storage that
-              // fails if one ever appears in src/.
-              describeClip(clip.bytes, duration),
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </Text>
-          {/* THE PROBE TRACE IS AN INSTRUMENT, NOT A CAPTION. It found the stale-ref
-              and rescue bugs and it stays exactly as it is — but it is read by
-              whoever is debugging a settle, and it sat in the main view under every
-              clip a coach marked. Dev mode is where the other traces live. */}
-          {devMode && perf ? <Text style={styles.perf}>{perf}</Text> : null}
-
-          {/* The honest caveat, one line on screen and the reasoning one tap away.
-              Frame timing is the SMALL term; camera angle and which body part you
-              judge are larger and are not measurable from the file. The full
-              explanation used to sit here as a paragraph, and it is all still said
-              — in the sheet, where reading it is a choice. */}
-          <NoteWithMore
-            note="Video timing is not gate-accurate. Camera angle and judgement add more than the ± shown."
-            title="How accurate is a video time?"
-            body={[
-              `The ± beside the time is the frame-timing error — currently ±${
-                timing ? timing.errorMs.toFixed(1) : nominalErrorMs(frameDur).toFixed(1)
-              }ms. That is a whole frame, the worst case, not a statistical spread, and it is the only part that can be measured from the file.`,
-              `Two things add more and cannot be measured: a camera that is not square to the finish line, and which body part you judge the crossing by. The second is worth around ${BODY_PART_BIAS_MS}ms on its own, and it pushes the time in one direction rather than either.`,
-              'A rep filmed in the app is recorded at the frame rate you chose and the file is checked frame by frame afterwards — it is the file that decides. If it does not match, the time is refused and the footage is kept. An imported clip arrives at whatever rate it was filmed, and slow-motion or time-lapse clips are refused because their playback time is not real time.',
-              'Video runs share a chart with gate runs of the same drill and are marked on it, so the difference stays visible without splitting the drill in two.',
-            ]}
-          />
-
-          {/* Attribution. A video run is not a different kind of record, so it
-              carries the same two facts as any other. */}
-          <Pressable style={styles.tagRow} onPress={() => setPickingAthlete(true)}>
-            <Text style={styles.tagLabel}>Athlete</Text>
-            <Text style={[styles.tagValue, !athlete && styles.tagEmpty]}>
-              {athlete?.display_name ?? 'Unassigned'}
-            </Text>
-            <Text style={styles.tagHint}>{followingLineup ? 'from lineup' : 'chosen'}</Text>
-          </Pressable>
-
-          <Pressable style={styles.tagRow} onPress={() => setPickingDrill(true)}>
-            <Text style={styles.tagLabel}>Drill</Text>
-            <Text style={[styles.tagValue, !drill && styles.tagEmpty]}>
-              {drill?.name ?? 'Pick a drill'}
-            </Text>
-          </Pressable>
-
-          {/* Seeded from the footage, so this normally needs no attention at all.
-              The hint says WHERE the date came from, because "3 Sept" means one
-              thing if the clip says so and another if the app assumed today. */}
-          <Pressable style={styles.tagRow} onPress={() => setPickingDate(true)}>
-            <Text style={styles.tagLabel}>Filmed</Text>
-            <Text style={styles.tagValue}>
-              {new Date(effectiveRunDate(performedAt, Date.now())).toLocaleDateString(undefined, {
-                day: 'numeric',
-                month: 'short',
-                year: 'numeric',
-              })}
-            </Text>
-            <Text style={styles.tagHint}>
-              {performedAt === null
-                ? 'today'
-                : isBackdated(performedAt, Date.now())
-                  ? 'backdated'
-                  : 'from clip'}
-            </Text>
-          </Pressable>
-
-          {/* WHY KEEP IS OFF, always, whatever the reason. Layer 3 refusing the
-              time is one case and it gets the Clear action, because that clip is
-              finished with. The others are recoverable and must not offer it. */}
-          {keepBlocked ? (
-            <View style={styles.refusalBox}>
-              <Text style={styles.refusalText}>{keepBlocked}</Text>
-              {refused ? (
-                <Pressable style={styles.secondary} onPress={clearClip}>
-                  <Text style={styles.secondaryText}>Clear this clip</Text>
-                </Pressable>
-              ) : null}
+          {/* WIDE: the strip above keeps the full width — a 1000pt filmstrip is
+              more scrub precision, not less — and everything from here down sits
+              in a capped column, because a Keep button a metre wide is the phone
+              layout stretched. */}
+          <View style={[styles.controlsInner, wide && styles.controlsInnerWide]}>
+            {/* Each mark shows its own timestamp. At full-clip scale one frame is
+                about 1.5pt of strip — invisible — so without a number a step button
+                looks broken even when it worked. The big preview is the real
+                feedback; this is the confirmation. */}
+            <View style={styles.stepRow}>
+              <Pressable
+                style={[styles.markBtn, active === 'start' && styles.markBtnOn]}
+                onPress={() => setActive('start')}
+              >
+                <Text style={styles.markLabel}>Start</Text>
+                <Text style={styles.markAt}>{(startMark?.pts ?? startAt).toFixed(3)}s</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.markBtn, active === 'finish' && styles.markBtnOn]}
+                onPress={() => setActive('finish')}
+              >
+                <Text style={styles.markLabel}>Finish</Text>
+                <Text style={styles.markAt}>{(finishMark?.pts ?? finishAt).toFixed(3)}s</Text>
+              </Pressable>
             </View>
-          ) : null}
 
-          <Pressable
-            style={[styles.primary, (!timing || !!keepBlocked) && styles.disabled]}
-            onPress={() => void save()}
-            disabled={!timing || !!keepBlocked}
-          >
-            <Text style={styles.primaryText}>Keep</Text>
-          </Pressable>
+            {/* One pair of arrows driving whichever mark is selected, rather than a
+                pair each. Two sets of arrows invited stepping the wrong one, and the
+                screen has to stay readable with a thumb over half of it. */}
+            <View style={styles.stepRow}>
+              <Pressable style={styles.stepBtn} onPress={() => step(-1)} hitSlop={8}>
+                <Text style={styles.stepText}>‹ frame</Text>
+              </Pressable>
+              <Pressable style={styles.stepBtn} onPress={() => step(1)} hitSlop={8}>
+                <Text style={styles.stepText}>frame ›</Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.facts}>
+              {[
+                measuredFps(grid) ? `${measuredFps(grid)!.toFixed(1)}fps measured` : null,
+                isVariableRate(grid) ? 'variable frame rate' : null,
+                // MEASURED, both halves: bytes off the file, seconds off the player.
+                // There is no per-minute figure here and there is not going to be one
+                // — see storage.ts, and the structural guard in verify-storage that
+                // fails if one ever appears in src/.
+                describeClip(clip.bytes, duration),
+              ]
+                .filter(Boolean)
+                .join(' · ')}
+            </Text>
+            {/* THE PROBE TRACE IS AN INSTRUMENT, NOT A CAPTION. It found the stale-ref
+                and rescue bugs and it stays exactly as it is — but it is read by
+                whoever is debugging a settle, and it sat in the main view under every
+                clip a coach marked. Dev mode is where the other traces live. */}
+            {devMode && perf ? <Text style={styles.perf}>{perf}</Text> : null}
+
+            {/* The honest caveat, one line on screen and the reasoning one tap away.
+                Frame timing is the SMALL term; camera angle and which body part you
+                judge are larger and are not measurable from the file. The full
+                explanation used to sit here as a paragraph, and it is all still said
+                — in the sheet, where reading it is a choice. */}
+            <NoteWithMore
+              note="Video timing is not gate-accurate. Camera angle and judgement add more than the ± shown."
+              title="How accurate is a video time?"
+              body={[
+                `The ± beside the time is the frame-timing error — currently ±${
+                  timing ? timing.errorMs.toFixed(1) : nominalErrorMs(frameDur).toFixed(1)
+                }ms. That is a whole frame, the worst case, not a statistical spread, and it is the only part that can be measured from the file.`,
+                `Two things add more and cannot be measured: a camera that is not square to the finish line, and which body part you judge the crossing by. The second is worth around ${BODY_PART_BIAS_MS}ms on its own, and it pushes the time in one direction rather than either.`,
+                'A rep filmed in the app is recorded at the frame rate you chose and the file is checked frame by frame afterwards — it is the file that decides. If it does not match, the time is refused and the footage is kept. An imported clip arrives at whatever rate it was filmed, and slow-motion or time-lapse clips are refused because their playback time is not real time.',
+                'Video runs share a chart with gate runs of the same drill and are marked on it, so the difference stays visible without splitting the drill in two.',
+              ]}
+            />
+
+            {/* Attribution. A video run is not a different kind of record, so it
+                carries the same two facts as any other. */}
+            <Pressable style={styles.tagRow} onPress={() => setPickingAthlete(true)}>
+              <Text style={styles.tagLabel}>Athlete</Text>
+              <Text style={[styles.tagValue, !athlete && styles.tagEmpty]}>
+                {athlete?.display_name ?? 'Unassigned'}
+              </Text>
+              <Text style={styles.tagHint}>{followingLineup ? 'from lineup' : 'chosen'}</Text>
+            </Pressable>
+
+            <Pressable style={styles.tagRow} onPress={() => setPickingDrill(true)}>
+              <Text style={styles.tagLabel}>Drill</Text>
+              <Text style={[styles.tagValue, !drill && styles.tagEmpty]}>
+                {drill?.name ?? 'Pick a drill'}
+              </Text>
+            </Pressable>
+
+            {/* Seeded from the footage, so this normally needs no attention at all.
+                The hint says WHERE the date came from, because "3 Sept" means one
+                thing if the clip says so and another if the app assumed today. */}
+            <Pressable style={styles.tagRow} onPress={() => setPickingDate(true)}>
+              <Text style={styles.tagLabel}>Filmed</Text>
+              <Text style={styles.tagValue}>
+                {new Date(effectiveRunDate(performedAt, Date.now())).toLocaleDateString(undefined, {
+                  day: 'numeric',
+                  month: 'short',
+                  year: 'numeric',
+                })}
+              </Text>
+              <Text style={styles.tagHint}>
+                {performedAt === null
+                  ? 'today'
+                  : isBackdated(performedAt, Date.now())
+                    ? 'backdated'
+                    : 'from clip'}
+              </Text>
+            </Pressable>
+
+            {/* WHY KEEP IS OFF, always, whatever the reason. Layer 3 refusing the
+                time is one case and it gets the Clear action, because that clip is
+                finished with. The others are recoverable and must not offer it. */}
+            {keepBlocked ? (
+              <View style={styles.refusalBox}>
+                <Text style={styles.refusalText}>{keepBlocked}</Text>
+                {refused ? (
+                  <Pressable style={styles.secondary} onPress={clearClip}>
+                    <Text style={styles.secondaryText}>Clear this clip</Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : null}
+
+            <Pressable
+              style={[styles.primary, (!timing || !!keepBlocked) && styles.disabled]}
+              onPress={() => void save()}
+              disabled={!timing || !!keepBlocked}
+            >
+              <Text style={styles.primaryText}>Keep</Text>
+            </Pressable>
+          </View>
 
           {/* The wheel. Mounted here with the other pickers so a date edit behaves
               like every other attribution change on this screen. */}
@@ -1364,7 +1372,7 @@ export default function VideoMarkScreen({
             }}
           />
 
-          <View style={styles.swapRow}>
+          <View style={[styles.swapRow, wide && styles.controlsInnerWide]}>
             <Pressable style={styles.tertiary} onPress={() => setRecordOpen(true)}>
               <Text style={styles.tertiaryText}>Record another rep</Text>
             </Pressable>
@@ -1389,7 +1397,7 @@ export default function VideoMarkScreen({
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0e1116', paddingTop: 52 },
+  root: { flex: 1, backgroundColor: '#0e1116' },
   // flex: 1 so the video takes every point the controls do not. Marking a crossing
   // is a judgement about where a foot is relative to a cone; a fixed-height box
   // above scrollable content made that the smallest thing on screen.
@@ -1429,6 +1437,8 @@ const styles = StyleSheet.create({
   // Capped so a long clip's controls never grow into the preview; scrolls instead.
   controls: { maxHeight: 310, flexGrow: 0 },
   controlsBody: { padding: 10, paddingBottom: 28, gap: 10 },
+  controlsInner: { gap: 10 },
+  controlsInnerWide: { width: '100%', maxWidth: 720, alignSelf: 'center' },
   strip: {
     height: STRIP_H,
     flexDirection: 'row',

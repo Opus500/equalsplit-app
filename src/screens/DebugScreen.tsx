@@ -20,6 +20,7 @@ import {
   DESTRUCTIVE_EDGE,
   INTERACTIVE,
 } from '../theme';
+import { topPad, useLayout } from '../layout';
 
 type LogLine = { id: string; text: string; kind: 'evt' | 'status' };
 let logSeq = 0;
@@ -84,9 +85,10 @@ export default function DebugScreen({ onBack }: { onBack?: () => void }) {
   const finishSeen = counts.FINISH ?? 0;
   const gateRuns = gate.gateStatus?.runCount ?? 0;
   const dropWarn = gateRuns > finishSeen;
+  const { insets } = useLayout();
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: topPad(insets) }]}>
       {onBack ? (
         <Pressable onPress={onBack} hitSlop={10} style={styles.backRow}>
           <Text style={styles.backText}>‹  Settings</Text>
@@ -298,7 +300,7 @@ const styles = StyleSheet.create({
   diagLine: { color: '#94a3b8', fontSize: 12, marginTop: 4, fontVariant: ['tabular-nums'] },
   diagAlert: { color: CAUTION, fontWeight: '800' },
   diagHint: { color: CAUTION, fontSize: 11, marginTop: 6, lineHeight: 15 },
-  container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
   backRow: { paddingBottom: 6 },
   backText: { color: INTERACTIVE, fontSize: 15, fontWeight: '700' },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },

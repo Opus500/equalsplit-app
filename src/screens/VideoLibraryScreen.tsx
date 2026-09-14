@@ -49,6 +49,7 @@ import {
 } from '../video/clips';
 import { formatVideoSeconds, VIDEO_MODE } from '../video/timing';
 import { effectiveRunDate } from '../runs/rundate';
+import { topPad, useLayout } from '../layout';
 import {
   CAUTION,
   DESTRUCTIVE,
@@ -66,6 +67,10 @@ export default function VideoLibraryScreen() {
   const [total, setTotal] = useState(0);
   const [working, setWorking] = useState<string | null>(null);
   const [playing, setPlaying] = useState<Entry | null>(null);
+  const { insets, wide, width } = useLayout();
+  // Two columns on an iPad, three on a 13-inch one. A stack of full-width cards
+  // at 1000pt is a phone list stretched.
+  const columns = !wide ? 1 : width >= 1000 ? 3 : 2;
 
   /** Runs whose clip is gone. Not an error — deleting a video keeps the run, and
    *  saying so stops it reading as data loss. */
@@ -179,7 +184,7 @@ export default function VideoLibraryScreen() {
       // footage but no measurement. An orphan is neither and is pure waste.
       const kind = !e.run ? 'orphan' : e.run.mode === VIDEO_MODE ? 'timed' : 'attached';
       return (
-        <View key={e.clip.id} style={styles.card}>
+        <View key={e.clip.id} style={[styles.card, columns > 1 && { flexBasis: `${100 / columns - 1.5}%` }]}>
           <View style={styles.cardHead}>
             <View style={styles.cardText}>
               <Text style={styles.cardTitle} numberOfLines={1}>
@@ -229,11 +234,11 @@ export default function VideoLibraryScreen() {
         </View>
       );
     });
-  }, [entries, working, confirmDelete, exportToRoll, share]);
+  }, [entries, working, confirmDelete, exportToRoll, share, columns]);
 
   return (
     <View style={styles.root}>
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: topPad(insets) }]}>
         <Text style={styles.title}>Videos</Text>
         {/* The total is the point of the screen, so it sits in the header rather
             than being something to add up from the rows. */}
@@ -245,7 +250,7 @@ export default function VideoLibraryScreen() {
       {working ? <ActivityIndicator color="#93c5fd" style={styles.spinner} /> : null}
 
       <ScrollView contentContainerStyle={styles.body}>
-        {body}
+        <View style={[styles.cards, columns > 1 && styles.cardsGrid]}>{body}</View>
         {orphanRuns > 0 ? (
           <Text style={styles.footnote}>
             {orphanRuns} run{orphanRuns === 1 ? '' : 's'} refer{orphanRuns === 1 ? 's' : ''} to a
@@ -288,7 +293,6 @@ const dateOf = (ms: number) =>
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0e1116' },
   header: {
-    paddingTop: 56,
     paddingHorizontal: 16,
     paddingBottom: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
@@ -298,6 +302,8 @@ const styles = StyleSheet.create({
   total: { color: '#94a3b8', fontSize: 13, marginTop: 2 },
   spinner: { marginTop: 10 },
   body: { padding: 12, gap: 10, paddingBottom: 40 },
+  cards: { gap: 10 },
+  cardsGrid: { flexDirection: 'row', flexWrap: 'wrap' },
   muted: { color: '#64748b', textAlign: 'center', marginTop: 32 },
   emptyCard: { backgroundColor: '#161b22', borderRadius: 12, padding: 18, gap: 6 },
   emptyTitle: { color: '#e2e8f0', fontSize: 16, fontWeight: '700' },

@@ -67,6 +67,7 @@ import {
   type SeriesPoint,
 } from '../roster/progression';
 import { ProgressionChart } from './ProgressionChart';
+import { topPad, useLayout } from '../layout';
 import {
   ACHIEVEMENT,
   DESTRUCTIVE,
@@ -91,6 +92,7 @@ export function AthleteDetailModal({
    *  second, so a modal opened from this one must be nested, not a sibling. */
   children?: React.ReactNode;
 }) {
+  const { wide, insets } = useLayout();
   const [rows, setRows] = useState<AthleteRunRow[] | null>(null);
   // Lifted out of the chart so the run list below can drive the highlight and the
   // two can never disagree about which run is selected. Keyed on the run id, not
@@ -539,9 +541,26 @@ export function AthleteDetailModal({
   );
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
+    // FULL SCREEN ON AN IPAD. A page sheet there is UIKit's centred card with the
+    // parent dimmed behind it, so the roster — and its orange unassigned badge —
+    // showed through around every edge. A master-detail pane is the right iPad
+    // shape and is deferred to 1.1: it needs this component's nested sheets
+    // re-homed, which is the wrong risk to take the week of submission. Full
+    // screen is one word and the edge is gone.
+    //
+    // Both styles are opaque presentations, so VideoPlayerModal (a page sheet) still
+    // presents from inside either; see the nested-sheet sweep in verify-reachable.
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={onClose}
+      presentationStyle={wide ? 'fullScreen' : 'pageSheet'}
+    >
       <View style={styles.container}>
-        <View style={styles.header}>
+        {/* A page sheet is presented below the status bar and its 18pt is right.
+            Full screen starts at the top edge, so the header has to clear the
+            clock itself — the name overlapped it at first. */}
+        <View style={[styles.header, wide && { paddingTop: topPad(insets) }]}>
           <View style={styles.headerText}>
             <Text style={styles.name} numberOfLines={1}>
               {athlete?.display_name ?? ''}
@@ -742,6 +761,19 @@ function ChartPager({
   const [pageW, setPageW] = useState(0);
   const [page, setPage] = useState(0);
   const ref = useRef<ScrollView>(null);
+  /**
+   * RE-SYNC ON A WIDTH CHANGE. Rotating an iPad re-measures pageW, but the
+   * ScrollView keeps its old contentOffset — a multiple of the OLD width — so the
+   * pager lands between pages and stays there until touched. The page in state
+   * is still right; only the offset is stale, so it is put back without
+   * animation. A ref for the page, not a dependency: goTo already scrolls on a
+   * page change, and this must not fire a second, un-animated jump after it.
+   */
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  useEffect(() => {
+    if (pageW > 0) ref.current?.scrollTo({ x: pageRef.current * pageW, animated: false });
+  }, [pageW]);
 
   // Pages = one per series, plus ONE appended for runs with no drill.
   //
@@ -870,7 +902,7 @@ function ChartPager({
             ))}
             {hasUnlabeled ? (
               <View key="__unlabeled" style={{ width: pageW }}>
-                <UnlabeledCard count={unlabeled.length} />
+                <UnlabeledCard count={unlabeled.length} matchChart={series.length > 0} />
               </View>
             ) : null}
           </ScrollView>
@@ -924,9 +956,20 @@ function ChartPager({
  * "N more runs and a trend appears" here would be a promise that can never be
  * kept.
  */
-function UnlabeledCard({ count }: { count: number }) {
+function UnlabeledCard({
+  count,
+  matchChart,
+}: {
+  count: number;
+  /** True when chart pages sit beside this one in the pager, so it should be
+   *  about their height and not change size as the pager swipes past it. With
+   *  no chart to match — an athlete whose every run is unlabelled — the padded
+   *  box was a third of the screen holding two lines, so it is as tall as its
+   *  text. */
+  matchChart: boolean;
+}) {
   return (
-    <View style={styles.unlabeledCard}>
+    <View style={[styles.unlabeledCard, matchChart && styles.unlabeledMatch]}>
       <Text style={styles.unlabeledTitle}>No drill</Text>
       {/* The fact, not the argument for it. The reasoning above is the developer's
           and stays in the comment; on screen it read as the app defending itself. */}
@@ -1314,11 +1357,10 @@ const styles = StyleSheet.create({
     gap: 8,
     borderWidth: 1,
     borderColor: '#243042',
-    // Roughly a chart's height, so this page is not a different size from its
-    // neighbours as the pager swipes past it.
-    minHeight: 232,
-    justifyContent: 'center',
   },
+  // Roughly a chart's height, so this page is not a different size from its
+  // neighbours as the pager swipes past it. Only when there are neighbours.
+  unlabeledMatch: { minHeight: 232, justifyContent: 'center' },
   unlabeledTitle: { color: '#e2e8f0', fontSize: 16, fontWeight: '800' },
   unlabeledBody: { color: '#94a3b8', fontSize: 13, lineHeight: 19 },
   unlabeledHint: { color: INTERACTIVE, fontSize: 12, fontWeight: '600' },
