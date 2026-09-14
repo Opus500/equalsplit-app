@@ -67,6 +67,7 @@ import {
   type SeriesPoint,
 } from '../roster/progression';
 import { ProgressionChart } from './ProgressionChart';
+import { useLayout } from '../layout';
 import {
   ACHIEVEMENT,
   DESTRUCTIVE,
@@ -91,6 +92,7 @@ export function AthleteDetailModal({
    *  second, so a modal opened from this one must be nested, not a sibling. */
   children?: React.ReactNode;
 }) {
+  const { wide } = useLayout();
   const [rows, setRows] = useState<AthleteRunRow[] | null>(null);
   // Lifted out of the chart so the run list below can drive the highlight and the
   // two can never disagree about which run is selected. Keyed on the run id, not
@@ -539,7 +541,21 @@ export function AthleteDetailModal({
   );
 
   return (
-    <Modal visible={visible} animationType="slide" onRequestClose={onClose} presentationStyle="pageSheet">
+    // FULL SCREEN ON AN IPAD. A page sheet there is UIKit's centred card with the
+    // parent dimmed behind it, so the roster — and its orange unassigned badge —
+    // showed through around every edge. A master-detail pane is the right iPad
+    // shape and is deferred to 1.1: it needs this component's nested sheets
+    // re-homed, which is the wrong risk to take the week of submission. Full
+    // screen is one word and the edge is gone.
+    //
+    // Both styles are opaque presentations, so VideoPlayerModal (a page sheet) still
+    // presents from inside either; see the nested-sheet sweep in verify-reachable.
+    <Modal
+      visible={visible}
+      animationType="slide"
+      onRequestClose={onClose}
+      presentationStyle={wide ? 'fullScreen' : 'pageSheet'}
+    >
       <View style={styles.container}>
         <View style={styles.header}>
           <View style={styles.headerText}>
@@ -742,6 +758,19 @@ function ChartPager({
   const [pageW, setPageW] = useState(0);
   const [page, setPage] = useState(0);
   const ref = useRef<ScrollView>(null);
+  /**
+   * RE-SYNC ON A WIDTH CHANGE. Rotating an iPad re-measures pageW, but the
+   * ScrollView keeps its old contentOffset — a multiple of the OLD width — so the
+   * pager lands between pages and stays there until touched. The page in state
+   * is still right; only the offset is stale, so it is put back without
+   * animation. A ref for the page, not a dependency: goTo already scrolls on a
+   * page change, and this must not fire a second, un-animated jump after it.
+   */
+  const pageRef = useRef(page);
+  pageRef.current = page;
+  useEffect(() => {
+    if (pageW > 0) ref.current?.scrollTo({ x: pageRef.current * pageW, animated: false });
+  }, [pageW]);
 
   // Pages = one per series, plus ONE appended for runs with no drill.
   //
