@@ -200,7 +200,7 @@ console.log('\n2. EVERY WAY IN IS WHERE A COACH WOULD LOOK');
     {
       what: 'the Video tab itself',
       file: '../App.tsx',
-      where: ['<View style={styles.tabBar}>', '</View>'],
+      where: ['<View style={[styles.tabBar, { paddingBottom: tabBarBottomPad(insets) }]}>', '</View>'],
       control: /onPress=\{\(\) => setTab\('video'\)\}/,
       label: /label="Video"/,
     },
@@ -224,14 +224,14 @@ console.log('\n2. EVERY WAY IN IS WHERE A COACH WOULD LOOK');
     {
       what: 'Record another rep, with a clip loaded',
       file: 'screens/VideoMarkScreen.tsx',
-      where: ['<View style={styles.swapRow}>', '</View>'],
+      where: ['<View style={[styles.swapRow, wide && styles.controlsInnerWide]}>', '</View>'],
       control: /onPress=\{\(\) => setRecordOpen\(true\)\}/,
       label: /Record another rep/,
     },
     {
       what: 'Import a different clip, with a clip loaded',
       file: 'screens/VideoMarkScreen.tsx',
-      where: ['<View style={styles.swapRow}>', '</View>'],
+      where: ['<View style={[styles.swapRow, wide && styles.controlsInnerWide]}>', '</View>'],
       control: /onPress=\{pick\}/,
       label: /Import a different clip/,
     },
@@ -485,10 +485,15 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     for (const abs of walk(SRC)) {
       if (!/\.tsx$/.test(abs)) continue;
       const src = code(abs);
-      if (!/presentationStyle="pageSheet"/.test(src)) continue;
+      // A literal, or an expression that chooses between opaque styles by width —
+      // AthleteDetail is full screen on an iPad and a page sheet on a phone. Both
+      // stack; the thing that does not is a transparent overlay.
+      if (!/presentationStyle=(?:"pageSheet"|\{[^}]*'pageSheet'[^}]*\})/.test(src)) continue;
       for (const m of src.matchAll(/export function (\w+)/g)) presentsPageSheet.add(m[1]);
     }
     truthy('the page-sheet exemption found something to exempt', presentsPageSheet.size > 0);
+    truthy('and still covers the athlete page now that its style is chosen by width',
+      presentsPageSheet.has('AthleteDetailModal'));
 
     // WHO OWNS A SHEET, read from the files rather than guessed from the NAME. The
     // first version matched tags ending in "Modal", so RenameDrillPrompt — a sheet
@@ -773,6 +778,78 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
       /Runs without a drill are not\s+charted\./.test(detail));
     check('without arguing the point', /share nothing but the missing label/.test(detail), false);
   }
+}
+
+console.log('\n6. THE SCREEN FITS THE DEVICE IT IS ON');
+{
+  // Every screen was laid out for one shape — a Dynamic Island phone, upright —
+  // with its insets written down as numbers. On a 13-inch iPad that opened each
+  // screen with a 32pt dead band and stretched phone-proportioned content across
+  // 1032pt. The insets are measured now and the wide layouts key off width, and
+  // this pins both so the numbers cannot creep back.
+  const layout = code(join(SRC, 'layout.ts'));
+  truthy('wide is decided by width, not by device',
+    /wide: width >= WIDE_MIN_WIDTH/.test(layout) && !/isPad|Platform/.test(layout));
+  const threshold = Number((layout.match(/WIDE_MIN_WIDTH = (\d+)/) || [])[1]);
+  truthy('and the threshold clears every phone upright (430) but not the iPad mini (744)',
+    threshold > 430 && threshold <= 744);
+  truthy('the tab bar keeps its phone padding and drops the dead space elsewhere',
+    /Math\.min\(insets\.bottom, 24\)/.test(layout));
+
+  // NO INSET IS A NUMBER ANY MORE.
+  const screens = [
+    'screens/TimerScreen.tsx', 'screens/TimerV2Screen.tsx', 'screens/DrillsScreen.tsx',
+    'screens/DrillsTab.tsx', 'screens/RepeatsScreen.tsx', 'screens/RosterScreen.tsx',
+    'screens/HistoryScreen.tsx', 'screens/SettingsScreen.tsx', 'screens/DebugScreen.tsx',
+    'screens/VideoMarkScreen.tsx', 'screens/VideoLibraryScreen.tsx',
+  ];
+  for (const f of screens) {
+    const src = code(join(SRC, f));
+    check(`${f} has no hard-coded status-bar padding`, /paddingTop: 5[0-9]/.test(src), false);
+    truthy(`${f} reads the inset instead`, /topPad\(insets/.test(src));
+  }
+  const app = code(join(ROOT, 'App.tsx'));
+  truthy('the insets are provided at the root, with the metrics native measured first',
+    /<SafeAreaProvider initialMetrics=\{initialWindowMetrics\}>/.test(app));
+  truthy('and the tab bar reads its bottom inset', /paddingBottom: tabBarBottomPad\(insets\)/.test(app));
+  check('rather than assuming a home indicator', /paddingBottom: 24,/.test(app), false);
+
+  // THE READOUT SCALES; THE CONTROLS ARE CAPPED. A 76pt number in a 1032pt space
+  // with a 1000pt Arm button under it is the phone layout stretched.
+  const timer = code(join(SRC, 'screens', 'TimerScreen.tsx'));
+  truthy('the Timer caps its column on wide screens', /wide && styles\.containerWide/.test(timer));
+  truthy('and grows the readout', /timerWide: \{ fontSize: 1[0-9][0-9] \}/.test(timer));
+  truthy('the Modes tab caps its column', /wide && styles\.rootWide/.test(code(join(SRC, 'screens', 'DrillsTab.tsx'))));
+  const drills = code(join(SRC, 'screens', 'DrillsScreen.tsx'));
+  truthy('the drill stage takes the leftover height on wide screens', /wide && styles\.stageFill/.test(drills));
+  truthy('through flexGrow on the scroll content, so it still scrolls', /contentFill: \{ flexGrow: 1 \}/.test(drills));
+  truthy('and keeps its floor, because flex: 1 alone collapses (see 9428397)',
+    /stage: \{[^}]*minHeight: 260/.test(drills));
+  truthy('and grows the readout', /timerWide: \{ fontSize: 1[0-9][0-9] \}/.test(drills));
+  truthy('Settings is a centred column on wide screens',
+    /wide && styles\.bodyWide/.test(code(join(SRC, 'screens', 'SettingsScreen.tsx'))));
+  const mark = code(join(SRC, 'screens', 'VideoMarkScreen.tsx'));
+  truthy('the marking controls are capped below the strip', /wide && styles\.controlsInnerWide/.test(mark));
+  check('but the strip itself is not — width is scrub precision',
+    /styles\.strip,[^\]]*Wide/.test(mark), false);
+  truthy('the video library wraps into columns on wide screens',
+    /columns > 1 && styles\.cardsGrid/.test(code(join(SRC, 'screens', 'VideoLibraryScreen.tsx'))));
+
+  // THE ATHLETE PAGE FILLS AN IPAD. A page sheet there is a centred card with the
+  // roster showing through around it. Master-detail is 1.1.
+  const detail = code(join(SRC, 'components', 'AthleteDetail.tsx'));
+  truthy('the athlete page is full screen on wide screens and a page sheet on a phone',
+    /presentationStyle=\{wide \? 'fullScreen' : 'pageSheet'\}/.test(detail));
+  // AND ITS PAGER SURVIVES A ROTATION. pageW re-measures; the offset did not.
+  truthy('the chart pager puts its offset back when its width changes',
+    /useEffect\(\(\) => \{\s*if \(pageW > 0\) ref\.current\?\.scrollTo\(\{ x: pageRef\.current \* pageW, animated: false \}\);\s*\}, \[pageW\]\);/.test(detail));
+
+  // THE ORPHAN COUNT IS A BADGE, NOT A SENTENCE. The words live on as the button's
+  // accessibility label, which is what the earlier "says in words" guard now reads.
+  const roster = code(join(SRC, 'screens', 'RosterScreen.tsx'));
+  check('the roster no longer prints an orphan sentence', /styles\.orphanNote/.test(roster), false);
+  truthy('the History button carries the count for a screen reader',
+    /accessibilityLabel=\{\s*orphans > 0\s*\?/.test(roster));
 }
 
 console.log('\n=============================');
