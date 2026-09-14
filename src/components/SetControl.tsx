@@ -46,10 +46,17 @@ export function SetControl({
   showSet = true,
   detail,
 }: {
-  /** false on the v1 timer: it predates sets and has no set to show or choose. */
+  /** False hides the badge and the picker. Nothing passes it any more: the set is
+   *  a fact about the hardware, read from the gate's heartbeat by V2Provider
+   *  whichever engine is timing, so the original Timer can choose a set like every
+   *  other screen. It was false there on the grounds that v1 "had no concept of
+   *  sets" — true of the engine, not of the gates. Kept for a caller that has a
+   *  reason. */
   showSet?: boolean;
-  /** extra text beside the status, for v1's gate state / run count / finish-link
-   *  warning, which its ConnChip carried and the other two did not. */
+  /** A second line under the status row — the gate's state, run count and
+   *  finish-link warning, which only the original Timer shows. Its own line, not
+   *  inline: with the set badge and picker on the row there is no room beside
+   *  the status on a phone, and it truncated. */
   detail?: string | null;
 } = {}) {
   const gate = useGate();
@@ -90,65 +97,71 @@ export function SetControl({
   );
 
   return (
-    <View style={styles.wrap}>
-      {showSet ? (
-        connected && currentSet ? (
-          <View style={[styles.badge, { backgroundColor: setColor(currentSet) }]}>
-            <Text style={styles.badgeText}>SET {currentSet}</Text>
-          </View>
+    <View>
+      <View style={styles.wrap}>
+        {showSet ? (
+          connected && currentSet ? (
+            <View style={[styles.badge, { backgroundColor: setColor(currentSet) }]}>
+              <Text style={styles.badgeText}>SET {currentSet}</Text>
+            </View>
+          ) : (
+            // A REAL STATE, not a shrug. This read `set ?` when connected — lowercase,
+            // terse, and indistinguishable from something being broken. Connected with
+            // no set means the gate did not put a set byte in its advertisement, which
+            // is a fact about that gate and not an error: Choose set still works, and
+            // the picker lists it under "set unknown".
+            <View style={[styles.badge, styles.badgeMuted]}>
+              <Text style={styles.badgeMutedText}>{connected ? 'SET UNKNOWN' : 'NO GATE'}</Text>
+            </View>
+          )
+        ) : null}
+
+        <View
+          style={[
+            styles.statusDot,
+            s === 'connected' ? styles.dotOn : busy ? styles.dotBusy : styles.dotOff,
+          ]}
+        />
+        <Text style={styles.status} numberOfLines={1}>
+          {statusLabel}
+        </Text>
+
+        <View style={styles.spacer} />
+
+        {showSet ? (
+          <Pressable onPress={() => setOpen(true)} style={styles.tapTarget}>
+            <Text style={styles.link}>Choose set</Text>
+          </Pressable>
+        ) : null}
+
+        {/* quickConnect, not connectTo: this is the one-tap "bring the last gate
+            back" path a coach reaches for when a gate drops mid-practice, and it
+            has no equivalent in the set picker (which always scans and asks). */}
+        {showDisconnect ? (
+          <Pressable onPress={gate.disconnect} style={styles.tapTarget}>
+            <Text style={styles.action}>{s === 'reconnecting' ? 'Cancel' : 'Disconnect'}</Text>
+          </Pressable>
         ) : (
-          // A REAL STATE, not a shrug. This read `set ?` when connected — lowercase,
-          // terse, and indistinguishable from something being broken. Connected with
-          // no set means the gate did not put a set byte in its advertisement, which
-          // is a fact about that gate and not an error: Choose set still works, and
-          // the picker lists it under "set unknown".
-          <View style={[styles.badge, styles.badgeMuted]}>
-            <Text style={styles.badgeMutedText}>{connected ? 'SET UNKNOWN' : 'NO GATE'}</Text>
-          </View>
-        )
+          <Pressable
+            onPress={gate.quickConnect}
+            disabled={busy || !gate.adapterOn}
+            style={styles.tapTarget}
+          >
+            <Text style={[styles.action, (busy || !gate.adapterOn) && styles.dimText]}>Connect</Text>
+          </Pressable>
+        )}
+        <SetPickerModal
+          visible={open}
+          currentSet={currentSet}
+          onClose={() => setOpen(false)}
+          onPick={onPick}
+        />
+      </View>
+      {detail ? (
+        <Text style={styles.detailLine} numberOfLines={1}>
+          {detail}
+        </Text>
       ) : null}
-
-      <View
-        style={[
-          styles.statusDot,
-          s === 'connected' ? styles.dotOn : busy ? styles.dotBusy : styles.dotOff,
-        ]}
-      />
-      <Text style={styles.status} numberOfLines={1}>
-        {statusLabel}
-        {detail ? <Text style={styles.detail}>{detail}</Text> : null}
-      </Text>
-
-      <View style={styles.spacer} />
-
-      {showSet ? (
-        <Pressable onPress={() => setOpen(true)} style={styles.tapTarget}>
-          <Text style={styles.link}>Choose set</Text>
-        </Pressable>
-      ) : null}
-
-      {/* quickConnect, not connectTo: this is the one-tap "bring the last gate
-          back" path a coach reaches for when a gate drops mid-practice, and it
-          has no equivalent in the set picker (which always scans and asks). */}
-      {showDisconnect ? (
-        <Pressable onPress={gate.disconnect} style={styles.tapTarget}>
-          <Text style={styles.action}>{s === 'reconnecting' ? 'Cancel' : 'Disconnect'}</Text>
-        </Pressable>
-      ) : (
-        <Pressable
-          onPress={gate.quickConnect}
-          disabled={busy || !gate.adapterOn}
-          style={styles.tapTarget}
-        >
-          <Text style={[styles.action, (busy || !gate.adapterOn) && styles.dimText]}>Connect</Text>
-        </Pressable>
-      )}
-      <SetPickerModal
-        visible={open}
-        currentSet={currentSet}
-        onClose={() => setOpen(false)}
-        onPick={onPick}
-      />
     </View>
   );
 }
@@ -326,7 +339,7 @@ const styles = StyleSheet.create({
   dotBusy: { backgroundColor: LIVE_BUSY },
   dotOff: { backgroundColor: '#64748b' },
   status: { color: '#94a3b8', fontSize: 12, flexShrink: 1 },
-  detail: { color: '#64748b', fontSize: 11 },
+  detailLine: { color: '#64748b', fontSize: 11, marginTop: -4, paddingBottom: 2 },
   spacer: { flex: 1 },
   // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   // A BOX RATHER THAN SLOP, for the same reason as History's corner exits: this row

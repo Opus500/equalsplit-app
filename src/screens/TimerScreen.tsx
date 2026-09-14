@@ -643,18 +643,22 @@ export default function TimerScreen() {
   // three parts and the modals.
   const strips = (
     <>
-      {/* Was a local ConnChip. showSet=false: v1 predates sets and has none to
-          choose. `detail` carries the gate state / run count / finish-link
-          warning that only THIS copy showed — the other two never had it. */}
-      {/* THE STATE IN THE COACH'S WORDS. This printed STATE_NAME — M1_ARMED,
+      {/* THE SAME HEADER AS EVERY OTHER TIMING SCREEN, set badge and picker
+          included. This passed showSet={false} on the grounds that v1 predates
+          sets — true of the engine, not of the gates, whose set is read from the
+          heartbeat whichever engine is timing. So a coach with two sets could
+          switch from Modes and not from here. `detail` is still this screen's
+          alone: the gate state, run count and finish-link warning, on its own
+          line under the row.
+
+          THE STATE IN THE COACH'S WORDS. This printed STATE_NAME — M1_ARMED,
           M2_TO_GATE2 — which is the protocol's vocabulary, in the status line of
           the first screen anyone opens. Dev mode keeps the raw name, because it is
           the one Diagnostics and the firmware log speak. */}
       <SetControl
-        showSet={false}
         detail={
           status === 'connected' && gateStatus
-            ? ` · ${
+            ? `${
                 devMode ? STATE_NAME[gateStatus.state] ?? '' : gateStateLabel(gateStatus.state)
               } · ${gateStatus.runCount} run${gateStatus.runCount === 1 ? '' : 's'}${
                 gateStatus.finishLinkOk ? '' : ' · finish gate ⚠'
