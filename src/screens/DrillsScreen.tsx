@@ -33,6 +33,7 @@ import { useRoster } from '../roster/RosterProvider';
 import { useSettings } from '../settings/SettingsProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
 import { runShareLine, shareText } from '../share';
+import { topPad, useLayout } from '../layout';
 import {
   DESTRUCTIVE_EDGE,
   INK,
@@ -88,6 +89,7 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
    *  Timer's saveError. */
   const [note, setNote] = useState<string | null>(null);
   const { devMode } = useSettings();
+  const { insets, wide } = useLayout();
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
 
   // Attribution comes from the roster queue; ref so the save effect reads
@@ -233,9 +235,17 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
   const bounds = LOCKOUT_BOUNDS[base.key];
 
   return (
+    // WIDE: the content grows to the screen and the stage takes what is left, so
+    // the readout centres in the space below the controls instead of the screen
+    // ending at the Arm button with half an iPad empty under it. flexGrow, not
+    // flex, on a ScrollView's content: it still scrolls when the content is taller.
     <ScrollView
       style={styles.container}
-      contentContainerStyle={[styles.content, selectedKey != null && styles.contentEmbedded]}
+      contentContainerStyle={[
+        styles.content,
+        selectedKey != null ? styles.contentEmbedded : { paddingTop: topPad(insets) },
+        wide && styles.contentFill,
+      ]}
       keyboardShouldPersistTaps="handled"
     >
       {/* Hosted: the SetControl is PINNED by DrillsTab above the scroll, and
@@ -297,10 +307,10 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
         </View>
       </View>
 
-      <View style={styles.stage}>
-        <Text style={styles.phase}>{phaseLine(v2.drillState)}</Text>
-        <Text style={[styles.timer, result ? styles.timerDone : null]}>{big}</Text>
-        <Text style={styles.unit}>seconds</Text>
+      <View style={[styles.stage, wide && styles.stageFill]}>
+        <Text style={[styles.phase, wide && styles.phaseWide]}>{phaseLine(v2.drillState)}</Text>
+        <Text style={[styles.timer, wide && styles.timerWide, result ? styles.timerDone : null]}>{big}</Text>
+        <Text style={[styles.unit, wide && styles.unitWide]}>seconds</Text>
         {running ? <Text style={styles.progress}>{progressLine(base, v2.drillProgress)}</Text> : null}
         {result && finishedTags ? (
           <Text style={styles.resultTags}>{formatTags(finishedTags.name, finishedTags.drill)}</Text>
@@ -317,7 +327,9 @@ export default function DrillsScreen({ selectedKey, header }: { selectedKey?: st
           </Pressable>
         ) : null}
 
-        <Text style={styles.hint}>{hintFor(connected, v2.phase, v2.drillState, !!result, base)}</Text>
+        <Text style={[styles.hint, wide && styles.hintWide]}>
+          {hintFor(connected, v2.phase, v2.drillState, !!result, base)}
+        </Text>
         {note ? <Text style={styles.note}>{note}</Text> : null}
         {/* "saved 1.234s ✓" was the visible confirmation once. The DiscardBar above
             now shows the saved rep by name, and the hint says Saved — so this is
@@ -489,9 +501,10 @@ function Btn({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116' },
-  content: { paddingTop: 56, paddingHorizontal: 16, paddingBottom: 24 },
+  content: { paddingHorizontal: 16, paddingBottom: 24 },
   /** Hosted under DrillsTab's header, which already clears the status bar. */
   contentEmbedded: { paddingTop: 6 },
+  contentFill: { flexGrow: 1 },
   setRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 6 },
   sdot: { width: 8, height: 8, borderRadius: 4 },
@@ -552,10 +565,14 @@ const styles = StyleSheet.create({
   tagBarPlaceholder: { color: '#64748b', fontWeight: '400' },
   tagSet: { color: INTERACTIVE, fontSize: 13, fontWeight: '700' },
   stage: { alignItems: 'center', justifyContent: 'center', paddingVertical: 24, minHeight: 260 },
+  stageFill: { flex: 1 },
   phase: { color: INK, fontSize: 18, fontWeight: '700', marginBottom: 8, minHeight: 24, textAlign: 'center' },
+  phaseWide: { fontSize: 26, minHeight: 32 },
   timer: { color: '#fff', fontSize: 72, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  timerWide: { fontSize: 128 },
   timerDone: { color: INK },
   unit: { color: '#64748b', fontSize: 14, marginTop: -6 },
+  unitWide: { fontSize: 18, marginTop: -4 },
   progress: { color: INTERACTIVE_SOFT, fontSize: 16, fontWeight: '700', marginTop: 10, fontVariant: ['tabular-nums'] },
   resultTags: { color: '#94a3b8', fontSize: 15, fontWeight: '600', marginTop: 8 },
   shareBtn: {
@@ -569,6 +586,7 @@ const styles = StyleSheet.create({
   },
   shareBtnText: { color: '#e2e8f0', fontSize: 14, fontWeight: '700' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 20, textAlign: 'center', paddingHorizontal: 8 },
+  hintWide: { fontSize: 16 },
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
   // Legible, like the Timer's saveError: a rep that was not written is the worst
   // thing this screen has to say.

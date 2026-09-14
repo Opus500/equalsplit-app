@@ -32,6 +32,7 @@ import { UpNextStrip } from '../components/UpNextStrip';
 import { DiscardBar } from '../components/DiscardBar';
 import { useRoster } from '../roster/RosterProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
+import { COLUMN_MAX_WIDTH, topPad, useLayout } from '../layout';
 import { runShareLine, shareText } from '../share';
 import {
   ACCURACY,
@@ -95,6 +96,7 @@ export default function TimerScreen() {
   const [liveSplit1Ms, setLiveSplit1Ms] = useState<number | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [gateState, setGateState] = useState<GateState | null>(null);
+  const { insets, wide } = useLayout();
   const [dbg, setDbg] = useState('');
   /**
    * A save that failed, in the coach's words. Shown to everyone, always.
@@ -632,7 +634,10 @@ export default function TimerScreen() {
   const finishedTagStr = finishedTags ? formatTags(finishedTags.name, finishedTags.drill) : '';
 
   return (
-    <View style={styles.container}>
+    // WIDE: a capped column with the readout scaled, not the phone layout
+    // stretched. The strips and buttons stop at COLUMN_MAX_WIDTH; the number,
+    // which is what a coach looks at from across a track, grows to fill the eye.
+    <View style={[styles.container, { paddingTop: topPad(insets) }, wide && styles.containerWide]}>
       {/* Was a local ConnChip. showSet=false: v1 predates sets and has none to
           choose. `detail` carries the gate state / run count / finish-link
           warning that only THIS copy showed — the other two never had it. */}
@@ -674,9 +679,11 @@ export default function TimerScreen() {
       </Pressable>
 
       <View style={styles.stage}>
-        {phaseLabel ? <Text style={styles.phase}>{phaseLabel}</Text> : null}
-        <Text style={[styles.timer, runState === 'finished' && styles.timerDone]}>{big}</Text>
-        <Text style={styles.unit}>seconds</Text>
+        {phaseLabel ? <Text style={[styles.phase, wide && styles.phaseWide]}>{phaseLabel}</Text> : null}
+        <Text style={[styles.timer, wide && styles.timerWide, runState === 'finished' && styles.timerDone]}>
+          {big}
+        </Text>
+        <Text style={[styles.unit, wide && styles.unitWide]}>seconds</Text>
         {runState === 'finished' && finishedTagStr ? (
           <Text style={styles.resultTags}>{finishedTagStr}</Text>
         ) : null}
@@ -742,7 +749,7 @@ export default function TimerScreen() {
           </Pressable>
         ) : null}
 
-        <Text style={styles.hint}>{hintFor(connected, gateState, runState)}</Text>
+        <Text style={[styles.hint, wide && styles.hintWide]}>{hintFor(connected, gateState, runState)}</Text>
         {saveError ? <Text style={styles.saveError}>{saveError}</Text> : null}
         {devMode && dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
       </View>
@@ -913,7 +920,8 @@ function Btn({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
+  containerWide: { width: '100%', maxWidth: COLUMN_MAX_WIDTH, alignSelf: 'center' },
   // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   tagBar: {
     minHeight: 48,
@@ -943,10 +951,13 @@ const styles = StyleSheet.create({
   shareBtnText: { color: '#e2e8f0', fontSize: 14, fontWeight: '700' },
   stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   phase: { color: INK, fontSize: 22, fontWeight: '700', marginBottom: 8 },
+  phaseWide: { fontSize: 30 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },
+  timerWide: { fontSize: 128 },
   timerDone: { color: INK },
   unit: { color: '#64748b', fontSize: 14, marginTop: -6 },
-  splits: { marginTop: 20, width: '70%' },
+  unitWide: { fontSize: 18, marginTop: -4 },
+  splits: { marginTop: 20, width: '70%', maxWidth: 440 },
   splitRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 4 },
   splitLabel: { color: '#94a3b8', fontSize: 15 },
   splitValCol: { alignItems: 'flex-end' },
@@ -959,6 +970,7 @@ const styles = StyleSheet.create({
   offsetNote: { color: '#64748b', fontSize: 11, marginTop: 6, textAlign: 'center' },
   earlyNote: { color: CAUTION, fontSize: 11, marginTop: 4, textAlign: 'center' },
   hint: { color: '#64748b', fontSize: 13, marginTop: 24, textAlign: 'center' },
+  hintWide: { fontSize: 16 },
   dbg: { color: '#475569', fontSize: 11, marginTop: 8, textAlign: 'center', fontVariant: ['tabular-nums'] },
   // Legible, not a diagnostic aside: a run that was not saved is the worst thing
   // this screen has to report, and it used to be grey 11pt among raw numbers.

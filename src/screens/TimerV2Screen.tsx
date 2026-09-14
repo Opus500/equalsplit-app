@@ -26,6 +26,7 @@ import {
   LIVE,
   LIVE_BUSY,
 } from '../theme';
+import { topPad, useLayout } from '../layout';
 
 const KEEP_AWAKE_TAG = 'equalsplit-run-v2';
 const nowMs = () =>
@@ -45,6 +46,7 @@ export default function TimerV2Screen() {
   const roster = useRoster();
   const [liveMs, setLiveMs] = useState(0);
   const [dbg, setDbg] = useState('');
+  const { insets } = useLayout();
   const [drill, setDrill] = useState<Drill | null>(null);
   const [tagOpen, setTagOpen] = useState(false);
   const [finishedTags, setFinishedTags] = useState<{ name: string; drill: string } | null>(null);
@@ -186,7 +188,7 @@ export default function TimerV2Screen() {
   const finishedTagStr = finishedTags ? formatTags(finishedTags.name, finishedTags.drill) : '';
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: topPad(insets) }]}>
       <View style={styles.setRow}>
         <SetControl />
       </View>
@@ -380,7 +382,7 @@ function Btn({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
   setRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4 },
   sessionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingBottom: 6 },
   sdot: { width: 8, height: 8, borderRadius: 4 },

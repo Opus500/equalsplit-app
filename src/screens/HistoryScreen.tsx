@@ -35,6 +35,7 @@ import {
 } from '../db/database';
 import { useSettings } from '../settings/SettingsProvider';
 import { formatTags, modeLabel } from '../runs/format';
+import { topPad, useLayout } from '../layout';
 import { REPEAT_MODE, parseRepSetJson, runStartSource } from '../ble/repeats';
 import { AthletePickerModal } from '../components/AthletePicker';
 import { DrillPickerModal } from '../components/DrillPicker';
@@ -98,6 +99,7 @@ export default function HistoryScreen({
   onBack?: () => void;
 }) {
   const { devMode } = useSettings();
+  const { insets } = useLayout();
   const [sessions, setSessions] = useState<SessionRow[]>([]);
   const [selected, setSelected] = useState<SessionRow | null>(null);
   const [runs, setRuns] = useState<RunRow[]>([]);
@@ -268,7 +270,7 @@ export default function HistoryScreen({
     const avgLabel = `Avg${avgDrill ? ` · ${avgDrill}` : ` · ${modeLabel([...modeSet][0])}`}`;
 
     return (
-      <View style={styles.container}>
+      <View style={[styles.container, { paddingTop: topPad(insets) }]}>
         <View style={styles.headerRow}>
           <Pressable onPress={() => setSelected(null)} style={styles.backBtn}>
             <Text style={styles.back}>‹</Text>
@@ -549,7 +551,7 @@ export default function HistoryScreen({
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: topPad(insets) }]}>
       <View style={styles.listHeader}>
         {onBack ? (
           <Pressable onPress={onBack} style={styles.backBtn}>
@@ -786,7 +788,7 @@ const styles = StyleSheet.create({
   },
   repIdx: { color: '#475569', fontSize: 11, fontWeight: '800', width: 16 },
   repTime: { color: '#cbd5e1', fontSize: 14, fontVariant: ['tabular-nums'] },
-  container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
   flex: { flex: 1 },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
   // A REAL BOX, not hitSlop. Slop cannot be seen, and half of it was off-screen:

@@ -50,6 +50,7 @@ import { getSetting, saveRun, setSetting, type Drill } from '../db/database';
 import { useRoster } from '../roster/RosterProvider';
 import { useSettings } from '../settings/SettingsProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
+import { topPad, useLayout } from '../layout';
 import {
   CAUTION,
   DESTRUCTIVE,
@@ -92,6 +93,7 @@ export default function RepeatsScreen({
    *  The raw trace is separate and dev-only, as on the Timer. */
   const [note, setNote] = useState<{ text: string; bad: boolean } | null>(null);
   const { devMode } = useSettings();
+  const { insets } = useLayout();
   const [saving, setSaving] = useState(false);
   const reviewedRef = useRef<RepSet | null>(null);
   const savedRepRef = useRef<unknown>(null);
@@ -263,7 +265,10 @@ export default function RepeatsScreen({
   return (
     <ScrollView
       style={styles.container}
-      contentContainerStyle={[styles.content, selectedKey != null && styles.contentEmbedded]}
+      contentContainerStyle={[
+        styles.content,
+        selectedKey != null ? styles.contentEmbedded : { paddingTop: topPad(insets) },
+      ]}
     >
       {selectedKey == null ? (
         <View style={styles.setRow}>
@@ -564,7 +569,7 @@ export default function RepeatsScreen({
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0e1116' },
-  content: { paddingTop: 56, paddingHorizontal: 16, paddingBottom: 40 },
+  content: { paddingHorizontal: 16, paddingBottom: 40 },
   contentEmbedded: { paddingTop: 6 },
   setRow: { marginBottom: 6 },
   pickRow: { flexDirection: 'row', gap: 8, marginTop: 10 },

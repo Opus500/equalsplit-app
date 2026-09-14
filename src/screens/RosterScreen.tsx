@@ -30,6 +30,7 @@ import { createAthlete, setAthleteArchived, updateAthlete, type Athlete } from '
 import { foldName } from '../db/migrations';
 import { disambiguate, runCountLabel } from '../roster/labels';
 import { useRoster } from '../roster/RosterProvider';
+import { topPad, useLayout } from '../layout';
 import {
   CAUTION,
   DESTRUCTIVE,
@@ -61,6 +62,7 @@ export default function RosterScreen({
   // The provider is the single source: the strip and pickers read the same list,
   // so an edit here can't leave them showing a stale roster.
   const roster = useRoster();
+  const { insets } = useLayout();
   const all = roster.athletes;
   const [archivedOpen, setArchivedOpen] = useState(false);
   // Tapping a row opens the DETAIL view (progress); editing is a button inside it.
@@ -175,7 +177,7 @@ export default function RosterScreen({
   );
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { paddingTop: topPad(insets) }]}>
       <View style={styles.titleRow}>
         <Text style={styles.title}>Roster</Text>
         <View style={styles.headerActions}>
@@ -553,7 +555,7 @@ const styles = StyleSheet.create({
   gearBtn: { paddingHorizontal: 2 },
   gearText: { color: '#94a3b8', fontSize: 20 },
   orphanNote: { color: CAUTION, fontSize: 13, lineHeight: 18, marginTop: 6 },
-  container: { flex: 1, backgroundColor: '#0e1116', paddingTop: 56, paddingHorizontal: 16 },
+  container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
   flex: { flex: 1 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
   summary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },

@@ -26,8 +26,10 @@ import {
   INTERACTIVE,
   INTERACTIVE_STRONG,
 } from '../theme';
+import { COLUMN_MAX_WIDTH, topPad, useLayout } from '../layout';
 
 export default function DrillsTab() {
+  const { insets, wide } = useLayout();
   const [key, setKey] = useState<string>(DRILL_CATALOG[0]!.key);
   const [picking, setPicking] = useState(false);
   const active = useMemo(() => entryFor(key) ?? DRILL_CATALOG[0]!, [key]);
@@ -55,8 +57,11 @@ export default function DrillsTab() {
   );
 
   return (
-    <View style={styles.root}>
-      <View style={styles.pinned}>
+    // WIDE: one capped column for the whole tab, so the pinned set control, the
+    // mode header and both hosted screens share the same edges. The readout
+    // scaling happens inside the screens, where the numbers are.
+    <View style={[styles.root, wide && styles.rootWide]}>
+      <View style={[styles.pinned, { paddingTop: topPad(insets, 2) }]}>
         <SetControl />
       </View>
 
@@ -116,8 +121,9 @@ export default function DrillsTab() {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#0e1116' },
+  rootWide: { width: '100%', maxWidth: COLUMN_MAX_WIDTH, alignSelf: 'center' },
   // Pinned: outside the scroll, so the set badge never leaves the screen.
-  pinned: { paddingTop: 52, paddingHorizontal: 16, paddingBottom: 2 },
+  pinned: { paddingHorizontal: 16, paddingBottom: 2 },
   // Rides the scrolling content, hence no top margin — the hosted screen's
   // contentEmbedded padding is the only gap above it.
   header: {

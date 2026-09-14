@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { initialWindowMetrics, SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { GateProvider } from './src/ble/GateProvider';
 import { V2Provider } from './src/ble/V2Provider';
@@ -21,6 +22,7 @@ import HistoryScreen from './src/screens/HistoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import DebugScreen from './src/screens/DebugScreen';
 import VideoTab from './src/screens/VideoTab';
+import { tabBarBottomPad, useLayout } from './src/layout';
 
 type Tab = 'timer' | 'drills' | 'roster' | 'video';
 
@@ -49,26 +51,32 @@ export default function App() {
   }, []);
 
   return (
-    <SettingsProvider>
-      <RosterProvider>
-        <GateProvider>
-          <V2Provider>
-            {/* Inside both BLE providers (it settles the discard window when the
-                gates drop) and inside RosterProvider (a discard puts the athlete
-                back up). */}
-            <PendingRunProvider>
-              <AppShell />
-            </PendingRunProvider>
-          </V2Provider>
-        </GateProvider>
-      </RosterProvider>
-    </SettingsProvider>
+    // OUTERMOST, with the metrics the native side measured before JS ran: without
+    // initialMetrics every screen renders its first frame at inset 0 and then
+    // jumps down when the provider measures.
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <SettingsProvider>
+        <RosterProvider>
+          <GateProvider>
+            <V2Provider>
+              {/* Inside both BLE providers (it settles the discard window when the
+                  gates drop) and inside RosterProvider (a discard puts the athlete
+                  back up). */}
+              <PendingRunProvider>
+                <AppShell />
+              </PendingRunProvider>
+            </V2Provider>
+          </GateProvider>
+        </RosterProvider>
+      </SettingsProvider>
+    </SafeAreaProvider>
   );
 }
 
 // Inside the providers so it can read devMode (gates the Debug tab). Default OFF.
 function AppShell() {
   const { devMode, useV2Engine } = useSettings();
+  const { insets } = useLayout();
   const [tab, setTab] = useState<Tab>('timer');
   const [overlay, setOverlay] = useState<Overlay>(null);
 
@@ -124,7 +132,7 @@ function AppShell() {
         )}
       </View>
 
-      <View style={styles.tabBar}>
+      <View style={[styles.tabBar, { paddingBottom: tabBarBottomPad(insets) }]}>
         <TabButton label="Timer" active={tab === 'timer'} onPress={() => setTab('timer')} />
         {/* MODES, not Drills. "Drill" already meant something else on the Timer — a
             LABEL you attach to an ordinary run, from a trimmed list that deliberately
@@ -204,7 +212,7 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: '#1f2733',
     backgroundColor: '#0b0e13',
-    paddingBottom: 24,
+    // paddingBottom is the safe-area inset, applied inline — see tabBarBottomPad.
     // THE BAR'S TOP PADDING MOVED INTO THE TAB. It was 8pt of dead space above a
     // 30pt target; as padding on the tab it is 8pt of target instead, so most of
     // the growth needed to reach a comfortable size costs no height at all.
