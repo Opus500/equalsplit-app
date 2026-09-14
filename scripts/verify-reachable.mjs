@@ -806,16 +806,24 @@ console.log('\n6. THE SCREEN FITS THE DEVICE IT IS ON');
   truthy('with a floor and a ceiling', /Math\.max\(96, Math\.min\(184,/.test(layout));
 
   // NO INSET IS A NUMBER ANY MORE.
+  // The two Timers read it through TimerFrame, which owns their arrangement.
   const screens = [
-    'screens/TimerScreen.tsx', 'screens/TimerV2Screen.tsx', 'screens/DrillsScreen.tsx',
+    'screens/DrillsScreen.tsx',
     'screens/DrillsTab.tsx', 'screens/RepeatsScreen.tsx', 'screens/RosterScreen.tsx',
     'screens/HistoryScreen.tsx', 'screens/SettingsScreen.tsx', 'screens/DebugScreen.tsx',
-    'screens/VideoMarkScreen.tsx', 'screens/VideoLibraryScreen.tsx',
+    'screens/VideoMarkScreen.tsx', 'screens/VideoLibraryScreen.tsx', 'components/TimerFrame.tsx',
   ];
   for (const f of screens) {
     const src = code(join(SRC, f));
     check(`${f} has no hard-coded status-bar padding`, /paddingTop: 5[0-9]/.test(src), false);
     truthy(`${f} reads the inset instead`, /topPad\(insets/.test(src));
+  }
+  for (const f of ['screens/TimerScreen.tsx', 'screens/TimerV2Screen.tsx']) {
+    const src = code(join(SRC, f));
+    check(`${f} has no hard-coded status-bar padding`, /paddingTop: 5[0-9]/.test(src), false);
+    truthy(`${f} is arranged by TimerFrame`, /<TimerFrame strips=\{strips\} stage=\{stage\} controls=\{controls\}>/.test(src));
+    check(`${f} keeps no container of its own`, /container: \{ flex: 1/.test(src), false);
+    truthy(`${f} fits its readout to the column`, /readoutSize\(mainColumnWidth\(layout\)\)/.test(src));
   }
   const app = code(join(ROOT, 'App.tsx'));
   truthy('the insets are provided at the root, with the metrics native measured first',
@@ -827,17 +835,25 @@ console.log('\n6. THE SCREEN FITS THE DEVICE IT IS ON');
   // column, and the full lineup takes what is left — under the number upright,
   // beside it in landscape. Centring a fixed-size number in the empty height was
   // the first attempt, and it read as exactly what it was.
-  const timer = code(join(SRC, 'screens', 'TimerScreen.tsx'));
-  truthy('the Timer caps its column upright', /wide && !landscape && styles\.containerWide/.test(timer));
-  truthy('and uses the wider cap in landscape', /wide && landscape && styles\.containerLand/.test(timer));
-  truthy('its readout is fitted to the column', /readoutSize\(mainColumnWidth\(layout\)\)/.test(timer));
-  check('rather than set to a number', /timerWide: \{ fontSize/.test(timer), false);
-  truthy('the lineup fills the height under the readout upright',
-    /\{wide && !landscape \? <LineupList style=\{styles\.lineupBelow\} \/> : null\}/.test(timer));
-  truthy('and the column beside it in landscape',
-    /\{wide && landscape \? <LineupList style=\{styles\.sideCol\} \/> : null\}/.test(timer));
-  truthy('with the stage no taller than its number when the lineup is below it',
-    /stageNatural: \{ flex: 0/.test(timer));
+  // ONE FRAME FOR BOTH TIMERS. The experimental one had been given the inset and
+  // nothing else, and on a Simulator with the engine toggle on it was the Timer
+  // being looked at: "the lineup that fixed Modes isn't on Timer".
+  const frame = code(join(SRC, 'components', 'TimerFrame.tsx'));
+  truthy('the frame caps its column upright', /styles\.containerWide\]/.test(frame));
+  truthy('and uses the wider cap in landscape', /styles\.containerLand\]/.test(frame));
+  check('the Timer sets no readout size of its own', /timerWide: \{ fontSize/.test(code(join(SRC, 'screens', 'TimerScreen.tsx'))), false);
+  // Upright: strips, stage as tall as its number, lineup, controls — in that order.
+  truthy('upright, the lineup fills the height between the readout and the controls',
+    /<View style=\{\[styles\.stage, styles\.stageNatural\]\}>\{stage\}<\/View>\s*<LineupList style=\{styles\.lineupBelow\} \/>\s*\{controls\}/.test(frame));
+  truthy('with the stage no taller than its number', /stageNatural: \{ flex: 0/.test(frame));
+  truthy('and the lineup taking the rest', /lineupBelow: \{ flex: 1/.test(frame));
+  // Landscape: the strips go in the LEFT column with the stage, not across the top —
+  // a 1150pt drill row with the name at one end and its clear button at the other
+  // is a gap, not a row.
+  truthy('landscape puts the strips in the readout’s column',
+    /<View style=\{styles\.mainCol\}>\s*\{strips\}\s*<View style=\{styles\.stage\}>\{stage\}<\/View>\s*\{controls\}\s*<\/View>\s*<LineupList style=\{styles\.sideCol\} \/>/.test(frame));
+  truthy('and a phone gets the column it always had',
+    /if \(!wide\) \{[\s\S]{0,200}\{strips\}\s*<View style=\{styles\.stage\}>\{stage\}<\/View>\s*\{controls\}/.test(frame));
   const tab = code(join(SRC, 'screens', 'DrillsTab.tsx'));
   truthy('the Modes tab caps its column upright', /wide && !landscape && styles\.rootWide/.test(tab));
   truthy('and uses the wider cap in landscape', /wide && landscape && styles\.rootLand/.test(tab));
