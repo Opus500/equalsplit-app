@@ -680,6 +680,22 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
   const setctl = read(join(SRC, 'components', 'SetControl.tsx'));
   check('the set badge has no shrug state', /'set \?'/.test(setctl), false);
   truthy('it names the state instead', /SET UNKNOWN/.test(setctl));
+
+  // SET SWITCHING ON THE TIMER. The original Timer hid the badge and the picker on
+  // the grounds that v1 "had no concept of sets" — true of the engine, not of the
+  // gates, whose set is read from the heartbeat whichever engine is timing. A
+  // coach with two sets could switch from Modes and not from the first tab.
+  {
+    const timerCode = code(join(SRC, 'screens', 'TimerScreen.tsx'));
+    check('the Timer no longer hides the set control', /showSet=\{false\}/.test(timerCode), false);
+    truthy('and still passes its own detail line', /<SetControl\s+detail=\{/.test(timerCode));
+    check('without the inline separator it used to lead with', /\? ` · \$\{/.test(timerCode), false);
+    const setCode = code(join(SRC, 'components', 'SetControl.tsx'));
+    truthy('the detail is its own line under the row, not squeezed beside the status',
+      /<Text style=\{styles\.detailLine\} numberOfLines=\{1\}>\s*\{detail\}/.test(setCode));
+    check('and no longer nests inside the status text', /\{statusLabel\}\s*\{detail \?/.test(setCode), false);
+    truthy('the experimental Timer has the same header', /<SetControl \/>/.test(code(join(SRC, 'screens', 'TimerV2Screen.tsx'))));
+  }
   // THE SCREEN IS NOT THE MANUAL. A copy pass before submission found the app
   // explaining itself in the main view — a six-line accuracy paragraph under every
   // clip, the probe trace beside it, protocol state names in the Timer's status
