@@ -185,12 +185,22 @@ export default function RosterScreen({
               belongs to nobody, so it appears under no one in the list below — and it
               is the run most likely to need fixing. This is the only thing on this
               screen that can point at a run it cannot show. History names the
-              sessions holding them; the Unassigned chip there does the rest. */}
+              sessions holding them; the Unassigned chip there does the rest.
+
+              AND IT IS THE WHOLE INDICATOR. An orange sentence used to sit under the
+              title repeating the count and telling the coach to open History — on
+              the thing you tap to open History. The words survive as the button's
+              accessibility label, where a screen reader still gets the full fact. */}
           {onOpenHistory ? (
             <Pressable
               onPress={onOpenHistory}
               hitSlop={8}
               style={({ pressed }) => [styles.headerBtn, pressed && styles.dim]}
+              accessibilityLabel={
+                orphans > 0
+                  ? `History, ${orphans} run${orphans === 1 ? '' : 's'} saved without an athlete`
+                  : 'History'
+              }
             >
               <Text style={styles.headerBtnText}>History</Text>
               {orphans > 0 ? (
@@ -212,13 +222,6 @@ export default function RosterScreen({
           ) : null}
         </View>
       </View>
-      {orphans > 0 ? (
-        <Text style={styles.orphanNote}>
-          {orphans} run{orphans === 1 ? '' : 's'} saved without an athlete. Open History to assign{' '}
-          {orphans === 1 ? 'it' : 'them'}.
-        </Text>
-      ) : null}
-
       <View style={styles.summary}>
         <Text style={styles.summaryText}>
           {active.length} athlete{active.length === 1 ? '' : 's'}
@@ -554,7 +557,6 @@ const styles = StyleSheet.create({
   orphanBadgeText: { color: '#0e1116', fontSize: 12, fontWeight: '800' },
   gearBtn: { paddingHorizontal: 2 },
   gearText: { color: '#94a3b8', fontSize: 20 },
-  orphanNote: { color: CAUTION, fontSize: 13, lineHeight: 18, marginTop: 6 },
   container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
   flex: { flex: 1 },
   title: { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 8 },
