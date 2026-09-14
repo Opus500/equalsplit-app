@@ -32,16 +32,8 @@ import { UpNextStrip } from '../components/UpNextStrip';
 import { DiscardBar } from '../components/DiscardBar';
 import { useRoster } from '../roster/RosterProvider';
 import { usePendingRun } from '../runs/PendingRunProvider';
-import { LineupList } from '../components/LineupList';
-import {
-  COLUMN_GAP,
-  COLUMN_MAX_WIDTH,
-  LANDSCAPE_MAX_WIDTH,
-  mainColumnWidth,
-  readoutSize,
-  topPad,
-  useLayout,
-} from '../layout';
+import { TimerFrame } from '../components/TimerFrame';
+import { mainColumnWidth, readoutSize, useLayout } from '../layout';
 import { runShareLine, shareText } from '../share';
 import {
   ACCURACY,
@@ -106,7 +98,7 @@ export default function TimerScreen() {
   const [result, setResult] = useState<Result | null>(null);
   const [gateState, setGateState] = useState<GateState | null>(null);
   const layout = useLayout();
-  const { insets, wide, landscape } = layout;
+  const { wide } = layout;
   // FITTED to the column it sits in; phones keep the fixed 76.
   const readout = wide ? { fontSize: readoutSize(mainColumnWidth(layout)) } : null;
   const [dbg, setDbg] = useState('');
@@ -645,19 +637,12 @@ export default function TimerScreen() {
 
   const finishedTagStr = finishedTags ? formatTags(finishedTags.name, finishedTags.drill) : '';
 
-  return (
-    // WIDE, UPRIGHT: a capped column. The readout is fitted to it and the full
-    // lineup fills what is left under the number, down to the controls — the
-    // space is used, not centred in. WIDE, LANDSCAPE: two columns, the readout
-    // and its controls beside the lineup. A phone gets neither branch.
-    <View
-      style={[
-        styles.container,
-        { paddingTop: topPad(insets) },
-        wide && !landscape && styles.containerWide,
-        wide && landscape && styles.containerLand,
-      ]}
-    >
+  // The arrangement — a phone column, a capped upright column with the lineup
+  // under the number, or two landscape columns — is TimerFrame's, shared with
+  // the experimental Timer so the two cannot drift. This screen supplies the
+  // three parts and the modals.
+  const strips = (
+    <>
       {/* Was a local ConnChip. showSet=false: v1 predates sets and has none to
           choose. `detail` carries the gate state / run count / finish-link
           warning that only THIS copy showed — the other two never had it. */}
@@ -697,127 +682,128 @@ export default function TimerScreen() {
           <Text style={styles.tagSet}>Set</Text>
         )}
       </Pressable>
+    </>
+  );
 
-      {/* The stage, the lineup and the controls, arranged by shape. */}
-      <View style={[styles.middle, wide && landscape && styles.middleLand]}>
-        <View style={wide && landscape ? styles.mainCol : styles.fillCol}>
-          <View style={[styles.stage, wide && !landscape && styles.stageNatural]}>
-            {phaseLabel ? <Text style={[styles.phase, wide && styles.phaseWide]}>{phaseLabel}</Text> : null}
-            <Text style={[styles.timer, readout, runState === 'finished' && styles.timerDone]}>
-              {big}
-            </Text>
-            <Text style={[styles.unit, wide && styles.unitWide]}>seconds</Text>
-            {runState === 'finished' && finishedTagStr ? (
-              <Text style={styles.resultTags}>{finishedTagStr}</Text>
-            ) : null}
+  const stage = (
+    <>
+      {phaseLabel ? <Text style={[styles.phase, wide && styles.phaseWide]}>{phaseLabel}</Text> : null}
+      <Text style={[styles.timer, readout, runState === 'finished' && styles.timerDone]}>
+        {big}
+      </Text>
+      <Text style={[styles.unit, wide && styles.unitWide]}>seconds</Text>
+      {runState === 'finished' && finishedTagStr ? (
+        <Text style={styles.resultTags}>{finishedTagStr}</Text>
+      ) : null}
 
-            {result && result.mode === 2 && !devMode ? (
-              // Clean mode: G1→G2 (exact) + total; reaction shown RAW with a caveat,
-              // never the corrected number (it can go sub-floor). See docs/LATENCY.md.
-              <View style={styles.splits}>
-                <Split label="Reaction → Gate 1" ms={result.split1Ms} caveat="includes the beep delay" muted />
-                <Split label="Gate 1 → Gate 2" ms={result.split2Ms} />
-                <Split label="Total" ms={result.totalMs} strong />
-                <Text style={styles.offsetNote}>
-                  Reaction and total include the GO-beep delay, which can&apos;t be corrected reliably on
-                  the phone. The Gate 1 → Gate 2 split is exact.
-                </Text>
-              </View>
-            ) : null}
-
-            {result && result.mode === 2 && devMode ? (
-              <View style={styles.splits}>
-                <Split
-                  label="Reaction → G1"
-                  ms={adjReactionMs}
-                  raw={result.split1Ms}
-                  conf={corr && corr.confMs > 0 ? corr.confMs : undefined}
-                  unreliable={!!corr?.implausible}
-                />
-                <Split label="G1 → G2" ms={result.split2Ms} />
-                <Split label="Total (GO → G2, raw)" ms={result.totalMs} strong />
-                {corr && corr.confMs > 0 && !corr.implausible ? (
-                  <Text style={styles.accuracyNote}>reaction accuracy ±{corr.confMs} ms (clock-synced)</Text>
-                ) : null}
-                <Text style={styles.offsetNote}>
-                  {corr?.source === 'synced'
-                    ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic)`
-                    : `fixed offset · −${shownCorrection} ms · not clock-synced this run (no ±X)`}
-                </Text>
-                {corr?.implausible ? (
-                  <Text style={styles.earlyNote}>
-                    ⚠ reaction over-corrected (below ~{REACTION_FLOOR_MS} ms human floor) — unreliable.
-                    The GO-beep latency measured this run exceeded the real reaction.
-                  </Text>
-                ) : null}
-              </View>
-            ) : null}
-
-            {!result && liveSplit1Ms != null ? (
-              <View style={styles.splits}>
-                <Split label="Split 1" ms={liveSplit1Ms} />
-              </View>
-            ) : null}
-
-            {runState === 'finished' && result ? (
-              <Pressable
-                onPress={() =>
-                  shareText(
-                    runShareLine(finishedTags?.name, finishedTags?.drill, result.totalMs),
-                  )
-                }
-                style={({ pressed }) => [styles.shareBtn, pressed && styles.dim]}
-              >
-                <Text style={styles.shareBtnText}>⤴  Share</Text>
-              </Pressable>
-            ) : null}
-
-            <Text style={[styles.hint, wide && styles.hintWide]}>{hintFor(connected, gateState, runState)}</Text>
-            {saveError ? <Text style={styles.saveError}>{saveError}</Text> : null}
-            {devMode && dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
-          </View>
-          {wide && !landscape ? <LineupList style={styles.lineupBelow} /> : null}
-
-          <View style={styles.controls}>
-            <Row>
-              {/* Arming IS "the next rep starts" on this screen, so it settles the
-                  previous run — kept, not deleted.
-              
-                  MODE NUMBERS ARE OURS, NOT A COACH'S. With reaction timing behind dev
-                  mode there is only one thing to arm, so it needs no number at all — the
-                  hint above already says when to press it. In dev mode both appear and
-                  the second says what it does rather than which mode it is. */}
-              <Btn label={devMode ? 'Arm' : 'Arm gate'} onPress={doArm1} disabled={!connected || !isIdleState} />
-              {devMode ? (
-                <Btn label="Arm (reaction)" onPress={doArm2} disabled={!connected || !isIdleState} />
-              ) : null}
-            </Row>
-            <Row>
-              {/* REACTION IS SHELVED UNTIL THE BUZZER LANDS at the PCB respin, so both
-                  halves of it are gated together. Leaving this live while its calibration
-                  sat behind dev mode was the worst of both: a button a reviewer can press
-                  for a mode that cannot be set up, which reads as an unfinished app.
-                  Start sequence only ever does anything to an M2-armed gate, so it goes
-                  with it — a permanently disabled button is its own kind of unfinished.
-
-                  THE MATHS AND THE SAVED VALUES ARE UNTOUCHED. reactionOffsetMs is still
-                  subtracted at save time and History still re-derives it, so existing
-                  Mode 2 rows keep meaning exactly what they meant. */}
-              {devMode ? (
-                <Btn
-                  label="Start sequence"
-                  onPress={() => gate.startSequence()}
-                  disabled={!connected || !isM2Armed}
-                  kind="go"
-                />
-              ) : null}
-              <Btn label="Reset" onPress={gate.reset} disabled={!connected || isIdleState} kind="warn" />
-            </Row>
-          </View>
+      {result && result.mode === 2 && !devMode ? (
+        // Clean mode: G1→G2 (exact) + total; reaction shown RAW with a caveat,
+        // never the corrected number (it can go sub-floor). See docs/LATENCY.md.
+        <View style={styles.splits}>
+          <Split label="Reaction → Gate 1" ms={result.split1Ms} caveat="includes the beep delay" muted />
+          <Split label="Gate 1 → Gate 2" ms={result.split2Ms} />
+          <Split label="Total" ms={result.totalMs} strong />
+          <Text style={styles.offsetNote}>
+            Reaction and total include the GO-beep delay, which can&apos;t be corrected reliably on
+            the phone. The Gate 1 → Gate 2 split is exact.
+          </Text>
         </View>
-        {wide && landscape ? <LineupList style={styles.sideCol} /> : null}
-      </View>
+      ) : null}
 
+      {result && result.mode === 2 && devMode ? (
+        <View style={styles.splits}>
+          <Split
+            label="Reaction → G1"
+            ms={adjReactionMs}
+            raw={result.split1Ms}
+            conf={corr && corr.confMs > 0 ? corr.confMs : undefined}
+            unreliable={!!corr?.implausible}
+          />
+          <Split label="G1 → G2" ms={result.split2Ms} />
+          <Split label="Total (GO → G2, raw)" ms={result.totalMs} strong />
+          {corr && corr.confMs > 0 && !corr.implausible ? (
+            <Text style={styles.accuracyNote}>reaction accuracy ±{corr.confMs} ms (clock-synced)</Text>
+          ) : null}
+          <Text style={styles.offsetNote}>
+            {corr?.source === 'synced'
+              ? `clock-synced · −${shownCorrection} ms (beep ${corr.beepEngine ?? '?'}+${ACOUSTIC_OUTPUT_MS} acoustic)`
+              : `fixed offset · −${shownCorrection} ms · not clock-synced this run (no ±X)`}
+          </Text>
+          {corr?.implausible ? (
+            <Text style={styles.earlyNote}>
+              ⚠ reaction over-corrected (below ~{REACTION_FLOOR_MS} ms human floor) — unreliable.
+              The GO-beep latency measured this run exceeded the real reaction.
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
+
+      {!result && liveSplit1Ms != null ? (
+        <View style={styles.splits}>
+          <Split label="Split 1" ms={liveSplit1Ms} />
+        </View>
+      ) : null}
+
+      {runState === 'finished' && result ? (
+        <Pressable
+          onPress={() =>
+            shareText(
+              runShareLine(finishedTags?.name, finishedTags?.drill, result.totalMs),
+            )
+          }
+          style={({ pressed }) => [styles.shareBtn, pressed && styles.dim]}
+        >
+          <Text style={styles.shareBtnText}>⤴  Share</Text>
+        </Pressable>
+      ) : null}
+
+      <Text style={[styles.hint, wide && styles.hintWide]}>{hintFor(connected, gateState, runState)}</Text>
+      {saveError ? <Text style={styles.saveError}>{saveError}</Text> : null}
+      {devMode && dbg ? <Text style={styles.dbg}>{dbg}</Text> : null}
+    </>
+  );
+
+  const controls = (
+    <View style={styles.controls}>
+      <Row>
+        {/* Arming IS "the next rep starts" on this screen, so it settles the
+            previous run — kept, not deleted.
+      
+            MODE NUMBERS ARE OURS, NOT A COACH'S. With reaction timing behind dev
+            mode there is only one thing to arm, so it needs no number at all — the
+            hint above already says when to press it. In dev mode both appear and
+            the second says what it does rather than which mode it is. */}
+        <Btn label={devMode ? 'Arm' : 'Arm gate'} onPress={doArm1} disabled={!connected || !isIdleState} />
+        {devMode ? (
+          <Btn label="Arm (reaction)" onPress={doArm2} disabled={!connected || !isIdleState} />
+        ) : null}
+      </Row>
+      <Row>
+        {/* REACTION IS SHELVED UNTIL THE BUZZER LANDS at the PCB respin, so both
+            halves of it are gated together. Leaving this live while its calibration
+            sat behind dev mode was the worst of both: a button a reviewer can press
+            for a mode that cannot be set up, which reads as an unfinished app.
+            Start sequence only ever does anything to an M2-armed gate, so it goes
+            with it — a permanently disabled button is its own kind of unfinished.
+
+            THE MATHS AND THE SAVED VALUES ARE UNTOUCHED. reactionOffsetMs is still
+            subtracted at save time and History still re-derives it, so existing
+            Mode 2 rows keep meaning exactly what they meant. */}
+        {devMode ? (
+          <Btn
+            label="Start sequence"
+            onPress={() => gate.startSequence()}
+            disabled={!connected || !isM2Armed}
+            kind="go"
+          />
+        ) : null}
+        <Btn label="Reset" onPress={gate.reset} disabled={!connected || isIdleState} kind="warn" />
+      </Row>
+    </View>
+  );
+
+  return (
+    <TimerFrame strips={strips} stage={stage} controls={controls}>
       {/* Drill records (kind='manual'): the timer never offers L Drill /
           Shuttle Run, which is what the trimmed list actually means now. */}
       <DrillPickerModal
@@ -826,7 +812,7 @@ export default function TimerScreen() {
         onClose={() => setTagOpen(false)}
         onPick={applyDrill}
       />
-    </View>
+    </TimerFrame>
   );
 }
 
@@ -947,18 +933,6 @@ function Btn({
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0e1116', paddingHorizontal: 16 },
-  containerWide: { width: '100%', maxWidth: COLUMN_MAX_WIDTH, alignSelf: 'center' },
-  containerLand: { width: '100%', maxWidth: LANDSCAPE_MAX_WIDTH, alignSelf: 'center' },
-  // Everything between the strips at the top and the tab bar. Upright it is a
-  // column (stage, lineup, controls); in landscape a row of two columns.
-  middle: { flex: 1 },
-  middleLand: { flexDirection: 'row', gap: COLUMN_GAP, alignItems: 'stretch' },
-  mainCol: { flex: 55 },
-  fillCol: { flex: 1 },
-  sideCol: { flex: 45, marginTop: 8, marginBottom: 12 },
-  // Under the readout, taking the rest of the height, scrolling inside itself.
-  lineupBelow: { flex: 1, marginTop: 4, marginBottom: 12, minHeight: 120 },
   // 48pt: a mid-rep control, pressed one-handed outdoors and sometimes gloved.
   tagBar: {
     minHeight: 48,
@@ -986,11 +960,6 @@ const styles = StyleSheet.create({
     borderColor: '#374151',
   },
   shareBtnText: { color: '#e2e8f0', fontSize: 14, fontWeight: '700' },
-  stage: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  // Upright on a wide screen the stage is as tall as its readout and no taller —
-  // the lineup takes the height. In landscape it keeps flex: 1 and centres in
-  // its column, which is full beside it.
-  stageNatural: { flex: 0, paddingVertical: 16 },
   phase: { color: INK, fontSize: 22, fontWeight: '700', marginBottom: 8 },
   phaseWide: { fontSize: 30 },
   timer: { color: '#fff', fontSize: 76, fontWeight: '800', fontVariant: ['tabular-nums'] },
