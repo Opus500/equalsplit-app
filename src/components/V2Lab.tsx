@@ -1,23 +1,16 @@
-// Dev-only v2 acceptance-test surface (docs/BLE-CONTRACT.md §14). Consumes the
-// shared V2Provider session: it activates the pipeline on mount (auto bring-up:
-// discover -> assign -> sync -> ping), then shows each rep's v1-vs-v2 agreement.
-// Green Δ = within the ±5 ms TF-Luna quantization band → cut-over signal.
+// Dev-only v2 session surface: bring-up, role swap, the radio-set controls and
+// the bare-gate recovery path (SETS-G1 §4), plus the raw v2 event log.
+//
+// This was the acceptance-test bench (docs/BLE-CONTRACT.md §14): it armed v1 and
+// v2 together and tabled each rep's v1-vs-v2 split. That test passed in July and
+// the frozen firmware deleted v1, so "Arm run (M1)" could never fill its v1 column
+// again — it and the table are gone. What remains is the tool for a stranded gate.
 
 import { useEffect } from 'react';
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { useV2, type Comparison } from '../ble/V2Provider';
-import {
-  CAUTION,
-  DESTRUCTIVE,
-  FAINT,
-  INK,
-  INTERACTIVE_SOFT,
-  LIVE_FILL,
-} from '../theme';
-
-const AGREE_MS = 5; // TF-Luna 250 Hz frame quantization band (§14)
-const WARN_MS = 10;
+import { useV2 } from '../ble/V2Provider';
+import { CAUTION, INTERACTIVE_SOFT, LIVE_FILL } from '../theme';
 
 export default function V2Lab() {
   const v2 = useV2();
@@ -28,8 +21,6 @@ export default function V2Lab() {
     return v2.release;
   }, [v2.retain, v2.release]);
 
-  const agree = v2.comparisons.filter((c) => c.synced && Math.abs(c.deltaMs) <= AGREE_MS).length;
-  const synced = v2.comparisons.filter((c) => c.synced).length;
   const busy = v2.phase !== 'ready' && v2.phase !== 'idle' && v2.phase !== 'error';
 
   return (
@@ -39,7 +30,6 @@ export default function V2Lab() {
         {v2.phase}
         {v2.ping ? `  ·  ping ${v2.ping.rttMs.toFixed(1)}ms` : ''}
         {`  ·  engine ${v2.engineState}`}
-        {v2.comparisons.length ? `  ·  agree ${agree}/${synced}` : ''}
       </Text>
 
       {/* Gates */}
@@ -71,7 +61,6 @@ export default function V2Lab() {
         />
       </View>
       <View style={styles.row}>
-        <Btn label="Arm run (M1)" onPress={v2.armCompare} disabled={!v2.ready} kind="go" />
         <Btn label="Reset engine" onPress={v2.resetEngine} disabled={!v2.connected} />
       </View>
 
@@ -94,31 +83,6 @@ export default function V2Lab() {
         <Text style={styles.hint}>role swap pending — tap Re-bring-up to apply</Text>
       ) : null}
 
-      {/* Comparison table */}
-      <View style={styles.cmpHead}>
-        <Text style={styles.cmpTitle}>v1 vs v2 split (Δ = v2 − v1)</Text>
-        {v2.comparisons.length ? (
-          <Pressable onPress={v2.clearComparisons}>
-            <Text style={styles.clear}>clear</Text>
-          </Pressable>
-        ) : null}
-      </View>
-      <View style={[styles.cmpRow, styles.cmpRowHead]}>
-        <Text style={[styles.cell, styles.cellHead]}>#</Text>
-        <Text style={[styles.cell, styles.cellHead]}>v1 (ms)</Text>
-        <Text style={[styles.cell, styles.cellHead]}>v2 (ms)</Text>
-        <Text style={[styles.cell, styles.cellHead]}>Δ (ms)</Text>
-      </View>
-      <FlatList
-        style={styles.cmpList}
-        data={v2.comparisons}
-        keyExtractor={(c) => c.id}
-        ListEmptyComponent={
-          <Text style={styles.muted}>arm a Mode-1 rep and run both gates — rows land here paired.</Text>
-        }
-        renderItem={({ item }) => <CmpRow c={item} />}
-      />
-
       <Text style={styles.section}>v2 event log</Text>
       <FlatList
         style={styles.log}
@@ -126,21 +90,6 @@ export default function V2Lab() {
         keyExtractor={(_l, i) => `${i}`}
         renderItem={({ item }) => <Text style={styles.logLine}>{item}</Text>}
       />
-    </View>
-  );
-}
-
-function CmpRow({ c }: { c: Comparison }) {
-  const abs = Math.abs(c.deltaMs);
-  const color = !c.synced ? FAINT : abs <= AGREE_MS ? INK : abs <= WARN_MS ? CAUTION : DESTRUCTIVE;
-  return (
-    <View style={styles.cmpRow}>
-      <Text style={styles.cell}>{c.id}</Text>
-      <Text style={styles.cell}>{c.v1Ms}</Text>
-      <Text style={styles.cell}>{c.synced ? c.v2Ms : '—'}</Text>
-      <Text style={[styles.cell, { color, fontWeight: '700' }]}>
-        {c.synced ? (c.deltaMs > 0 ? `+${c.deltaMs}` : `${c.deltaMs}`) : 'unsync'}
-      </Text>
     </View>
   );
 }
@@ -187,14 +136,6 @@ const styles = StyleSheet.create({
   btnGo: { backgroundColor: LIVE_FILL },
   btnText: { color: '#fff', fontWeight: '600', fontSize: 13 },
   dim: { opacity: 0.4 },
-  cmpHead: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 },
-  cmpTitle: { color: '#e2e8f0', fontWeight: '700', fontSize: 13 },
-  clear: { color: DESTRUCTIVE, fontSize: 12 },
-  cmpRow: { flexDirection: 'row', paddingVertical: 5, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#1f2733' },
-  cmpRowHead: { borderBottomColor: '#334155' },
-  cell: { flex: 1, color: '#e2e8f0', fontFamily: mono, fontSize: 13, fontVariant: ['tabular-nums'] },
-  cellHead: { color: '#64748b', fontSize: 11, fontWeight: '700' },
-  cmpList: { maxHeight: 150 },
   log: { flex: 1, backgroundColor: '#06080c', borderRadius: 8, padding: 8, marginTop: 4 },
   logLine: { color: '#9fe6a0', fontFamily: mono, fontSize: 11, marginBottom: 2 },
 });

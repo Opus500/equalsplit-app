@@ -15,7 +15,6 @@ import { PendingRunProvider } from './src/runs/PendingRunProvider';
 import { initDb } from './src/db/database';
 import { installCrashLog, logEvent } from './src/diag/crashlog';
 import TimerScreen from './src/screens/TimerScreen';
-import TimerV2Screen from './src/screens/TimerV2Screen';
 import DrillsTab from './src/screens/DrillsTab';
 import RosterScreen from './src/screens/RosterScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
@@ -75,7 +74,7 @@ export default function App() {
 
 // Inside the providers so it can read devMode (gates the Debug tab). Default OFF.
 function AppShell() {
-  const { devMode, useV2Engine } = useSettings();
+  const { devMode } = useSettings();
   const { insets } = useLayout();
   const [tab, setTab] = useState<Tab>('timer');
   const [overlay, setOverlay] = useState<Overlay>(null);
@@ -91,13 +90,13 @@ function AppShell() {
       <StatusBar style="light" />
       <View style={styles.screens}>
         <View style={[styles.fill, tab !== 'timer' && styles.hidden]}>
-          {/* BOTH FLAGS. The engine toggle lives inside the dev-mode section of
-              Settings, so it can only be turned ON with dev mode on — but the value
-              persists, and this read it alone. Turn dev mode off with the toggle
-              still set and the Timer tab stayed on the experimental screen, which
-              speaks in engine versions and mode numbers, with the switch that
-              controls it no longer visible anywhere. */}
-          {devMode && useV2Engine ? <TimerV2Screen /> : <TimerScreen />}
+          {/* ONE TIMER, NOTHING CHOOSES IT. This was `devMode && useV2Engine ?
+              <TimerV2Screen/> : <TimerScreen/>` — a choice between the engine the
+              gates speak and a v1 pipeline the firmware deleted in July. Every
+              gating rule ever written here picked the dead one for somebody: the
+              toggle alone picked it for a fresh install, and the dev-mode guard
+              picked it the day dev mode went off. There is no fallback to gate. */}
+          <TimerScreen />
         </View>
         {/* Kept mounted (hidden), like Timer: preserves an in-progress drill run
             or rep set, the selected drill, and — critically — the per-run save

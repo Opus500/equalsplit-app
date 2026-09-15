@@ -1,5 +1,13 @@
 # Mode 2 reaction-latency compensation
 
+> **v1-era design record, not shipping behaviour (2026-09).** Everything below describes the
+> phone-beep reaction start of the v1 Timer, which was deleted from the app after the frozen
+> firmware (`gate-f2-FROZEN-2026-07-21` lineage, `gate-g1-a3` on every unit) removed the v1
+> surface it ran on. Nothing in the app computes or applies these corrections today. Kept because
+> reaction mode returns with the gate buzzer at the PCB respin, and the measurement method and
+> the ±X reasoning here are the starting point for that design.
+
+
 The Mode 2 "GO" is cued by a beep **on the phone**, which trails the gate's
 authoritative GO by the beep latency (BLE delivery + iOS audio buffering). The
 athlete reacts to the late beep, so the gate's raw reaction (`split1 = GO→Gate1`)
