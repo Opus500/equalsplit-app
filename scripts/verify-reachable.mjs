@@ -336,21 +336,25 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
   truthy('an already-on dev mode shows its own switch',
     /const devVisible = devMode \|\| versionTaps >= DEV_UNLOCK_TAPS;/.test(settings));
 
-  // REACTION IS SHELVED until the buzzer lands, so BOTH halves are gated together.
-  // Leaving the button live while its calibration sat behind dev mode was the worst
-  // of both: pressable, and impossible to set up.
-  truthy('arming a reaction run is behind dev mode',
-    /\{devMode \? \([\s\S]{0,200}Arm \(reaction\)/.test(timer));
-  truthy('and so is the control that only a reaction run uses',
-    /\{devMode \? \([\s\S]{0,400}Start sequence/.test(timer));
-  check('no mode number is offered to a coach', /label="Arm Mode [12]"/.test(timer), false);
+  // THE TIMER SPEAKS v2 AND NOTHING ELSE. The screen that used to be here armed
+  // with opcode 0x01 and waited for STATE/GO/FINISH — a surface the firmware on
+  // every unit deleted in July. Nothing on it could work, and it was the Timer
+  // tab for every fresh install. There must be no v1 arm anywhere a coach can
+  // reach, and no mode number: reaction mode is shelved until the buzzer.
+  check('the Timer sends no v1 opcode', /gate\.(arm1|arm2|startSequence|goNow)\b/.test(timer), false);
+  check('and reads no v1 characteristic', /gateStatus|readStatusNow|readLastResultNow|lastResult/.test(timer), false);
+  check('and listens for no v1 event', /Evt\.|GateState\./.test(timer), false);
+  truthy('it arms the v2 engine', /v2\.arm\(\)/.test(timer));
+  check('no mode number is offered to a coach', /Arm \(Mode [12]\)|Mode-1|Mode 1/.test(timer), false);
+  truthy('the button says what a coach would say', /'Arm gate'/.test(timer));
 
-  // A FAILED SAVE MUST STILL SPEAK. The raw trace goes behind dev mode; the message
-  // saying the run was not written does not, or the failure is silent.
-  truthy('the raw timer trace is dev-only', /\{devMode && dbg \? /.test(timer));
-  truthy('but a failed save is told to everyone', /\{saveError \? <Text/.test(timer));
-  truthy('in words rather than an exception',
-    /could not be saved to history/.test(timer));
+  // A FAILED SAVE MUST STILL SPEAK, in the words Modes already uses. The raw trace
+  // goes behind dev mode; the message saying the run was not written does not.
+  truthy('the raw timer trace is dev-only', /\{devMode && dbg \? <Text/.test(timer));
+  truthy('but a failed save is told to everyone', /\{note \? <Text/.test(timer));
+  truthy('in the words Modes uses', /could not be saved to history/.test(timer));
+  truthy('and so is an unsynced rep, in the same words',
+    /The two gates were not in sync for that rep, so its time was not saved\./.test(timer));
 
   // A PLACEHOLDER URL IS A REJECTION. This shipped as example.com behind a TODO.
   check('the donate link is not a placeholder', /example\.com/.test(settings), false);
@@ -366,7 +370,7 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     /proto app v\$\{PROTO_VERSION\}/.test(read(join(SRC, 'screens', 'DebugScreen.tsx'))));
 
   // The gate session line spoke in engine versions and state-machine phases.
-  for (const f of ['DrillsScreen.tsx', 'TimerV2Screen.tsx']) {
+  for (const f of ['DrillsScreen.tsx', 'TimerScreen.tsx']) {
     const src = read(join(SRC, 'screens', f));
     check(`${f} does not show an engine version`, /v2 · \{v2\.phase/.test(src), false);
     truthy(`${f} names the session in plain words`, /sessionLabel\(v2\.phase/.test(src));
@@ -420,8 +424,12 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
   // this names both sections.
   {
     const only = code(join(SRC, 'screens', 'SettingsScreen.tsx'));
-    truthy('the dev-mode switch comes before the sections it reveals',
-      only.indexOf('title="Developer mode"') < only.indexOf('title="Timing engine'));
+    // The calibration sections it once revealed are gone with the v1 Timer; what
+    // it reveals now is the way into Diagnostics, and that still sits under it.
+    truthy('the dev-mode switch comes before the thing it reveals',
+      only.indexOf('title="Developer mode"') < only.indexOf('Diagnostics &amp; v2 Lab'));
+    check('there is no engine to choose', /Timing engine|useV2Engine|use_v2_engine/.test(only), false);
+    check('and no reaction calibration to tune', /Reaction latency|Reaction correction|Measured latency|reactionOffsetMs/.test(only), false);
     // The unlock stays at the bottom, on the version row, so the toggle is now
     // ABOVE what unlocks it. That is the trade: findable when on, which is what
     // was reported broken. The version row says where it went.
@@ -432,7 +440,7 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
   // COUNT BEFORE CLAIMING. `Both gates ready` fired whenever the gate list was
   // non-empty, so a one-gate session claimed two — the opposite of the miscount the
   // line exists to prevent, and unfalsifiable from the screen.
-  for (const f of ['DrillsScreen.tsx', 'TimerV2Screen.tsx']) {
+  for (const f of ['DrillsScreen.tsx', 'TimerScreen.tsx']) {
     const src = read(join(SRC, 'screens', f));
     truthy(`${f} counts the gates before saying both`, /if \(total >= 2\) return 'Both gates ready';/.test(src));
     truthy(`${f} says so when only one joined`, /total === 1/.test(src));
@@ -638,7 +646,6 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
 
     const MID_REP = [
       ['screens/TimerScreen.tsx', 'tagBar'],
-      ['screens/TimerV2Screen.tsx', 'tagBar'],
       ['screens/DrillsScreen.tsx', 'tagBar'],
       ['screens/VideoMarkScreen.tsx', 'markBtn'],
       ['screens/VideoRecordModal.tsx', 'rate'],
@@ -702,16 +709,18 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     truthy('that fact moved to the marking sheet', /it is the file that decides/.test(mark));
 
     const timerCode = code(join(SRC, 'screens', 'TimerScreen.tsx'));
-    truthy('the Timer status line speaks the coach’s words unless in dev mode',
-      /devMode \? STATE_NAME\[gateStatus\.state\] \?\? '' : gateStateLabel\(gateStatus\.state\)/.test(timerCode));
-    truthy('and that label covers every gate state', /case GateState\.M2ToGate2:\s*return 'Running'/.test(timerCode));
-    check('the idle hint no longer offers a choice of modes', /'Pick a mode to arm\.'/.test(timerCode), false);
-    const cleanBlock = timerCode.slice(
-      timerCode.indexOf("result.mode === 2 && !devMode"),
-      timerCode.indexOf('result.mode === 2 && devMode'),
-    );
-    truthy('the clean reaction block was found', cleanBlock.length > 100);
-    check('and it does not abbreviate the gates', /G1|G2/.test(cleanBlock), false);
+    // The session line, not a protocol state name, is what the Timer says about
+    // the gates — the same words as Modes.
+    check('the Timer prints no protocol state name', /STATE_NAME/.test(timerCode), false);
+    truthy('it uses the session line Modes uses', /sessionLabel\(v2\.phase/.test(timerCode));
+    truthy('the idle hint says what to press', /'Tap Arm gate when the athlete is ready\.'/.test(timerCode));
+    // The coach's branch is the second string; it must not send them to a dev screen.
+    const coachPartial = (timerCode.match(/:\s*'(Only one gate found[^']*)'/) || [])[1] || '';
+    truthy('the one-gate hint has a coach branch', coachPartial.length > 20);
+    check('and it never points a coach at the Lab', /Lab|Diagnostics/.test(coachPartial), false);
+    truthy('the recovery pointer is dev-only',
+      /devMode\s*\?\s*'Only one gate found[^']*v2 Lab[^']*'\s*:\s*'Only one gate found — power the other gate; it joins automatically\.'/.test(timerCode));
+    check('the split caption does not name the engine', /v2 engine/.test(timerCode), false);
 
     // The same trace/notice split the Timer got, on the other two screens that save.
     for (const f of ['DrillsScreen.tsx', 'RepeatsScreen.tsx']) {
@@ -764,15 +773,22 @@ console.log('\n5. WHAT A COACH MEETS, AND WHAT A REVIEWER MUST NOT');
     check('About does not name the radio protocol', /ESP-NOW/.test(settingsCode), false);
     truthy('but still says the phone is out of the timing path', /phone is never in the timing path/.test(settingsCode));
 
-    // THE EXPERIMENTAL TIMER IS BEHIND DEV MODE, NOT BEHIND ITS OWN TOGGLE. The
-    // toggle is only rendered inside the dev section, but its value persists — so
-    // dev mode off with the toggle still set left the Timer tab on TimerV2Screen,
-    // which says "v2 engine" and "Mode-1", with no visible way back. The tab must
-    // read both flags.
+    // ONE TIMER, NOTHING CHOOSES IT. Every gating rule ever written on this line
+    // picked the dead v1 screen for somebody — the toggle alone for a fresh install,
+    // the dev-mode guard the day dev mode went off. The firmware has no v1 surface;
+    // there is no fallback to gate.
     const appCode = code(join(ROOT, 'App.tsx'));
-    truthy('the experimental timer needs dev mode as well as its toggle',
-      /\{devMode && useV2Engine \? <TimerV2Screen \/> : <TimerScreen \/>\}/.test(appCode));
-    check('and is never chosen on the toggle alone', /\{useV2Engine \? <TimerV2Screen/.test(appCode), false);
+    truthy('the Timer tab renders the Timer unconditionally',
+      // code() strips the comment and leaves its braces, so `{}` may sit between.
+      /<View style=\{\[styles\.fill, tab !== 'timer' && styles\.hidden\]\}>\s*(?:\{\s*\})?\s*<TimerScreen \/>/.test(appCode));
+    check('no engine flag chooses a Timer', /useV2Engine|TimerV2Screen/.test(appCode), false);
+    check('and no such flag exists to be read', /useV2Engine|use_v2_engine/.test(code(join(SRC, 'settings', 'SettingsProvider.tsx'))), false);
+    check('nor the reaction fields that tuned the dead screen',
+      /reactionOffsetMs|measuredAudioLatencyMs|correctionMode|latencySamples/.test(code(join(SRC, 'settings', 'SettingsProvider.tsx'))), false);
+    // The Lab keeps its recovery controls and loses the bench that armed v1.
+    const lab = code(join(SRC, 'components', 'V2Lab.tsx'));
+    check('the Lab no longer arms v1', /armCompare|Arm run \(M1\)/.test(lab), false);
+    truthy('but still restores a stranded gate', /restoreDefaults/.test(lab) && /changeSet\(1\)/.test(lab));
 
     // The athlete page's "No drill" card states the fact and not the argument.
     const detail = code(join(SRC, 'components', 'AthleteDetail.tsx'));
@@ -818,7 +834,7 @@ console.log('\n6. THE SCREEN FITS THE DEVICE IT IS ON');
     check(`${f} has no hard-coded status-bar padding`, /paddingTop: 5[0-9]/.test(src), false);
     truthy(`${f} reads the inset instead`, /topPad\(insets/.test(src));
   }
-  for (const f of ['screens/TimerScreen.tsx', 'screens/TimerV2Screen.tsx']) {
+  for (const f of ['screens/TimerScreen.tsx']) {
     const src = code(join(SRC, f));
     check(`${f} has no hard-coded status-bar padding`, /paddingTop: 5[0-9]/.test(src), false);
     truthy(`${f} is arranged by TimerFrame`, /<TimerFrame strips=\{strips\} stage=\{stage\} controls=\{controls\}>/.test(src));
